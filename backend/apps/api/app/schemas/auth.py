@@ -1,0 +1,1 @@
+"""鉴权相关 Schema 占位。M1 阶段补全 Login / Token / CurrentUser。"""
