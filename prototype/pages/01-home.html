@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>首页 · AI 研究者助手</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,wght@0,400;0,500;0,600;1,400&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="../styles/tokens.css" />
+  <style>
+    .hero-title {
+      font-family: 'Newsreader', serif;
+      font-weight: 500;
+      letter-spacing: -0.025em;
+      line-height: 1.1;
+    }
+    .grain-bg {
+      background-image:
+        radial-gradient(circle at 20% 0%, rgba(61, 71, 137, 0.04) 0%, transparent 40%),
+        radial-gradient(circle at 100% 100%, rgba(47, 158, 107, 0.03) 0%, transparent 40%);
+    }
+    .research-card-live {
+      background: linear-gradient(135deg, var(--brand-50) 0%, var(--neutral-0) 60%);
+    }
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: var(--radius-full);
+      background: var(--success-500);
+      box-shadow: 0 0 0 4px rgba(47, 158, 107, 0.15);
+    }
+    .template-card {
+      cursor: pointer;
+    }
+    .template-card:hover .template-arrow {
+      transform: translateX(4px);
+    }
+    .template-arrow {
+      transition: transform var(--motion-base) var(--ease-out);
+    }
+  </style>
+</head>
+<body>
+  <!-- Top bar -->
+  <header class="topbar">
+    <a href="../index.html" class="topbar-logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <rect x="2" y="2" width="16" height="16" rx="3" fill="var(--brand-500)"/>
+        <path d="M6 7h8M6 10h6M6 13h7" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+      AI 研究者助手
+    </a>
+    <nav class="topbar-nav">
+      <a href="./01-home.html" class="topbar-link active">首页</a>
+      <a href="#" class="topbar-link">项目</a>
+      <a href="#" class="topbar-link">模板</a>
+      <a href="#" class="topbar-link">知识库</a>
+    </nav>
+    <div class="topbar-actions">
+      <button class="btn btn-ghost btn-sm">⌘K</button>
+      <button class="btn btn-primary">+ 新建研究</button>
+      <div class="w-8 h-8 rounded-full bg-[var(--brand-100)] flex items-center justify-center text-xs font-medium text-[var(--brand-700)] cursor-pointer">
+        LJ
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-8 py-12">
+
+    <!-- Hero -->
+    <section class="grain-bg rounded-[var(--radius-xl)] p-12 mb-12 animate-fade-in">
+      <div class="flex items-start justify-between gap-12">
+        <div>
+          <div class="text-xs text-muted uppercase tracking-wider mb-4 font-medium">下午好，研究员</div>
+          <h1 class="hero-title text-primary text-[42px] mb-6">
+            让每一次研究<br/>
+            <span class="italic text-[var(--brand-700)]">都可被追溯</span>
+          </h1>
+          <p class="text-base text-secondary max-w-md mb-8 leading-relaxed">
+            从问题到报告，6 阶段流水线全程透明。每一处结论、每一个数据，都绑定原始信源。
+          </p>
+          <div class="flex items-center gap-3">
+            <a href="./04-new-research.html" class="btn btn-primary btn-lg">
+              发起研究
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M3 7h8M7 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </a>
+            <a href="./03-report.html" class="btn btn-secondary btn-lg">查看示例报告</a>
+          </div>
+        </div>
+        <div class="flex-shrink-0 w-72 hidden md:block">
+          <!-- Decorative stat block -->
+          <div class="card card-lg">
+            <div class="text-xs text-muted mb-2">本月研究</div>
+            <div class="font-display text-xl text-primary mb-4">12<span class="text-base text-muted ml-1">/ 26</span></div>
+            <div class="h-1 bg-[var(--neutral-100)] rounded-full mb-4 overflow-hidden">
+              <div class="h-full bg-[var(--brand-500)] rounded-full" style="width: 46%;"></div>
+            </div>
+            <div class="text-xs text-secondary">已用 23% 标准档位配额</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Live research + Recent activity -->
+    <section class="grid grid-cols-3 gap-6 mb-12">
+
+      <!-- Live research card -->
+      <div class="col-span-2 research-card-live card card-lg relative overflow-hidden animate-slide-in-up">
+        <div class="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[var(--brand-500)] via-[var(--brand-300)] to-transparent"></div>
+        <div class="flex items-center gap-2 mb-4">
+          <span class="live-dot"></span>
+          <span class="text-xs font-medium text-[var(--success-500)] uppercase tracking-wider">进行中</span>
+          <span class="text-xs text-muted">· 阶段 4 / 6 · 材料标准化</span>
+        </div>
+        <h3 class="font-display text-md text-primary mb-2 leading-snug">
+          中国新能源汽车出海欧洲市场：政策与用户接受度深度研究
+        </h3>
+        <p class="text-sm text-secondary mb-6 line-clamp-2">
+          评估比亚迪、蔚来、奇瑞在欧洲主要市场的政策环境、关税影响、本土用户偏好与竞争格局。
+        </p>
+        <div class="flex items-center gap-6 text-xs text-muted mb-6">
+          <span>已运行 14 分 32 秒</span>
+          <span>·</span>
+          <span>子问题 5 / 7 完成</span>
+          <span>·</span>
+          <span>已采集 247 条证据</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <a href="./02-cockpit.html" class="btn btn-primary btn-sm">进入指挥舱</a>
+          <button class="btn btn-ghost btn-sm">暂停</button>
+        </div>
+      </div>
+
+      <!-- Quick stats -->
+      <div class="space-y-3 stagger">
+        <div class="card">
+          <div class="text-xs text-muted mb-1">本月报告</div>
+          <div class="font-display text-lg text-primary">8<span class="text-sm text-muted ml-1">份</span></div>
+        </div>
+        <div class="card">
+          <div class="text-xs text-muted mb-1">平均溯源覆盖率</div>
+          <div class="font-display text-lg text-primary">97.2<span class="text-sm text-muted ml-1">%</span></div>
+        </div>
+        <div class="card">
+          <div class="text-xs text-muted mb-1">节省时间</div>
+          <div class="font-display text-lg text-primary">约 41<span class="text-sm text-muted ml-1">小时</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Recent reports -->
+    <section class="mb-12">
+      <div class="flex items-center justify-between mb-6">
+        <h2 class="font-display text-md text-primary">最近的研究报告</h2>
+        <a href="#" class="text-xs text-brand-dark font-medium no-underline hover:underline">查看全部 →</a>
+      </div>
+      <div class="card overflow-hidden p-0">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-xs text-muted border-b border-[var(--neutral-200)]">
+              <th class="text-left font-medium px-6 py-3">报告标题</th>
+              <th class="text-left font-medium px-6 py-3">模板</th>
+              <th class="text-left font-medium px-6 py-3">完成时间</th>
+              <th class="text-left font-medium px-6 py-3">溯源</th>
+              <th class="text-left font-medium px-6 py-3">状态</th>
+              <th class="px-6 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="border-b border-[var(--neutral-100)] hover:bg-[var(--neutral-50)] cursor-pointer transition-colors">
+              <td class="px-6 py-4">
+                <div class="text-primary font-medium">东南亚电商市场结构与 TikTok Shop 影响评估</div>
+                <div class="text-xs text-muted mt-1">6 个子问题 · 184 条证据 · 12 分钟</div>
+              </td>
+              <td class="px-6 py-4 text-secondary">行业研究</td>
+              <td class="px-6 py-4 text-secondary">2 小时前</td>
+              <td class="px-6 py-4"><span class="badge badge-success">98%</span></td>
+              <td class="px-6 py-4"><span class="badge badge-brand">已收敛</span></td>
+              <td class="px-6 py-4 text-right text-xs text-brand-dark font-medium">查看 →</td>
+            </tr>
+            <tr class="border-b border-[var(--neutral-100)] hover:bg-[var(--neutral-50)] cursor-pointer transition-colors">
+              <td class="px-6 py-4">
+                <div class="text-primary font-medium">大语言模型推理能力评测方法综述</div>
+                <div class="text-xs text-muted mt-1">8 个子问题 · 312 条证据 · 24 分钟</div>
+              </td>
+              <td class="px-6 py-4 text-secondary">技术调研</td>
+              <td class="px-6 py-4 text-secondary">昨天</td>
+              <td class="px-6 py-4"><span class="badge badge-warning">89%</span></td>
+              <td class="px-6 py-4"><span class="badge badge-warning">3 处分歧</span></td>
+              <td class="px-6 py-4 text-right text-xs text-brand-dark font-medium">查看 →</td>
+            </tr>
+            <tr class="hover:bg-[var(--neutral-50)] cursor-pointer transition-colors">
+              <td class="px-6 py-4">
+                <div class="text-primary font-medium">2024 数据要素相关政策梳理与影响分析</div>
+                <div class="text-xs text-muted mt-1">5 个子问题 · 156 条证据 · 18 分钟</div>
+              </td>
+              <td class="px-6 py-4 text-secondary">政策解读</td>
+              <td class="px-6 py-4 text-secondary">3 天前</td>
+              <td class="px-6 py-4"><span class="badge badge-success">100%</span></td>
+              <td class="px-6 py-4"><span class="badge badge-brand">已收敛</span></td>
+              <td class="px-6 py-4 text-right text-xs text-brand-dark font-medium">查看 →</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Templates -->
+    <section>
+      <div class="flex items-center justify-between mb-6">
+        <h2 class="font-display text-md text-primary">推荐模板</h2>
+        <a href="#" class="text-xs text-brand-dark font-medium no-underline hover:underline">浏览全部 →</a>
+      </div>
+      <div class="grid grid-cols-3 gap-4 stagger">
+
+        <a href="./04-new-research.html" class="template-card card no-underline">
+          <div class="flex items-center justify-between mb-3">
+            <span class="badge badge-brand">行业研究</span>
+            <svg class="template-arrow" width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M3 7h8M7 3l4 4-4 4" stroke="var(--neutral-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <h3 class="font-display text-base text-primary mb-2">行业深度研究</h3>
+          <p class="text-xs text-secondary leading-relaxed mb-3">
+            从市场规模、竞争格局、政策环境到用户画像，输出结构化行业洞察报告。
+          </p>
+          <div class="text-xs text-muted">已使用 156 次 · 平均 18 分钟</div>
+        </a>
+
+        <a href="./04-new-research.html" class="template-card card no-underline">
+          <div class="flex items-center justify-between mb-3">
+            <span class="badge badge-brand">技术调研</span>
+            <svg class="template-arrow" width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M3 7h8M7 3l4 4-4 4" stroke="var(--neutral-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <h3 class="font-display text-base text-primary mb-2">技术方案对比</h3>
+          <p class="text-xs text-secondary leading-relaxed mb-3">
+            对比多个技术方案，附官方文档、社区讨论、性能基准与适用场景。
+          </p>
+          <div class="text-xs text-muted">已使用 89 次 · 平均 22 分钟</div>
+        </a>
+
+        <a href="./04-new-research.html" class="template-card card no-underline">
+          <div class="flex items-center justify-between mb-3">
+            <span class="badge badge-brand">竞品分析</span>
+            <svg class="template-arrow" width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M3 7h8M7 3l4 4-4 4" stroke="var(--neutral-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <h3 class="font-display text-base text-primary mb-2">竞品功能拆解</h3>
+          <p class="text-xs text-secondary leading-relaxed mb-3">
+            拆解产品功能、用户评价、市场份额变化，输出差异化建议。
+          </p>
+          <div class="text-xs text-muted">已使用 64 次 · 平均 16 分钟</div>
+        </a>
+
+      </div>
+    </section>
+
+    <!-- Knowledge base shortcut -->
+    <section class="mt-12">
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <h2 class="font-display text-md text-primary mb-1">知识库</h2>
+          <p class="text-xs text-secondary">过往报告沉淀的可复用资产，新研究可直接引用其中的数据点、结论与信源。</p>
+        </div>
+        <a href="./06-knowledge.html" class="text-xs text-brand-dark font-medium no-underline hover:underline">浏览全部 →</a>
+      </div>
+      <div class="grid grid-cols-4 gap-4 stagger">
+
+        <a href="./06-knowledge.html" class="template-card card no-underline">
+          <div class="flex items-center justify-between mb-3">
+            <span class="badge badge-success">2024-Q4</span>
+            <span class="text-xs text-muted font-mono">42 引用</span>
+          </div>
+          <h3 class="font-display text-base text-primary mb-2 leading-snug">东南亚六国电商市场规模与结构</h3>
+          <p class="text-xs text-muted">含 87 个数据点 · 12 个可信信源</p>
+        </a>
+
+        <a href="./06-knowledge.html" class="template-card card no-underline">
+          <div class="flex items-center justify-between mb-3">
+            <span class="badge badge-success">2024-Q3</span>
+            <span class="text-xs text-muted font-mono">28 引用</span>
+          </div>
+          <h3 class="font-display text-base text-primary mb-2 leading-snug">欧盟对华关税政策时间线</h3>
+          <p class="text-xs text-muted">含 56 个数据点 · 18 个可信信源</p>
+        </a>
+
+        <a href="./06-knowledge.html" class="template-card card no-underline">
+          <div class="flex items-center justify-between mb-3">
+            <span class="badge badge-success">2024-Q3</span>
+            <span class="text-xs text-muted font-mono">15 引用</span>
+          </div>
+          <h3 class="font-display text-base text-primary mb-2 leading-snug">头部 SaaS 厂商 ARR 对比</h3>
+          <p class="text-xs text-muted">含 34 个数据点 · 9 个可信信源</p>
+        </a>
+
+        <a href="./06-knowledge.html" class="template-card card no-underline border-dashed">
+          <div class="flex flex-col items-center justify-center text-center h-full py-2">
+            <div class="w-8 h-8 rounded-full bg-[var(--brand-50)] text-[var(--brand-700)] flex items-center justify-center mb-2">+</div>
+            <div class="text-xs text-secondary">从过往报告导入</div>
+          </div>
+        </a>
+
+      </div>
+    </section>
+
+  </main>
+</body>
+</html>

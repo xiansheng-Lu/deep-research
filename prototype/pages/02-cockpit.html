@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>指挥舱 · 中国新能源汽车出海欧洲研究 · AI 研究者助手</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,wght@0,400;0,500;0,600;1,400&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="../styles/tokens.css" />
+  <style>
+    /* 双列布局容器 */
+    .cockpit-grid {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: var(--space-8);
+      align-items: start;
+    }
+
+    /* ── 6 阶段垂直时间线 ── */
+    .stage-list {
+      position: relative;
+    }
+    .stage-list::before {
+      content: "";
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      bottom: 14px;
+      width: 1px;
+      background: var(--neutral-200);
+    }
+    .stage-item {
+      display: flex;
+      gap: var(--space-3);
+      padding: var(--space-3) 0;
+      position: relative;
+      cursor: pointer;
+      transition: opacity var(--motion-base) var(--ease-out);
+    }
+    .stage-item:hover {
+      opacity: 0.85;
+    }
+    .stage-dot {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-full);
+      background: var(--neutral-0);
+      border: 2px solid var(--neutral-200);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: var(--font-xs);
+      font-weight: 600;
+      color: var(--neutral-400);
+      z-index: 1;
+      transition: all var(--motion-base) var(--ease-out);
+    }
+    .stage-item.is-done .stage-dot {
+      background: var(--brand-500);
+      border-color: var(--brand-500);
+      color: white;
+    }
+    .stage-item.is-active .stage-dot {
+      background: var(--brand-50);
+      border-color: var(--brand-500);
+      color: var(--brand-700);
+      box-shadow: 0 0 0 4px rgba(61, 71, 137, 0.12);
+    }
+    .stage-item.is-active .stage-dot::after {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: var(--radius-full);
+      background: var(--brand-500);
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    .stage-item.is-active .stage-dot > span { display: none; }
+    .stage-item.is-pending .stage-dot {
+      opacity: 0.6;
+    }
+    .stage-meta {
+      flex: 1;
+      padding-top: 2px;
+    }
+    .stage-title {
+      font-size: var(--font-sm);
+      font-weight: 500;
+      color: var(--neutral-900);
+      margin-bottom: 2px;
+    }
+    .stage-sub {
+      font-size: var(--font-xs);
+      color: var(--neutral-400);
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+    .stage-item.is-done .stage-sub { color: var(--neutral-600); }
+    .stage-item.is-pending .stage-title { color: var(--neutral-400); }
+
+    /* ── 证据流卡片 ── */
+    .evidence-row {
+      display: grid;
+      grid-template-columns: 32px 1fr auto;
+      gap: var(--space-3);
+      padding: var(--space-4);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+      background: var(--neutral-0);
+      transition: all var(--motion-base) var(--ease-out);
+      cursor: pointer;
+    }
+    .evidence-row:hover {
+      border-color: var(--brand-300);
+      background: var(--neutral-50);
+    }
+    .evidence-row:hover .evidence-meta {
+      max-height: 200px;
+      opacity: 1;
+      margin-top: var(--space-3);
+    }
+    .evidence-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      background: var(--brand-50);
+      color: var(--brand-700);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: var(--font-xs);
+      font-weight: 600;
+    }
+    .evidence-icon.is-private {
+      background: #E5F2EB;
+      color: var(--success-500);
+    }
+    .evidence-icon.is-disputed {
+      background: #F7E0E0;
+      color: var(--danger-500);
+    }
+    .evidence-quote {
+      font-size: var(--font-sm);
+      color: var(--neutral-800);
+      line-height: 1.6;
+    }
+    .evidence-source {
+      font-size: var(--font-xs);
+      color: var(--neutral-600);
+      margin-top: var(--space-1);
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+    .evidence-meta {
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      transition: all var(--motion-slow) var(--ease-out);
+      border-top: 1px dashed var(--neutral-200);
+      padding-top: var(--space-2);
+      font-size: var(--font-xs);
+      color: var(--neutral-600);
+    }
+
+    /* ── 子问题列表 ── */
+    .subq-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      padding: var(--space-2) var(--space-3);
+      border-radius: var(--radius-sm);
+      font-size: var(--font-sm);
+      transition: background var(--motion-fast) var(--ease-out);
+      cursor: pointer;
+    }
+    .subq-row:hover {
+      background: var(--neutral-50);
+    }
+    .subq-status {
+      width: 16px;
+      height: 16px;
+      border-radius: var(--radius-full);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      color: white;
+    }
+    .subq-status.is-done {
+      background: var(--success-500);
+    }
+    .subq-status.is-active {
+      background: var(--brand-500);
+      position: relative;
+    }
+    .subq-status.is-active::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: var(--radius-full);
+      background: white;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    .subq-status.is-pending {
+      background: var(--neutral-200);
+    }
+
+    /* ── 成本进度卡片（固定右下） ── */
+    .cost-card {
+      position: fixed;
+      right: var(--space-6);
+      bottom: var(--space-6);
+      width: 280px;
+      background: var(--neutral-0);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-dropdown);
+      padding: var(--space-4);
+      z-index: 40;
+      animation: slideInUp 400ms var(--ease-out) both;
+    }
+    .cost-progress {
+      height: 6px;
+      background: var(--neutral-100);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+      margin: var(--space-2) 0;
+    }
+    .cost-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--brand-500), var(--brand-700));
+      border-radius: var(--radius-full);
+      transition: width var(--motion-slow) var(--ease-out);
+    }
+
+    /* ── 进度条（研究总进度） ── */
+    .progress-track {
+      height: 4px;
+      background: var(--neutral-100);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--brand-500), var(--brand-300));
+      border-radius: var(--radius-full);
+      animation: progressFill 1200ms var(--ease-out) both;
+    }
+
+    /* ── 阶段详情头部 ── */
+    .stage-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: var(--space-6);
+    }
+
+    /* ── 实时刷新感 ── */
+    .live-pulse {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-1) var(--space-2);
+      background: rgba(47, 158, 107, 0.08);
+      color: var(--success-500);
+      border-radius: var(--radius-sm);
+      font-size: var(--font-xs);
+      font-weight: 500;
+    }
+    .live-pulse .live-dot {
+      width: 6px;
+      height: 6px;
+      box-shadow: 0 0 0 3px rgba(47, 158, 107, 0.15);
+    }
+
+    /* ── Section title ── */
+    .section-title {
+      font-family: 'Newsreader', serif;
+      font-size: var(--font-md);
+      color: var(--neutral-900);
+      margin-bottom: var(--space-4);
+      font-weight: 500;
+    }
+
+    /* ── 元信息条 ── */
+    .meta-strip {
+      display: flex;
+      align-items: center;
+      gap: var(--space-4);
+      font-size: var(--font-xs);
+      color: var(--neutral-600);
+      padding-bottom: var(--space-4);
+      border-bottom: 1px solid var(--neutral-200);
+      margin-bottom: var(--space-6);
+    }
+    .meta-strip > span {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+    }
+  </style>
+</head>
+<body>
+  <!-- Top bar -->
+  <header class="topbar">
+    <a href="../index.html" class="topbar-logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <rect x="2" y="2" width="16" height="16" rx="3" fill="var(--brand-500)"/>
+        <path d="M6 7h8M6 10h6M6 13h7" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+      AI 研究者助手
+    </a>
+    <nav class="topbar-nav">
+      <a href="./01-home.html" class="topbar-link">首页</a>
+      <a href="#" class="topbar-link active">项目</a>
+      <a href="#" class="topbar-link">模板</a>
+      <a href="#" class="topbar-link">知识库</a>
+    </nav>
+    <div class="topbar-actions">
+      <button class="btn btn-ghost btn-sm">⌘K</button>
+      <button class="btn btn-ghost btn-sm">分享</button>
+      <div class="w-8 h-8 rounded-full bg-[var(--brand-100)] flex items-center justify-center text-xs font-medium text-[var(--brand-700)] cursor-pointer">
+        LJ
+      </div>
+    </div>
+  </header>
+
+  <!-- Breadcrumb + research title -->
+  <div class="bg-[var(--neutral-0)] border-b border-[var(--neutral-200)]">
+    <div class="max-w-7xl mx-auto px-8 py-5">
+      <div class="flex items-center gap-2 text-xs text-muted mb-2">
+        <a href="./01-home.html" class="text-secondary no-underline hover:underline">项目</a>
+        <span>/</span>
+        <span>进行中</span>
+      </div>
+      <div class="flex items-start justify-between gap-6">
+        <div class="flex-1">
+          <h1 class="font-display text-xl text-primary leading-tight mb-2">
+            中国新能源汽车出海欧洲市场：政策与用户接受度深度研究
+          </h1>
+          <div class="meta-strip border-b-0 pb-0 mb-0">
+            <span>📁 行业研究</span>
+            <span>·</span>
+            <span>🚀 深度档位</span>
+            <span>·</span>
+            <span>👤 立项人：李静</span>
+            <span>·</span>
+            <span>🕐 启动于 14 分 32 秒前</span>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <button class="btn btn-ghost btn-sm">导出中间产物</button>
+          <button class="btn btn-secondary btn-sm">暂停</button>
+        </div>
+      </div>
+      <!-- Overall progress -->
+      <div class="mt-5">
+        <div class="flex items-center justify-between text-xs mb-2">
+          <span class="text-secondary">总体进度 · 阶段 4 / 6</span>
+          <span class="text-brand-dark font-medium">67%</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-bar" style="--target-width: 67%; width: 67%;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main cockpit grid -->
+  <main class="max-w-7xl mx-auto px-8 py-8">
+    <div class="cockpit-grid">
+
+      <!-- Left column: 6-stage timeline + sub-questions -->
+      <aside class="space-y-6 animate-fade-in">
+
+        <!-- 6-stage timeline -->
+        <div class="card card-lg">
+          <h2 class="section-title">研究流水线</h2>
+          <div class="stage-list">
+
+            <div class="stage-item is-done">
+              <div class="stage-dot"><span>1</span></div>
+              <div class="stage-meta">
+                <div class="stage-title">问题澄清</div>
+                <div class="stage-sub">已完成 · 用时 42 秒</div>
+              </div>
+            </div>
+
+            <div class="stage-item is-done">
+              <div class="stage-dot"><span>2</span></div>
+              <div class="stage-meta">
+                <div class="stage-title">子问题分解</div>
+                <div class="stage-sub">已完成 · 7 个子问题</div>
+              </div>
+            </div>
+
+            <div class="stage-item is-done">
+              <div class="stage-dot"><span>3</span></div>
+              <div class="stage-meta">
+                <div class="stage-title">并行检索</div>
+                <div class="stage-sub">已完成 · 247 条证据</div>
+              </div>
+            </div>
+
+            <div class="stage-item is-active">
+              <div class="stage-dot"><span>4</span></div>
+              <div class="stage-meta">
+                <div class="stage-title">材料标准化</div>
+                <div class="stage-sub">
+                  <span class="live-pulse">
+                    <span class="live-dot"></span>
+                    进行中
+                  </span>
+                  <span>· 89 / 132</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="stage-item is-pending">
+              <div class="stage-dot"><span>5</span></div>
+              <div class="stage-meta">
+                <div class="stage-title">批判收敛</div>
+                <div class="stage-sub">等待 · 已识别 4 处分歧</div>
+              </div>
+            </div>
+
+            <div class="stage-item is-pending">
+              <div class="stage-dot"><span>6</span></div>
+              <div class="stage-meta">
+                <div class="stage-title">报告生成</div>
+                <div class="stage-sub">等待</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Sub-questions list -->
+        <div class="card card-lg">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="section-title mb-0">子问题清单</h2>
+            <span class="text-xs text-muted">5 / 7</span>
+          </div>
+          <div class="space-y-1">
+
+            <div class="subq-row">
+              <div class="subq-status is-done">✓</div>
+              <div class="flex-1 text-primary">欧盟对华关税政策最新进展</div>
+              <span class="text-xs text-muted">42</span>
+            </div>
+
+            <div class="subq-row">
+              <div class="subq-status is-done">✓</div>
+              <div class="flex-1 text-primary">欧盟 2035 燃油车禁售影响</div>
+              <span class="text-xs text-muted">38</span>
+            </div>
+
+            <div class="subq-row">
+              <div class="subq-status is-done">✓</div>
+              <div class="flex-1 text-primary">比亚迪欧洲市场份额 2024</div>
+              <span class="text-xs text-muted">29</span>
+            </div>
+
+            <div class="subq-row">
+              <div class="subq-status is-done">✓</div>
+              <div class="flex-1 text-primary">欧洲充电基础设施现状</div>
+              <span class="text-xs text-muted">56</span>
+            </div>
+
+            <div class="subq-row">
+              <div class="subq-status is-active"></div>
+              <div class="flex-1 text-primary font-medium">欧洲用户对中国品牌接受度调研</div>
+              <span class="text-xs text-brand-dark font-medium">82</span>
+            </div>
+
+            <div class="subq-row">
+              <div class="subq-status is-pending"></div>
+              <div class="flex-1 text-muted">蔚来、奇瑞欧洲渠道策略</div>
+              <span class="text-xs text-muted">—</span>
+            </div>
+
+            <div class="subq-row">
+              <div class="subq-status is-pending"></div>
+              <div class="flex-1 text-muted">关税成本对终端价格的影响测算</div>
+              <span class="text-xs text-muted">—</span>
+            </div>
+
+          </div>
+        </div>
+
+      </aside>
+
+      <!-- Right column: stage detail + evidence stream -->
+      <section class="space-y-6 animate-fade-in">
+
+        <!-- Stage 4 detail header -->
+        <div class="card card-lg">
+          <div class="stage-header">
+            <div>
+              <div class="text-xs text-brand-dark font-medium mb-1">阶段 4 / 6</div>
+              <h2 class="font-display text-lg text-primary leading-snug mb-2">
+                材料标准化 · <span class="italic">建立可被引用的证据骨架</span>
+              </h2>
+              <div class="text-sm text-secondary leading-relaxed">
+                由 Standardizer 智能体执行：抽取数据点、绑定信源片段、判定来源等级、建立溯源链。已完成 89/132 条证据的处理，识别 4 处需人工复核的内容。
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="btn btn-ghost btn-sm">查看处理规则</button>
+              <button class="btn btn-secondary btn-sm">手动干预</button>
+            </div>
+          </div>
+
+          <!-- Sub-task progress -->
+          <div class="grid grid-cols-4 gap-3 mt-2 stagger">
+            <div class="p-3 bg-[var(--neutral-50)] rounded-[var(--radius-sm)]">
+              <div class="text-xs text-muted mb-1">已抽取数据点</div>
+              <div class="font-display text-md text-primary">412</div>
+            </div>
+            <div class="p-3 bg-[var(--neutral-50)] rounded-[var(--radius-sm)]">
+              <div class="text-xs text-muted mb-1">绑定信源片段</div>
+              <div class="font-display text-md text-primary">89 <span class="text-xs text-muted">/ 132</span></div>
+            </div>
+            <div class="p-3 bg-[var(--neutral-50)] rounded-[var(--radius-sm)]">
+              <div class="text-xs text-muted mb-1">待人工复核</div>
+              <div class="font-display text-md text-[var(--warning-500)]">4</div>
+            </div>
+            <div class="p-3 bg-[var(--neutral-50)] rounded-[var(--radius-sm)]">
+              <div class="text-xs text-muted mb-1">跨源一致率</div>
+              <div class="font-display text-md text-[var(--success-500)]">94%</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Evidence stream -->
+        <div>
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="section-title mb-0">实时证据流</h2>
+            <div class="flex items-center gap-3 text-xs">
+              <span class="live-pulse">
+                <span class="live-dot"></span>
+                实时刷新
+              </span>
+              <button class="btn btn-ghost btn-sm">⚙ 筛选</button>
+            </div>
+          </div>
+
+          <div class="space-y-3 stagger">
+
+            <!-- Evidence 1 -->
+            <div class="evidence-row">
+              <div class="evidence-icon">EU</div>
+              <div>
+                <div class="evidence-quote">
+                  "欧盟委员会于 2024 年 10 月正式通过对中国电动汽车加征反补贴税的最终决定，对比亚迪加征 <strong>17.0%</strong>、吉利 <strong>18.8%</strong>、上汽集团 <strong>35.3%</strong>。"
+                </div>
+                <div class="evidence-source">
+                  <span>📄 欧盟委员会公报</span>
+                  <span>·</span>
+                  <span class="badge badge-brand">官方信源</span>
+                  <span>·</span>
+                  <span>可信度 98%</span>
+                </div>
+                <div class="evidence-meta">
+                  📍 段落定位：第 3 段 · 已绑定数据点 #DP-027 · 与子问题 1 直接相关
+                </div>
+              </div>
+              <div class="text-xs text-muted">刚刚</div>
+            </div>
+
+            <!-- Evidence 2 -->
+            <div class="evidence-row">
+              <div class="evidence-icon is-private">内</div>
+              <div>
+                <div class="evidence-quote">
+                  "比亚迪 2024 年欧洲交付量达 <strong>152,000</strong> 辆，同比增长 56%，市占率从 1.2% 提升至 <strong>1.9%</strong>。"
+                </div>
+                <div class="evidence-source">
+                  <span>📁 内部销售数据库</span>
+                  <span>·</span>
+                  <span class="badge badge-success">私有域</span>
+                  <span>·</span>
+                  <span>2024-12-31</span>
+                </div>
+                <div class="evidence-meta">
+                  🔐 已脱敏 · 字段 owner: sales-team · 关联授权：项目级可访问
+                </div>
+              </div>
+              <div class="text-xs text-muted">12 秒前</div>
+            </div>
+
+            <!-- Evidence 3 -->
+            <div class="evidence-row">
+              <div class="evidence-icon is-disputed">⚠</div>
+              <div>
+                <div class="evidence-quote">
+                  "2024 年欧洲用户对中国电动车的品牌接受度为 <strong>42%</strong>，较 2023 年下降 8 个百分点。"
+                </div>
+                <div class="evidence-source">
+                  <span>📊 Statista 调研报告</span>
+                  <span>·</span>
+                  <span class="badge badge-warning">2 处分歧</span>
+                  <span>·</span>
+                  <span>待人工复核</span>
+                </div>
+                <div class="evidence-meta">
+                  ⚠ 与 EU 消费者协会 2024-Q3 报告存在分歧（后者数据为 51%）。Standardizer 已标记，建议进入批判收敛阶段再次评估。
+                </div>
+              </div>
+              <div class="text-xs text-muted">1 分前</div>
+            </div>
+
+            <!-- Evidence 4 -->
+            <div class="evidence-row">
+              <div class="evidence-icon">路</div>
+              <div>
+                <div class="evidence-quote">
+                  "挪威 2024 年电动车销量占比已达 <strong>88.2%</strong>，其中中国品牌份额从 5% 上升至 <strong>14%</strong>。挪威为中国车企进入欧洲市场的重要窗口。"
+                </div>
+                <div class="evidence-source">
+                  <span>📰 路透社 2024-12-15</span>
+                  <span>·</span>
+                  <span class="badge badge-neutral">二级信源</span>
+                  <span>·</span>
+                  <span>可信度 84%</span>
+                </div>
+                <div class="evidence-meta">
+                  🔗 已被 2 个其他信源相互佐证 · 引用次数 3
+                </div>
+              </div>
+              <div class="text-xs text-muted">2 分前</div>
+            </div>
+
+            <!-- Evidence 5 -->
+            <div class="evidence-row">
+              <div class="evidence-icon">学</div>
+              <div>
+                <div class="evidence-quote">
+                  "Schmidt et al. (2024) 在《Nature Energy》发表的研究表明，欧洲消费者对中国电动车的最大顾虑集中在 <strong>数据隐私</strong>（63%）与 <strong>售后保障</strong>（58%），而非价格。"
+                </div>
+                <div class="evidence-source">
+                  <span>📚 Nature Energy 2024; 9: 1124-1133</span>
+                  <span>·</span>
+                  <span class="badge badge-brand">学术信源</span>
+                  <span>·</span>
+                  <span>DOI: 10.1038/s41560-024-01567-x</span>
+                </div>
+                <div class="evidence-meta">
+                  🎓 影响因子 32.4 · 已纳入批判收敛候选信源
+                </div>
+              </div>
+              <div class="text-xs text-muted">3 分前</div>
+            </div>
+
+          </div>
+        </div>
+
+      </section>
+
+    </div>
+  </main>
+
+  <!-- Fixed cost card (bottom right) -->
+  <aside class="cost-card">
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-xs text-muted uppercase tracking-wider font-medium">本次研究成本</span>
+      <span class="text-xs text-brand-dark font-mono">深度档位</span>
+    </div>
+    <div class="flex items-baseline gap-1 mb-1">
+      <span class="font-display text-lg text-primary">¥</span>
+      <span class="font-display text-xl text-primary">14.62</span>
+      <span class="text-xs text-muted ml-1">/ ¥ 30.00</span>
+    </div>
+    <div class="cost-progress">
+      <div class="cost-bar" style="width: 48%;"></div>
+    </div>
+    <div class="flex items-center justify-between text-xs text-muted">
+      <span>已消耗 48.7%</span>
+      <span>预计剩余 ¥ 9.30</span>
+    </div>
+    <div class="divider" style="margin: 12px 0;"></div>
+    <div class="grid grid-cols-3 gap-2 text-xs">
+      <div>
+        <div class="text-muted mb-0.5">Tokens</div>
+        <div class="font-mono text-secondary">2.3M</div>
+      </div>
+      <div>
+        <div class="text-muted mb-0.5">检索</div>
+        <div class="font-mono text-secondary">247</div>
+      </div>
+      <div>
+        <div class="text-muted mb-0.5">Agent 调用</div>
+        <div class="font-mono text-secondary">38</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Drawer overlay -->
+  <div class="drawer-overlay" style="position: fixed; inset: 0; background: rgba(15, 17, 23, 0.32); z-index: 60; animation: fadeInSubtle 300ms var(--ease-out) both;"></div>
+
+  <!-- User intervention drawer -->
+  <aside style="position: fixed; top: 0; right: 0; bottom: 0; width: 520px; max-width: 100vw; background: var(--neutral-0); border-left: 1px solid var(--neutral-200); box-shadow: var(--shadow-drawer); z-index: 70; display: flex; flex-direction: column; animation: slideInRight 350ms var(--ease-out) both;">
+
+    <!-- Drawer header -->
+    <div style="padding: var(--space-6); border-bottom: 1px solid var(--neutral-200); display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3);">
+      <div>
+        <div class="text-xs text-brand-dark font-medium uppercase tracking-wider mb-1">用户介入 · 模式 4</div>
+        <h2 class="font-display text-lg text-primary leading-snug">需要你做一次判断</h2>
+        <p class="text-xs text-secondary mt-2 leading-relaxed">研究已自动暂停。研究流水线在当前步骤遇到不确定判断，需要由你裁决后继续推进。</p>
+      </div>
+      <button class="btn btn-ghost btn-sm" style="margin-left: var(--space-2);">✕</button>
+    </div>
+
+    <!-- Drawer body -->
+    <div style="flex: 1; overflow-y: auto; padding: var(--space-6);">
+
+      <!-- Current step context -->
+      <div class="card" style="background: var(--neutral-50); margin-bottom: var(--space-6); padding: var(--space-4);">
+        <div class="text-xs text-muted uppercase tracking-wider font-medium mb-2">当前阶段</div>
+        <div class="text-sm text-primary font-medium mb-2">材料标准化 · 子问题 5 处理中</div>
+        <div class="text-xs text-secondary leading-relaxed">
+          Standardizer 识别到一条证据与原始信源片段存在 18% 数值差异，且无法通过规则自动调和。建议进入批判收敛前由你预先裁定。
+        </div>
+      </div>
+
+      <!-- Evidence comparison -->
+      <div class="mb-6">
+        <div class="text-xs text-muted uppercase tracking-wider font-medium mb-3">争议证据</div>
+
+        <div style="border: 1px solid var(--neutral-200); border-radius: var(--radius-md); padding: var(--space-4); margin-bottom: var(--space-3); border-left: 3px solid var(--info-500);">
+          <div class="flex items-center justify-between mb-2">
+            <span class="badge badge-brand">来源 A · 采纳</span>
+            <span class="text-xs text-muted font-mono">可信度 84%</span>
+          </div>
+          <div class="text-sm text-primary font-display italic leading-relaxed">
+            "2024 年欧洲用户对中国电动车的品牌接受度为 <strong style="font-style: normal;">42%</strong>，较 2023 年下降 8 个百分点。"
+          </div>
+          <div class="text-xs text-secondary mt-2">[数据来源] Statista 2024 · 调研样本 n=2,400</div>
+        </div>
+
+        <div style="text-align: center; color: var(--neutral-400); margin: var(--space-2) 0;">⇅</div>
+
+        <div style="border: 1px solid var(--neutral-200); border-radius: var(--radius-md); padding: var(--space-4); border-left: 3px solid var(--warning-500);">
+          <div class="flex items-center justify-between mb-2">
+            <span class="badge badge-warning">来源 B · 待裁决</span>
+            <span class="text-xs text-muted font-mono">可信度 91%</span>
+          </div>
+          <div class="text-sm text-primary font-display italic leading-relaxed">
+            "中国品牌在欧洲消费者偏好排名中位列第三，接受度为 <strong style="font-style: normal;">51%</strong>。"
+          </div>
+          <div class="text-xs text-secondary mt-2">[数据来源] EU 消费者协会 2024-Q3 报告 · 样本 n=8,500</div>
+        </div>
+      </div>
+
+      <!-- Intervention choice -->
+      <div class="mb-6">
+        <div class="text-xs text-muted uppercase tracking-wider font-medium mb-3">请选择如何处理</div>
+        <div class="space-y-2">
+
+          <label style="display: flex; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1.5px solid var(--brand-500); background: var(--brand-50); border-radius: var(--radius-md); cursor: pointer; position: relative;">
+            <input type="radio" name="intervene" checked style="margin-top: 3px;">
+            <div>
+              <div class="text-sm font-medium text-primary mb-1">以 B 为准（样本更大）</div>
+              <div class="text-xs text-secondary leading-relaxed">采纳 51%，并在报告中显式说明 Statista 与 EU 协会的口径差异。</div>
+            </div>
+          </label>
+
+          <label style="display: flex; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--neutral-200); border-radius: var(--radius-md); cursor: pointer; transition: all 200ms;">
+            <input type="radio" name="intervene" style="margin-top: 3px;">
+            <div>
+              <div class="text-sm font-medium text-primary mb-1">以 A 为准（更新更近）</div>
+              <div class="text-xs text-secondary leading-relaxed">采纳 42%，标注 EU 协会数据为更早期口径。</div>
+            </div>
+          </label>
+
+          <label style="display: flex; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--neutral-200); border-radius: var(--radius-md); cursor: pointer;">
+            <input type="radio" name="intervene" style="margin-top: 3px;">
+            <div>
+              <div class="text-sm font-medium text-primary mb-1">同时呈现，标为分歧</div>
+              <div class="text-xs text-secondary leading-relaxed">两个数据点都纳入报告，在执行摘要中以"分歧"形式呈现，等待批判收敛阶段再处理。</div>
+            </div>
+          </label>
+
+          <label style="display: flex; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px dashed var(--neutral-200); border-radius: var(--radius-md); cursor: pointer;">
+            <input type="radio" name="intervene" style="margin-top: 3px;">
+            <div>
+              <div class="text-sm font-medium text-primary mb-1">追加检索 · 引入第三个信源</div>
+              <div class="text-xs text-secondary leading-relaxed">由 Researcher 智能体再追加一次检索后再裁决。预计额外消耗 ¥ 1.20 / 4 分钟。</div>
+            </div>
+          </label>
+
+        </div>
+      </div>
+
+      <!-- Optional note -->
+      <div class="mb-6">
+        <div class="text-xs text-muted uppercase tracking-wider font-medium mb-2">附加说明（可选）</div>
+        <textarea class="input" rows="3" placeholder="例如：优先采纳口径 B，因目标客户群更匹配..."></textarea>
+      </div>
+
+    </div>
+
+    <!-- Drawer footer -->
+    <div style="padding: var(--space-4) var(--space-6); border-top: 1px solid var(--neutral-200); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); background: var(--neutral-50);">
+      <button class="btn btn-ghost">取消</button>
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-muted">裁决将记录到研究审计日志</span>
+        <button class="btn btn-primary">应用并继续</button>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- Intervention badge in stage header (overlay notification) -->
+  <div style="position: fixed; top: 80px; right: 540px; background: var(--brand-500); color: white; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); box-shadow: var(--shadow-dropdown); font-size: var(--font-xs); font-weight: 500; display: flex; align-items: center; gap: var(--space-2); z-index: 65; animation: slideInRight 400ms var(--ease-out) 200ms both;">
+    <span style="width: 6px; height: 6px; border-radius: 50%; background: white; animation: pulse 1.4s ease-in-out infinite;"></span>
+    研究已暂停 · 等待你的裁决
+  </div>
+</body>
+</html>

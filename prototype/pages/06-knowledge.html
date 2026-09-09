@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>知识库 · AI 研究者助手</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,wght@0,400;0,500;0,600;1,400&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="../styles/tokens.css" />
+  <style>
+    /* 双列布局：分类树 + 知识库卡片 */
+    .kb-grid {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      gap: var(--space-8);
+      align-items: start;
+    }
+
+    /* ── 分类树 ── */
+    .tree-group {
+      margin-bottom: var(--space-5);
+    }
+    .tree-group-title {
+      font-size: var(--font-xs);
+      font-weight: 600;
+      color: var(--neutral-400);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: var(--space-2);
+      padding-left: var(--space-2);
+    }
+    .tree-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space-2) var(--space-3);
+      font-size: var(--font-sm);
+      color: var(--neutral-800);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all var(--motion-fast) var(--ease-out);
+    }
+    .tree-item:hover {
+      background: var(--neutral-100);
+    }
+    .tree-item.is-active {
+      background: var(--brand-50);
+      color: var(--brand-700);
+      font-weight: 500;
+    }
+    .tree-count {
+      font-size: var(--font-xs);
+      color: var(--neutral-400);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .tree-item.is-active .tree-count {
+      color: var(--brand-500);
+    }
+
+    /* ── 标签云 ── */
+    .tag-cloud {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-1);
+    }
+    .tag-chip {
+      padding: 2px var(--space-2);
+      font-size: var(--font-xs);
+      background: var(--neutral-100);
+      color: var(--neutral-600);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all var(--motion-fast) var(--ease-out);
+    }
+    .tag-chip:hover {
+      background: var(--brand-50);
+      color: var(--brand-700);
+    }
+
+    /* ── 工具栏 ── */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      margin-bottom: var(--space-6);
+    }
+    .toolbar .search-input {
+      flex: 1;
+      max-width: 480px;
+    }
+    .toolbar .divider-v {
+      width: 1px;
+      height: 24px;
+      background: var(--neutral-200);
+    }
+
+    /* ── 知识库卡片 ── */
+    .kb-card {
+      padding: var(--space-5);
+      background: var(--neutral-0);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+      transition: all var(--motion-base) var(--ease-out);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-3);
+      position: relative;
+    }
+    .kb-card:hover {
+      border-color: var(--neutral-400);
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-popover);
+    }
+    .kb-card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: var(--space-3);
+    }
+    .kb-card-title {
+      font-family: 'Newsreader', serif;
+      font-size: 18px;
+      font-weight: 600;
+      line-height: 1.35;
+      color: var(--neutral-900);
+      letter-spacing: -0.01em;
+    }
+    .kb-card-summary {
+      font-size: var(--font-sm);
+      color: var(--neutral-600);
+      line-height: 1.55;
+    }
+    .kb-meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--space-3);
+      font-size: var(--font-xs);
+      color: var(--neutral-600);
+      padding-top: var(--space-3);
+      border-top: 1px solid var(--neutral-100);
+    }
+    .kb-meta-item {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+    }
+    .kb-meta-num {
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--neutral-900);
+      font-weight: 500;
+      font-feature-settings: 'tnum' 1;
+    }
+
+    /* ── 分类标签 ── */
+    .kb-class-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      padding: 2px var(--space-2);
+      border-radius: var(--radius-sm);
+      font-size: var(--font-xs);
+      font-weight: 500;
+      flex-shrink: 0;
+    }
+    .class-private { background: #E5F2EB; color: var(--success-500); }
+    .class-cache   { background: var(--brand-50); color: var(--brand-700); }
+    .class-report  { background: #F8ECD9; color: var(--warning-500); }
+    .class-failed  { background: #F7E0E0; color: var(--danger-500); }
+
+    /* ── 操作菜单 ── */
+    .kb-actions {
+      display: flex;
+      gap: var(--space-1);
+      margin-top: var(--space-2);
+    }
+
+    /* ── 顶部指标条 ── */
+    .kb-stats {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: var(--space-4);
+    }
+    .kb-stat {
+      padding: var(--space-4) var(--space-5);
+      background: var(--neutral-0);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+    }
+    .kb-stat-num {
+      font-family: 'Newsreader', serif;
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1;
+      color: var(--neutral-900);
+    }
+    .kb-stat-label {
+      font-size: var(--font-xs);
+      color: var(--neutral-600);
+      margin-top: var(--space-2);
+    }
+
+    /* ── 状态点 ── */
+    .status-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: var(--radius-full);
+      margin-right: var(--space-1);
+    }
+    .dot-private { background: var(--success-500); }
+    .dot-cache   { background: var(--brand-500); }
+    .dot-report  { background: var(--warning-500); }
+    .dot-failed  { background: var(--danger-500); }
+  </style>
+</head>
+<body>
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="topbar-logo">
+      <span style="width:24px;height:24px;background:var(--brand-500);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;color:white;font-family:'Newsreader',serif;font-weight:700;font-size:14px;">A</span>
+      AI 研究者助手
+    </div>
+    <nav class="topbar-nav">
+      <a class="topbar-link" href="01-home.html">首页</a>
+      <a class="topbar-link" href="02-cockpit.html">研究指挥舱</a>
+      <a class="topbar-link" href="03-report.html">报告</a>
+      <a class="topbar-link" href="05-disputes.html">分歧处理</a>
+      <a class="topbar-link active" href="06-knowledge.html">知识库</a>
+    </nav>
+    <div class="topbar-actions">
+      <button class="btn btn-ghost btn-sm">Cmd+K</button>
+      <button class="btn btn-secondary btn-sm">批量导入</button>
+      <button class="btn btn-primary btn-sm">+ 新建知识库</button>
+    </div>
+  </header>
+
+  <main style="max-width:1320px;margin:0 auto;padding:var(--space-8) var(--space-8) var(--space-16);">
+
+    <!-- 标题区 -->
+    <div class="flex items-start justify-between mb-2">
+      <div>
+        <h1 class="font-display text-xl text-primary mb-1">研究知识库</h1>
+        <p class="text-sm text-secondary">沉淀历次研究的数据点、信源链、报告片段与失败实验,形成可复用、可追溯、可演化的企业研究资产。</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="badge badge-neutral">仅你可见</span>
+        <button class="btn btn-ghost btn-sm">查看团队库</button>
+      </div>
+    </div>
+
+    <!-- 顶部指标 -->
+    <section class="kb-stats mt-6 mb-8 stagger">
+      <div class="kb-stat">
+        <div class="kb-stat-num">238</div>
+        <div class="kb-stat-label">知识库条目</div>
+      </div>
+      <div class="kb-stat">
+        <div class="kb-stat-num">1,847</div>
+        <div class="kb-stat-label">数据点</div>
+      </div>
+      <div class="kb-stat">
+        <div class="kb-stat-num">9,612</div>
+        <div class="kb-stat-label">累计引用次数</div>
+      </div>
+      <div class="kb-stat">
+        <div class="kb-stat-num text-brand">3,402</div>
+        <div class="kb-stat-label">沉淀信源</div>
+      </div>
+      <div class="kb-stat">
+        <div class="kb-stat-num">2 小时前</div>
+        <div class="kb-stat-label">最近更新</div>
+      </div>
+    </section>
+
+    <!-- 主体双列 -->
+    <section class="kb-grid">
+
+      <!-- 左栏：分类树 -->
+      <aside>
+        <div class="tree-group">
+          <div class="tree-group-title">分类</div>
+          <div class="tree-item is-active">
+            <span><span class="status-dot dot-private"></span>全部条目</span>
+            <span class="tree-count">238</span>
+          </div>
+          <div class="tree-item">
+            <span><span class="status-dot dot-private"></span>私域文档</span>
+            <span class="tree-count">42</span>
+          </div>
+          <div class="tree-item">
+            <span><span class="status-dot dot-cache"></span>检索缓存</span>
+            <span class="tree-count">128</span>
+          </div>
+          <div class="tree-item">
+            <span><span class="status-dot dot-report"></span>沉淀报告</span>
+            <span class="tree-count">58</span>
+          </div>
+          <div class="tree-item">
+            <span><span class="status-dot dot-failed"></span>失败实验</span>
+            <span class="tree-count">10</span>
+          </div>
+        </div>
+
+        <div class="tree-group">
+          <div class="tree-group-title">按研究主题</div>
+          <div class="tree-item">
+            <span>东南亚电商市场</span>
+            <span class="tree-count">47</span>
+          </div>
+          <div class="tree-item">
+            <span>欧盟关税与出海</span>
+            <span class="tree-count">63</span>
+          </div>
+          <div class="tree-item">
+            <span>SaaS 行业研究</span>
+            <span class="tree-count">38</span>
+          </div>
+          <div class="tree-item">
+            <span>半导体供应链</span>
+            <span class="tree-count">29</span>
+          </div>
+          <div class="tree-item">
+            <span>生物医药管线</span>
+            <span class="tree-count">18</span>
+          </div>
+          <div class="tree-item">
+            <span>其他</span>
+            <span class="tree-count">43</span>
+          </div>
+        </div>
+
+        <div class="tree-group">
+          <div class="tree-group-title">常用标签</div>
+          <div class="tag-cloud">
+            <span class="tag-chip">东南亚</span>
+            <span class="tag-chip">欧盟</span>
+            <span class="tag-chip">出海</span>
+            <span class="tag-chip">新能源</span>
+            <span class="tag-chip">关税</span>
+            <span class="tag-chip">SaaS</span>
+            <span class="tag-chip">半导体</span>
+            <span class="tag-chip">2024</span>
+            <span class="tag-chip">2025Q1</span>
+            <span class="tag-chip">+ 更多</span>
+          </div>
+        </div>
+
+        <div class="tree-group" style="margin-top:var(--space-8);padding-top:var(--space-5);border-top:1px solid var(--neutral-200);">
+          <div class="text-xs text-muted" style="line-height:1.65;">
+            知识库自动同步已启用的私域连接器<br/>(CRM、Notion、Confluence) · 每 6 小时增量更新
+          </div>
+        </div>
+      </aside>
+
+      <!-- 右栏：主内容 -->
+      <section>
+        <!-- 工具栏 -->
+        <div class="toolbar">
+          <input class="input search-input" placeholder="搜索知识库:标题、数据点、信源域名、报告片段……" />
+          <div class="divider-v"></div>
+          <select class="input" style="width:auto;min-width:120px;">
+            <option>最近使用</option>
+            <option>引用次数</option>
+            <option>数据点数量</option>
+            <option>创建时间</option>
+          </select>
+          <div class="divider-v"></div>
+          <div class="flex items-center gap-1">
+            <button class="btn btn-secondary btn-sm">网格</button>
+            <button class="btn btn-ghost btn-sm">列表</button>
+            <button class="btn btn-ghost btn-sm">时间线</button>
+          </div>
+          <div class="ml-auto text-xs text-muted">显示 1-12 / 共 238</div>
+        </div>
+
+        <!-- 快捷筛选 -->
+        <div class="flex flex-wrap items-center gap-2 mb-6">
+          <span class="text-xs text-muted">快捷筛选:</span>
+          <span class="badge badge-brand" style="cursor:pointer;">近 7 天更新</span>
+          <span class="badge badge-neutral" style="cursor:pointer;">含未公开数据</span>
+          <span class="badge badge-neutral" style="cursor:pointer;">可复用为模板</span>
+          <span class="badge badge-neutral" style="cursor:pointer;">仅我可见</span>
+          <span class="badge badge-neutral" style="cursor:pointer;">高引用</span>
+        </div>
+
+        <!-- 知识库卡片网格 -->
+        <div class="grid stagger" style="grid-template-columns:repeat(2,1fr);gap:var(--space-5);">
+
+          <!-- 卡片 1:东南亚电商 -->
+          <div class="kb-card">
+            <div class="kb-card-header">
+              <div class="flex-1">
+                <div class="kb-card-title">东南亚电商市场结构与 TikTok Shop 影响评估</div>
+              </div>
+              <span class="kb-class-tag class-private">
+                <span class="status-dot dot-private"></span>私域文档
+              </span>
+            </div>
+            <div class="kb-card-summary">覆盖印尼、泰国、菲律宾、马来西亚、越南 5 国市场结构,含 8 个细分品类的 GMV、渗透率、增速数据。沉淀自 2025-Q1 季度研究项目。</div>
+            <div class="kb-meta">
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">96</span>数据点
+              </span>
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">42</span>信源
+              </span>
+              <span class="kb-meta-item">
+                被引用 <span class="kb-meta-num">17</span>次
+              </span>
+              <span class="kb-meta-item" style="margin-left:auto;">
+                5 天前更新
+              </span>
+            </div>
+            <div class="kb-actions">
+              <button class="btn btn-secondary btn-sm">查看详情</button>
+              <button class="btn btn-ghost btn-sm">复用为模板</button>
+              <button class="btn btn-ghost btn-sm">导出引用</button>
+            </div>
+          </div>
+
+          <!-- 卡片 2:欧盟关税 -->
+          <div class="kb-card">
+            <div class="kb-card-header">
+              <div class="flex-1">
+                <div class="kb-card-title">欧盟 2024-2025 反补贴税与关税时间线</div>
+              </div>
+              <span class="kb-class-tag class-report">
+                <span class="status-dot dot-report"></span>沉淀报告
+              </span>
+            </div>
+            <div class="kb-card-summary">2024-06 启动调查至 2025-Q1 终裁的完整时间线,含每阶段的税率草案、抽样口径、行业测算。含 2 处已标注分歧。</div>
+            <div class="kb-meta">
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">128</span>数据点
+              </span>
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">67</span>信源
+              </span>
+              <span class="kb-meta-item">
+                被引用 <span class="kb-meta-num">24</span>次
+              </span>
+              <span class="kb-meta-item" style="margin-left:auto;">
+                2 小时前更新
+              </span>
+            </div>
+            <div class="kb-actions">
+              <button class="btn btn-secondary btn-sm">查看详情</button>
+              <button class="btn btn-ghost btn-sm">复用为模板</button>
+              <button class="btn btn-ghost btn-sm">导出引用</button>
+            </div>
+          </div>
+
+          <!-- 卡片 3:SaaS ARR -->
+          <div class="kb-card">
+            <div class="kb-card-header">
+              <div class="flex-1">
+                <div class="kb-card-title">SaaS 头部厂商 ARR 对比(2018-2024)</div>
+              </div>
+              <span class="kb-class-tag class-cache">
+                <span class="status-dot dot-cache"></span>检索缓存
+              </span>
+            </div>
+            <div class="kb-card-summary">Salesforce、HubSpot、ServiceNow、Atlassian 等 12 家厂商年度 ARR 数据,含同比增速、净收入留存率。半自动同步。</div>
+            <div class="kb-meta">
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">144</span>数据点
+              </span>
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">38</span>信源
+              </span>
+              <span class="kb-meta-item">
+                被引用 <span class="kb-meta-num">12</span>次
+              </span>
+              <span class="kb-meta-item" style="margin-left:auto;">
+                1 周前更新
+              </span>
+            </div>
+            <div class="kb-actions">
+              <button class="btn btn-secondary btn-sm">查看详情</button>
+              <button class="btn btn-ghost btn-sm">复用为模板</button>
+              <button class="btn btn-ghost btn-sm">导出引用</button>
+            </div>
+          </div>
+
+          <!-- 卡片 4:消费者调研 -->
+          <div class="kb-card">
+            <div class="kb-card-header">
+              <div class="flex-1">
+                <div class="kb-card-title">欧洲新能源车主购车意愿调研(N=2,400)</div>
+              </div>
+              <span class="kb-class-tag class-private">
+                <span class="status-dot dot-private"></span>私域文档
+              </span>
+            </div>
+            <div class="kb-card-summary">德、法、荷、北欧四国消费者调研,含品牌偏好、价格敏感度、续航焦虑。含原始问卷 PDF 与编码后数据。</div>
+            <div class="kb-meta">
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">86</span>数据点
+              </span>
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">12</span>信源
+              </span>
+              <span class="kb-meta-item">
+                被引用 <span class="kb-meta-num">9</span>次
+              </span>
+              <span class="kb-meta-item" style="margin-left:auto;">
+                2 周前更新
+              </span>
+            </div>
+            <div class="kb-actions">
+              <button class="btn btn-secondary btn-sm">查看详情</button>
+              <button class="btn btn-ghost btn-sm">复用为模板</button>
+              <button class="btn btn-ghost btn-sm">导出引用</button>
+            </div>
+          </div>
+
+          <!-- 卡片 5:失败实验 -->
+          <div class="kb-card" style="opacity:0.75;">
+            <div class="kb-card-header">
+              <div class="flex-1">
+                <div class="kb-card-title" style="text-decoration:line-through;">印度市场本土化路径研究(2024-08)</div>
+              </div>
+              <span class="kb-class-tag class-failed">
+                <span class="status-dot dot-failed"></span>失败实验
+              </span>
+            </div>
+            <div class="kb-card-summary">因信源覆盖不足终止。失败原因:印度本土信源接口受限、英文一手资料稀缺,Planner 在第 3 阶段自动终止。</div>
+            <div class="kb-meta">
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">14</span>已沉淀数据点
+              </span>
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">9</span>已检索信源
+              </span>
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">¥48</span>已消耗预算
+              </span>
+              <span class="kb-meta-item" style="margin-left:auto;">
+                3 周前
+              </span>
+            </div>
+            <div class="kb-actions">
+              <button class="btn btn-ghost btn-sm">查看失败原因</button>
+              <button class="btn btn-ghost btn-sm">复用失败经验</button>
+            </div>
+          </div>
+
+          <!-- 卡片 6:报告片段 -->
+          <div class="kb-card">
+            <div class="kb-card-header">
+              <div class="flex-1">
+                <div class="kb-card-title">东南亚电商报告 §2.1 市场结构片段</div>
+              </div>
+              <span class="kb-class-tag class-report">
+                <span class="status-dot dot-report"></span>沉淀报告
+              </span>
+            </div>
+            <div class="kb-card-summary">可直接复用的报告片段,含数据点、内联引用、图表占位。可拖拽到新报告中作为开篇段落。</div>
+            <div class="kb-meta">
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">8</span>内联引用
+              </span>
+              <span class="kb-meta-item">
+                <span class="kb-meta-num">12</span>数据点
+              </span>
+              <span class="kb-meta-item">
+                被引用 <span class="kb-meta-num">6</span>次
+              </span>
+              <span class="kb-meta-item" style="margin-left:auto;">
+                5 天前
+              </span>
+            </div>
+            <div class="kb-actions">
+              <button class="btn btn-secondary btn-sm">查看片段</button>
+              <button class="btn btn-ghost btn-sm">拖拽到报告</button>
+              <button class="btn btn-ghost btn-sm">复制为 Markdown</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 分页 -->
+        <div class="flex items-center justify-between mt-8">
+          <div class="text-xs text-muted">显示 1-12 / 共 238 条</div>
+          <div class="flex items-center gap-1">
+            <button class="btn btn-ghost btn-sm">上一页</button>
+            <button class="btn btn-primary btn-sm">1</button>
+            <button class="btn btn-ghost btn-sm">2</button>
+            <button class="btn btn-ghost btn-sm">3</button>
+            <span class="text-xs text-muted px-2">…</span>
+            <button class="btn btn-ghost btn-sm">20</button>
+            <button class="btn btn-ghost btn-sm">下一页</button>
+          </div>
+        </div>
+
+        <!-- 知识库机制说明 -->
+        <section class="card mt-8" style="background:var(--neutral-50);border-style:dashed;">
+          <div class="flex items-start gap-3">
+            <div style="width:24px;height:24px;border-radius:var(--radius-full);background:var(--brand-50);color:var(--brand-700);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;">i</div>
+            <div>
+              <div class="text-sm text-primary font-medium mb-1">沉淀机制</div>
+              <div class="text-xs text-secondary" style="line-height:1.65;">
+                所有研究的中间产物自动落入知识库:报告片段 → 沉淀报告,数据点 → 检索缓存,私域文件 → 私域文档,失败实验 → 失败实验(可作为反例训练数据)。
+                知识库条目按"数据点 + 信源链 + 报告片段"三要素组织,可被未来研究通过 Planner 自动检索并引用,实现研究资产的复用与演化。
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </section>
+    </section>
+  </main>
+</body>
+</html>

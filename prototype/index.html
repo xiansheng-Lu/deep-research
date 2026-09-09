@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 研究者助手 · 原型导航</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,wght@0,400;0,500;0,600;1,400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="./styles/tokens.css" />
+  <style>
+    .nav-card {
+      transition: all var(--motion-base) var(--ease-out);
+    }
+    .nav-card:hover {
+      border-color: var(--brand-300);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-popover);
+    }
+    .nav-card::before {
+      content: "";
+      display: block;
+      height: 3px;
+      background: var(--brand-500);
+      border-radius: var(--radius-sm);
+      margin-bottom: var(--space-6);
+      width: 32px;
+      transition: width var(--motion-slow) var(--ease-out);
+    }
+    .nav-card:hover::before {
+      width: 56px;
+    }
+    .nav-num {
+      font-family: 'Newsreader', serif;
+      font-size: 48px;
+      font-weight: 500;
+      color: var(--neutral-200);
+      letter-spacing: -0.02em;
+      line-height: 1;
+      margin-bottom: var(--space-6);
+    }
+  </style>
+</head>
+<body>
+  <div class="max-w-6xl mx-auto px-8 py-16">
+
+    <!-- Header -->
+    <header class="mb-16 animate-fade-in">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-8 h-8 rounded-md bg-[var(--brand-500)] flex items-center justify-center">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M2 4h12M2 8h8M2 12h10" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <span class="font-display text-md text-primary">AI 研究者助手</span>
+        <span class="text-xs text-muted ml-2">原型集合</span>
+      </div>
+      <h1 class="font-display text-2xl text-primary mb-4" style="letter-spacing: -0.02em;">
+        关键页面 HTML 原型
+      </h1>
+      <p class="text-base text-secondary max-w-2xl">
+        基于「交互设计规范」与「软件需求规格说明书」实现的关键页面原型。设计基调：工业中性、学术克制、信息密度中等。
+        所有页面共享 design tokens，单击进入查看。
+      </p>
+    </header>
+
+    <!-- Nav cards -->
+    <div class="grid grid-cols-3 gap-6 stagger">
+
+      <a href="./pages/01-home.html" class="nav-card card card-lg block no-underline">
+        <div class="nav-num">01</div>
+        <h3 class="font-display text-lg text-primary mb-3">首页</h3>
+        <p class="text-sm text-secondary mb-6">
+          用户首次进入与活动入口；进行中研究的实时状态卡片；知识库与模板入口。
+        </p>
+        <div class="flex items-center gap-2 text-xs text-brand-dark font-medium">
+          <span>进入原型</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+      </a>
+
+      <a href="./pages/02-cockpit.html" class="nav-card card card-lg block no-underline">
+        <div class="nav-num">02</div>
+        <h3 class="font-display text-lg text-primary mb-3">指挥舱</h3>
+        <p class="text-sm text-secondary mb-6">
+          研究执行实时看板；6 阶段时间线；证据流；用户介入抽屉；成本展示。
+        </p>
+        <div class="flex items-center gap-2 text-xs text-brand-dark font-medium">
+          <span>进入原型</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+      </a>
+
+      <a href="./pages/03-report.html" class="nav-card card card-lg block no-underline">
+        <div class="nav-num">03</div>
+        <h3 class="font-display text-lg text-primary mb-3">报告阅读页</h3>
+        <p class="text-sm text-secondary mb-6">
+          带溯源的可信报告；行内角标；团队批注与 @；冲突显式呈现。
+        </p>
+        <div class="flex items-center gap-2 text-xs text-brand-dark font-medium">
+          <span>进入原型</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+      </a>
+
+      <a href="./pages/04-new-research.html" class="nav-card card card-lg block no-underline">
+        <div class="nav-num">04</div>
+        <h3 class="font-display text-lg text-primary mb-3">发起研究向导</h3>
+        <p class="text-sm text-secondary mb-6">
+          5 步分页向导；模板选择、问题描述、数据源（含私域连接器）、档位、确认。
+        </p>
+        <div class="flex items-center gap-2 text-xs text-brand-dark font-medium">
+          <span>进入原型</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+      </a>
+
+      <a href="./pages/05-disputes.html" class="nav-card card card-lg block no-underline relative">
+        <span class="absolute top-4 right-4 badge badge-warning text-[10px]" style="padding: 1px 6px;">v1.1</span>
+        <div class="nav-num">05</div>
+        <h3 class="font-display text-lg text-primary mb-3">分歧处理视图</h3>
+        <p class="text-sm text-secondary mb-6">
+          多智能体辩论记录；证据对比；用户裁决；置信度跟踪。
+        </p>
+        <div class="flex items-center gap-2 text-xs text-brand-dark font-medium">
+          <span>进入原型</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+      </a>
+
+      <a href="./pages/06-knowledge.html" class="nav-card card card-lg block no-underline relative">
+        <span class="absolute top-4 right-4 badge badge-warning text-[10px]" style="padding: 1px 6px;">v1.1</span>
+        <div class="nav-num">06</div>
+        <h3 class="font-display text-lg text-primary mb-3">知识库</h3>
+        <p class="text-sm text-secondary mb-6">
+          报告沉淀为可复用资产；全文检索；标签体系；与新研究联动。
+        </p>
+        <div class="flex items-center gap-2 text-xs text-brand-dark font-medium">
+          <span>进入原型</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+      </a>
+
+    </div>
+
+    <!-- Footer info -->
+    <div class="mt-16 pt-8 border-t border-[var(--neutral-200)] flex items-center justify-between">
+      <div class="text-xs text-muted">
+        设计系统：<a href="../AI研究者助手-交互设计规范.md" class="text-brand-dark no-underline hover:underline">交互设计规范</a>
+      </div>
+      <div class="text-xs text-muted">
+        配套文档：<a href="../AI研究者助手-软件需求规格说明书.md" class="text-brand-dark no-underline hover:underline">PRD</a>
+        ·
+        <a href="../AI研究者助手-智能体协作规格说明.md" class="text-brand-dark no-underline hover:underline">Agent 协作</a>
+        ·
+        <a href="../AI研究者助手-软件开发计划.md" class="text-brand-dark no-underline hover:underline">SDP</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

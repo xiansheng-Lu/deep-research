@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>东南亚电商市场结构与 TikTok Shop 影响评估 · AI 研究者助手</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="../styles/tokens.css" />
+  <style>
+    /* 三列阅读布局 */
+    .report-grid {
+      display: grid;
+      grid-template-columns: 220px 1fr 280px;
+      gap: var(--space-8);
+      align-items: start;
+    }
+
+    /* ── 阅读区 ── */
+    .report-body {
+      max-width: 720px;
+      font-family: 'Newsreader', 'Noto Serif SC', Georgia, serif;
+      font-size: 17px;
+      line-height: 1.85;
+      color: var(--neutral-900);
+    }
+    .report-body h1 {
+      font-family: 'Newsreader', serif;
+      font-size: 42px;
+      font-weight: 600;
+      line-height: 1.15;
+      letter-spacing: -0.025em;
+      color: var(--neutral-900);
+      margin-bottom: var(--space-3);
+    }
+    .report-body h2 {
+      font-family: 'Newsreader', serif;
+      font-size: 28px;
+      font-weight: 600;
+      line-height: 1.3;
+      letter-spacing: -0.015em;
+      color: var(--neutral-900);
+      margin-top: var(--space-12);
+      margin-bottom: var(--space-4);
+      padding-top: var(--space-4);
+    }
+    .report-body h3 {
+      font-family: 'Newsreader', serif;
+      font-size: 20px;
+      font-weight: 600;
+      line-height: 1.4;
+      color: var(--neutral-900);
+      margin-top: var(--space-8);
+      margin-bottom: var(--space-3);
+    }
+    .report-body p {
+      margin-bottom: var(--space-4);
+    }
+    .report-body strong {
+      color: var(--brand-700);
+      font-weight: 600;
+    }
+    .report-body em {
+      font-style: italic;
+      color: var(--neutral-600);
+    }
+
+    /* ── 内联引用标记 ── */
+    .cite-ref {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 22px;
+      height: 20px;
+      padding: 0 6px;
+      margin: 0 2px;
+      border-radius: var(--radius-sm);
+      background: var(--brand-50);
+      color: var(--brand-700);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 500;
+      font-feature-settings: 'tnum' 1;
+      cursor: pointer;
+      transition: all var(--motion-fast) var(--ease-out);
+      vertical-align: super;
+      line-height: 1;
+      text-decoration: none;
+    }
+    .cite-ref:hover {
+      background: var(--brand-500);
+      color: white;
+      transform: translateY(-1px);
+    }
+    .cite-ref.is-disputed {
+      background: #F7E0E0;
+      color: var(--danger-500);
+    }
+
+    /* ── 数据点 / 关键事实卡 ── */
+    .fact-card {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: var(--space-4);
+      padding: var(--space-4);
+      background: var(--neutral-50);
+      border-left: 3px solid var(--brand-500);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      margin: var(--space-6) 0;
+    }
+    .fact-label {
+      font-family: 'Inter', sans-serif;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--brand-700);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: var(--space-1);
+    }
+    .fact-value {
+      font-family: 'Newsreader', serif;
+      font-size: 24px;
+      font-weight: 500;
+      color: var(--neutral-900);
+      letter-spacing: -0.01em;
+    }
+    .fact-sources {
+      font-family: 'Inter', sans-serif;
+      font-size: 12px;
+      color: var(--neutral-600);
+      margin-top: var(--space-2);
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+
+    /* ── 左侧目录 ── */
+    .toc-link {
+      display: block;
+      padding: var(--space-2) var(--space-3);
+      font-size: var(--font-sm);
+      color: var(--neutral-600);
+      text-decoration: none;
+      border-radius: var(--radius-sm);
+      border-left: 2px solid transparent;
+      transition: all var(--motion-fast) var(--ease-out);
+      line-height: 1.5;
+    }
+    .toc-link:hover {
+      color: var(--neutral-900);
+      background: var(--neutral-50);
+    }
+    .toc-link.is-active {
+      color: var(--brand-700);
+      background: var(--brand-50);
+      border-left-color: var(--brand-500);
+      font-weight: 500;
+    }
+    .toc-link.toc-h3 {
+      padding-left: var(--space-6);
+      font-size: var(--font-xs);
+    }
+
+    /* ── 右侧信源栏 ── */
+    .source-card {
+      padding: var(--space-3);
+      border-radius: var(--radius-sm);
+      transition: all var(--motion-fast) var(--ease-out);
+      cursor: pointer;
+    }
+    .source-card:hover {
+      background: var(--neutral-50);
+    }
+    .source-card.is-active {
+      background: var(--brand-50);
+      box-shadow: inset 3px 0 0 var(--brand-500);
+    }
+
+    /* ── 协作者头像组 ── */
+    .avatar-stack {
+      display: flex;
+      align-items: center;
+    }
+    .avatar-stack > .avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-full);
+      background: var(--brand-100);
+      color: var(--brand-700);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+      border: 2px solid var(--neutral-0);
+      margin-left: -8px;
+      flex-shrink: 0;
+    }
+    .avatar-stack > .avatar:first-child {
+      margin-left: 0;
+    }
+    .avatar-stack > .avatar.is-online {
+      position: relative;
+    }
+    .avatar-stack > .avatar.is-online::after {
+      content: "";
+      position: absolute;
+      bottom: -2px;
+      right: -2px;
+      width: 8px;
+      height: 8px;
+      background: var(--success-500);
+      border: 2px solid var(--neutral-0);
+      border-radius: var(--radius-full);
+    }
+    .avatar-stack > .avatar-more {
+      background: var(--neutral-100);
+      color: var(--neutral-600);
+    }
+
+    /* ── 批注卡 ── */
+    .annotation-card {
+      display: grid;
+      grid-template-columns: 4px 1fr;
+      gap: var(--space-3);
+      margin: var(--space-6) 0;
+      padding: var(--space-4);
+      background: #FFFCEF;
+      border-radius: var(--radius-md);
+      position: relative;
+    }
+    .annotation-card::before {
+      content: "";
+      width: 4px;
+      background: var(--warning-500);
+      border-radius: 2px;
+    }
+    .annotation-head {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      margin-bottom: var(--space-2);
+    }
+    .annotation-meta {
+      font-size: var(--font-xs);
+      color: var(--neutral-600);
+    }
+    .annotation-body {
+      font-family: 'Inter', 'Noto Sans SC', sans-serif;
+      font-size: var(--font-sm);
+      color: var(--neutral-900);
+      line-height: 1.7;
+      margin-bottom: var(--space-2);
+    }
+    .annotation-quote {
+      font-family: 'Newsreader', serif;
+      font-size: var(--font-xs);
+      color: var(--neutral-600);
+      font-style: italic;
+      padding-left: var(--space-3);
+      border-left: 2px solid var(--neutral-200);
+      margin-bottom: var(--space-3);
+    }
+    .annotation-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-size: var(--font-xs);
+      color: var(--neutral-600);
+    }
+    .annotation-actions > span {
+      cursor: pointer;
+    }
+    .annotation-actions > span:hover {
+      color: var(--brand-700);
+    }
+
+    /* ── @ 提及高亮 ── */
+    .mention {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 1px 6px;
+      background: var(--brand-50);
+      color: var(--brand-700);
+      border-radius: var(--radius-sm);
+      font-family: 'Inter', 'Noto Sans SC', sans-serif;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    /* ── 在线编辑指示 ── */
+    .live-edit-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-1) var(--space-2);
+      background: rgba(47, 158, 107, 0.08);
+      color: var(--success-500);
+      border-radius: var(--radius-sm);
+      font-size: var(--font-xs);
+      font-weight: 500;
+    }
+
+    /* ── 分歧标记 ── */
+    .dispute-banner {
+      display: flex;
+      gap: var(--space-3);
+      padding: var(--space-4);
+      background: #FCF6E8;
+      border: 1px solid #F4DCA0;
+      border-radius: var(--radius-md);
+      margin: var(--space-6) 0;
+    }
+
+    /* ── 摘要卡 ── */
+    .summary-card {
+      background: var(--neutral-0);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-lg);
+      padding: var(--space-6);
+      margin-bottom: var(--space-8);
+    }
+
+    /* ── 阅读进度条 ── */
+    .reading-progress {
+      position: fixed;
+      top: 56px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: transparent;
+      z-index: 30;
+    }
+    .reading-progress-bar {
+      height: 100%;
+      background: var(--brand-500);
+      width: 38%;
+      transition: width 200ms var(--ease-out);
+    }
+
+    /* ── 章节锚点标记 ── */
+    .anchor-mark {
+      display: inline-block;
+      width: 4px;
+      height: 16px;
+      background: var(--brand-500);
+      vertical-align: middle;
+      margin-right: var(--space-2);
+      border-radius: 1px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Reading progress -->
+  <div class="reading-progress">
+    <div class="reading-progress-bar"></div>
+  </div>
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <a href="../index.html" class="topbar-logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <rect x="2" y="2" width="16" height="16" rx="3" fill="var(--brand-500)"/>
+        <path d="M6 7h8M6 10h6M6 13h7" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+      AI 研究者助手
+    </a>
+    <nav class="topbar-nav">
+      <a href="./01-home.html" class="topbar-link">首页</a>
+      <a href="#" class="topbar-link active">项目</a>
+      <a href="#" class="topbar-link">模板</a>
+      <a href="#" class="topbar-link">知识库</a>
+    </nav>
+    <div class="topbar-actions">
+      <button class="btn btn-ghost btn-sm">⌘K</button>
+      <button class="btn btn-ghost btn-sm">分享</button>
+      <button class="btn btn-ghost btn-sm">下载 PDF</button>
+      <span class="live-edit-indicator">
+        <span style="width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1.4s ease-in-out infinite;"></span>
+        张伟 正在编辑
+      </span>
+      <div class="avatar-stack mr-2">
+        <div class="avatar is-online" title="李静（你）">LJ</div>
+        <div class="avatar is-online" title="张伟">ZW</div>
+        <div class="avatar" title="王芳">WF</div>
+        <div class="avatar avatar-more">+3</div>
+      </div>
+      <button class="btn btn-secondary btn-sm">+ 邀请</button>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-8 py-12">
+    <div class="report-grid">
+
+      <!-- Left: TOC -->
+      <aside class="sticky top-20 self-start animate-fade-in">
+        <div class="text-xs text-muted uppercase tracking-wider font-medium mb-3 px-3">报告目录</div>
+        <nav class="space-y-0.5">
+          <a href="#sec-summary" class="toc-link is-active">执行摘要</a>
+          <a href="#sec-market" class="toc-link">1 · 东南亚电商市场结构</a>
+          <a href="#sec-tiktok" class="toc-link">2 · TikTok Shop 的崛起与影响</a>
+          <a href="#sec-tiktok" class="toc-link toc-h3">2.1 用户增长曲线</a>
+          <a href="#sec-tiktok" class="toc-link toc-h3">2.2 对传统电商的冲击</a>
+          <a href="#sec-regulatory" class="toc-link">3 · 各国监管态度分化</a>
+          <a href="#sec-opportunity" class="toc-link">4 · 对中国出海品牌的机会</a>
+          <a href="#sec-risk" class="toc-link">5 · 风险与不确定性</a>
+          <a href="#sec-conclusion" class="toc-link">6 · 结论与建议</a>
+          <a href="#sec-appendix" class="toc-link">附录：信源与方法</a>
+        </nav>
+
+        <!-- Mini meta -->
+        <div class="divider"></div>
+        <div class="px-3 space-y-2 text-xs text-secondary">
+          <div class="flex items-center justify-between">
+            <span class="text-muted">溯源覆盖率</span>
+            <span class="badge badge-success">98%</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-muted">数据点</span>
+            <span class="font-mono text-primary">87</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-muted">信源</span>
+            <span class="font-mono text-primary">42</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-muted">分歧</span>
+            <span class="badge badge-warning">3 处</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Center: report body -->
+      <article class="report-body animate-fade-in">
+
+        <!-- Report meta -->
+        <div class="mb-8">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="badge badge-brand">行业研究</span>
+            <span class="text-xs text-muted">· 报告 ID R-2024-1108</span>
+            <span class="text-xs text-muted">· 完成于 2024-12-22 14:32</span>
+          </div>
+          <h1>东南亚电商市场结构<br/>与 <span style="font-style: italic; color: var(--brand-700);">TikTok Shop</span> 影响评估</h1>
+          <div class="flex items-center gap-4 text-sm text-secondary mt-4 font-sans">
+            <span>👤 立项人：李静</span>
+            <span>·</span>
+            <span>🚀 深度档位</span>
+            <span>·</span>
+            <span>📊 184 条证据</span>
+            <span>·</span>
+            <span>⏱ 12 分钟</span>
+          </div>
+        </div>
+
+        <!-- Summary card -->
+        <section id="sec-summary" class="summary-card">
+          <div class="text-xs font-semibold text-brand-dark uppercase tracking-wider mb-3 font-sans">执行摘要</div>
+          <p class="text-base leading-relaxed" style="font-size: 17px;">
+            截至 2024 年 Q3，<strong>东南亚电商市场规模达 1,580 亿美元</strong>，年增速 18.4%。其中 TikTok Shop GMV 突破 <strong>230 亿美元</strong>，在印尼、泰国、越南三国已占整体电商市场 <strong>14.6%</strong> 的份额。本报告评估其对 Lazada、Shopee 等传统平台的冲击、各国监管分化态度，以及对中国出海品牌的机会与风险。
+          </p>
+          <div class="grid grid-cols-3 gap-3 mt-4 stagger font-sans">
+            <div class="text-center p-3 bg-[var(--neutral-50)] rounded-[var(--radius-sm)]">
+              <div class="font-display text-md text-primary">14.6%</div>
+              <div class="text-xs text-muted mt-1">TikTok Shop 市占</div>
+            </div>
+            <div class="text-center p-3 bg-[var(--neutral-50)] rounded-[var(--radius-sm)]">
+              <div class="font-display text-md text-primary">18.4%</div>
+              <div class="text-xs text-muted mt-1">市场年增速</div>
+            </div>
+            <div class="text-center p-3 bg-[var(--neutral-50)] rounded-[var(--radius-sm)]">
+              <div class="font-display text-md text-[var(--warning-500)]">3</div>
+              <div class="text-xs text-muted mt-1">待关注分歧</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section 1 -->
+        <section id="sec-market">
+          <h2>1 · 东南亚电商市场结构</h2>
+          <p>
+            东南亚电商市场近年呈现高速增长态势。根据 Google、淡马锡与贝恩联合发布的 <em>e-Conomy SEA 2024</em> 报告<span class="cite-ref">1</span>，2024 年区域电商交易总额（GMV）预计达到 <strong>1,580 亿美元</strong>，同比增长 18.4%。这一增速远高于全球电商平均水平的 9.2%<span class="cite-ref">2</span>，反映了该地区数字化进程的加速。
+          </p>
+          <p>
+            从国别结构看，<strong>印尼仍是最大单一市场</strong>，2024 年 GMV 约 620 亿美元，占区域总量 39.2%<span class="cite-ref">1</span>。其次为泰国（298 亿）、越南（247 亿）、菲律宾（167 亿）、马来西亚（138 亿）与新加坡（110 亿）<span class="cite-ref">3</span>。
+          </p>
+
+          <div class="fact-card">
+            <div>
+              <div class="fact-label">关键事实</div>
+              <div class="fact-value">1,580 亿美元</div>
+              <div class="fact-sources">
+                <span>📄 Google/Temasek/Bain e-Conomy SEA 2024</span>
+                <a class="cite-ref" style="vertical-align: middle;">1</a>
+              </div>
+            </div>
+            <div class="text-xs text-muted text-right">
+              可信度<br/>
+              <span class="font-mono text-[var(--success-500)]">98%</span>
+            </div>
+          </div>
+
+          <p>
+            值得注意的是，<strong>Shopee 与 Lazada 的双寡头格局正在被打破</strong>。截至 2024 年 Q3，TikTok Shop 在三国（印尼、泰国、越南）的合计 GMV 已达 230 亿美元，市占率达 14.6%<span class="cite-ref">4</span>。这一份额在 2022 年仅为 4.2%，两年间增长超过 3 倍<span class="cite-ref is-disputed">5</span>。
+          </p>
+        </section>
+
+        <!-- Section 2 -->
+        <section id="sec-tiktok">
+          <h2>2 · TikTok Shop 的崛起与影响</h2>
+
+          <h3>2.1 用户增长曲线</h3>
+          <p>
+            TikTok Shop 的核心驱动力来自 <strong>社交电商模式的渗透</strong>。其月活买家数从 2022 年的 800 万跃升至 2024 年的 <strong>3,400 万</strong>，增幅达 325%<span class="cite-ref">6</span>。单笔订单平均金额（AOV）虽低于传统电商（$22 vs $34），但复购率高出 47%<span class="cite-ref">7</span>。
+          </p>
+
+          <h3>2.2 对传统电商的冲击</h3>
+          <p>
+            面对 TikTok Shop 的冲击，Shopee 与 Lazada 采取了差异化应对：Shopee 推出 <em>Shopee Live</em> 强化直播能力<span class="cite-ref">8</span>，Lazada 则与抖音达成内容合作<span class="cite-ref">9</span>。但两者用户停留时长仍未追平，需要重点关注
+            <span class="mention">@张伟</span>
+            在 Q3 用户行为分析中的进一步洞察。
+          </p>
+
+          <!-- Annotation (团队批注) -->
+          <div class="annotation-card">
+            <div></div>
+            <div>
+              <div class="annotation-head">
+                <div class="avatar is-online" style="background: #E5F2EB; color: var(--success-500); width: 24px; height: 24px; font-size: 10px;">ZW</div>
+                <span class="text-sm font-medium text-primary">张伟</span>
+                <span class="annotation-meta">· 市场分析组 · 5 分钟前</span>
+                <span class="badge badge-warning" style="margin-left: auto;">待回复</span>
+              </div>
+              <div class="annotation-body">
+                这里的数据需要进一步补充。我们的 A/B 测试显示 Shopee Live 的转化率在 30-45 岁年龄段反而高于 TikTok，建议增加分年龄段对比表，详见附件 R-2024-Q4-08。
+              </div>
+              <div class="annotation-quote">"两者用户停留时长仍未追平..."</div>
+              <div class="annotation-actions">
+                <span>↩ 回复</span>
+                <span>·</span>
+                <span>✓ 解决</span>
+                <span>·</span>
+                <span>@提及</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dispute banner -->
+          <div class="dispute-banner">
+            <div class="text-[var(--warning-500)] text-lg flex-shrink-0">⚠</div>
+            <div class="font-sans text-sm">
+              <div class="font-semibold text-[var(--neutral-900)] mb-1">信源分歧 · 自动标记</div>
+              <div class="text-secondary leading-relaxed">
+                关于 TikTok Shop 2023 年实际 GMV，Momentum Works 报告为 184 亿美元<span class="cite-ref">10</span>，而 TikTok 官方披露为 156 亿美元<span class="cite-ref is-disputed">11</span>，差异达 18%。建议在引用时注明信源，并以下游官方为最终口径。
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section 3 -->
+        <section id="sec-regulatory">
+          <h2>3 · 各国监管态度分化</h2>
+          <p>
+            各国对 TikTok Shop 的监管态度呈现显著分化：印尼曾于 2023 年 10 月短暂封禁 TikTok Shop<span class="cite-ref">12</span>，后允许与 GoTo 旗下 Tokopedia 合并运营；越南持谨慎开放态度<span class="cite-ref">13</span>；马来西亚则明确鼓励<span class="cite-ref">14</span>。
+          </p>
+          <p>
+            这种分化对平台扩张路径与商品结构均产生深远影响。
+          </p>
+        </section>
+
+        <!-- Section 4 -->
+        <section id="sec-opportunity">
+          <h2>4 · 对中国出海品牌的机会</h2>
+          <p>
+            综合上述分析，TikTok Shop 对中国出海品牌提供了三个显著机会：<strong>低门槛进入</strong>、<strong>内容驱动转化</strong>、<strong>本土 KOL 生态成熟</strong>。建议优先选择印尼、泰国作为试点市场，并以美妆、3C 配件等高复购品类切入。
+          </p>
+
+          <div class="fact-card">
+            <div>
+              <div class="fact-label">建议试点组合</div>
+              <div class="fact-value" style="font-size: 18px;">印尼（美妆）+ 泰国（3C 配件）</div>
+              <div class="fact-sources">
+                <span>🎯 综合市占、增速、监管环境</span>
+              </div>
+            </div>
+            <div class="text-xs text-muted text-right">
+              置信度<br/>
+              <span class="font-mono text-[var(--brand-700)]">高</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section 5 -->
+        <section id="sec-risk">
+          <h2>5 · 风险与不确定性</h2>
+          <p>
+            主要风险包括：印尼等市场潜在的 <strong>本土保护政策</strong><span class="cite-ref">15</span>、TikTok Shop 流量成本上升趋势<span class="cite-ref">16</span>，以及跨境支付合规风险<span class="cite-ref">17</span>。
+          </p>
+        </section>
+
+        <!-- Section 6 -->
+        <section id="sec-conclusion">
+          <h2>6 · 结论与建议</h2>
+          <p>
+            综上，TikTok Shop 重塑了东南亚电商竞争格局。建议分阶段布局：3 个月内完成印尼、泰国试点，6 个月内评估扩张至越南、马来西亚，12 个月内建立本土化运营与供应链。
+          </p>
+        </section>
+
+        <!-- Appendix -->
+        <section id="sec-appendix">
+          <h2>附录：信源与方法</h2>
+          <p class="font-sans text-sm text-secondary leading-relaxed">
+            本报告基于 <strong>42 个独立信源</strong>、<strong>184 条原始证据</strong>生成。其中官方信源 18 个（占比 43%）、媒体信源 14 个、学术信源 5 个、私有域数据 3 项、综合研究 2 项。溯源覆盖率 98%，已识别 3 处信源分歧并在文中标注。
+          </p>
+        </section>
+
+      </article>
+
+      <!-- Right: source drawer -->
+      <aside class="sticky top-20 self-start animate-slide-in-right">
+        <div class="text-xs text-muted uppercase tracking-wider font-medium mb-3">信源（42）</div>
+        <div class="space-y-0.5 max-h-[calc(100vh-180px)] overflow-y-auto pr-2">
+
+          <div class="source-card is-active">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">e-Conomy SEA 2024 报告</div>
+              <span class="cite-ref" style="vertical-align: middle;">1</span>
+            </div>
+            <div class="text-xs text-muted">📄 Google · Temasek · Bain</div>
+            <div class="text-xs text-secondary mt-1.5 line-clamp-2 italic font-display">
+              "2024 年东南亚电商 GMV 将达 1,580 亿美元..."
+            </div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">Global E-commerce Report</div>
+              <span class="cite-ref" style="vertical-align: middle;">2</span>
+            </div>
+            <div class="text-xs text-muted">📊 eMarketer · 2024-Q3</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">各国 GMV 分布数据</div>
+              <span class="cite-ref" style="vertical-align: middle;">3</span>
+            </div>
+            <div class="text-xs text-muted">📊 Statista · 2024</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">TikTok Shop 三国合计 GMV</div>
+              <span class="cite-ref" style="vertical-align: middle;">4</span>
+            </div>
+            <div class="text-xs text-muted">📰 Momentum Works · 2024-11</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">2022 市占率基线数据</div>
+              <span class="cite-ref is-disputed" style="vertical-align: middle;">5</span>
+            </div>
+            <div class="text-xs text-muted">⚠ 含 1 处分歧</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">TikTok 月活买家增长曲线</div>
+              <span class="cite-ref" style="vertical-align: middle;">6</span>
+            </div>
+            <div class="text-xs text-muted">📁 内部销售数据</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">AOV 与复购率对比</div>
+              <span class="cite-ref" style="vertical-align: middle;">7</span>
+            </div>
+            <div class="text-xs text-muted">📊 Cube Asia Research</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">Shopee Live 战略发布</div>
+              <span class="cite-ref" style="vertical-align: middle;">8</span>
+            </div>
+            <div class="text-xs text-muted">📰 Tech in Asia</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">Lazada-抖音合作公告</div>
+              <span class="cite-ref" style="vertical-align: middle;">9</span>
+            </div>
+            <div class="text-xs text-muted">📰 阿里官方</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">Momentum Works GMV 口径</div>
+              <span class="cite-ref" style="vertical-align: middle;">10</span>
+            </div>
+            <div class="text-xs text-muted">📊 Momentum Works</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">TikTok 官方披露数据</div>
+              <span class="cite-ref is-disputed" style="vertical-align: middle;">11</span>
+            </div>
+            <div class="text-xs text-muted">⚠ 与 [10] 存在分歧</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">印尼 2023 封禁与解封过程</div>
+              <span class="cite-ref" style="vertical-align: middle;">12</span>
+            </div>
+            <div class="text-xs text-muted">📰 Reuters</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">越南监管态度</div>
+              <span class="cite-ref" style="vertical-align: middle;">13</span>
+            </div>
+            <div class="text-xs text-muted">📄 越南工信部</div>
+          </div>
+
+          <div class="source-card">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="text-sm font-medium text-primary leading-snug">马来西亚支持政策</div>
+              <span class="cite-ref" style="vertical-align: middle;">14</span>
+            </div>
+            <div class="text-xs text-muted">📄 MCMC 公告</div>
+          </div>
+
+        </div>
+      </aside>
+
+    </div>
+  </main>
+
+</body>
+</html>

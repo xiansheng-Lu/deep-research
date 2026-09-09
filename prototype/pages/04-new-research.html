@@ -1,0 +1,787 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>发起研究 · AI 研究者助手</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,wght@0,400;0,500;0,600;1,400&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="../styles/tokens.css" />
+  <style>
+    /* 三列向导布局 */
+    .wizard-grid {
+      display: grid;
+      grid-template-columns: 200px 1fr 320px;
+      gap: var(--space-8);
+      align-items: start;
+    }
+
+    /* ── 步骤指示器 ── */
+    .step-item {
+      display: flex;
+      gap: var(--space-3);
+      padding: var(--space-3) 0;
+      position: relative;
+      cursor: pointer;
+    }
+    .step-circle {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-full);
+      background: var(--neutral-0);
+      border: 2px solid var(--neutral-200);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: var(--font-xs);
+      font-weight: 600;
+      color: var(--neutral-400);
+      transition: all var(--motion-base) var(--ease-out);
+    }
+    .step-item.is-done .step-circle {
+      background: var(--brand-500);
+      border-color: var(--brand-500);
+      color: white;
+    }
+    .step-item.is-current .step-circle {
+      background: var(--brand-500);
+      border-color: var(--brand-500);
+      color: white;
+      box-shadow: 0 0 0 4px rgba(61, 71, 137, 0.15);
+    }
+    .step-meta {
+      flex: 1;
+      padding-top: 2px;
+    }
+    .step-title {
+      font-size: var(--font-sm);
+      font-weight: 500;
+      color: var(--neutral-400);
+    }
+    .step-item.is-current .step-title,
+    .step-item.is-done .step-title {
+      color: var(--neutral-900);
+    }
+    .step-sub {
+      font-size: var(--font-xs);
+      color: var(--neutral-400);
+      margin-top: 2px;
+    }
+    .step-item:not(.is-current):not(.is-done) .step-sub {
+      color: var(--neutral-400);
+    }
+    .step-item.is-done .step-sub {
+      color: var(--neutral-600);
+    }
+
+    /* ── 模板卡 ── */
+    .tpl-card {
+      position: relative;
+      padding: var(--space-4);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+      background: var(--neutral-0);
+      cursor: pointer;
+      transition: all var(--motion-base) var(--ease-out);
+    }
+    .tpl-card:hover {
+      border-color: var(--brand-300);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-popover);
+    }
+    .tpl-card.is-selected {
+      border-color: var(--brand-500);
+      background: var(--brand-50);
+      box-shadow: 0 0 0 1px var(--brand-500);
+    }
+    .tpl-check {
+      position: absolute;
+      top: var(--space-3);
+      right: var(--space-3);
+      width: 18px;
+      height: 18px;
+      border-radius: var(--radius-full);
+      border: 1.5px solid var(--neutral-200);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--motion-base) var(--ease-out);
+      opacity: 0;
+    }
+    .tpl-card.is-selected .tpl-check {
+      background: var(--brand-500);
+      border-color: var(--brand-500);
+      color: white;
+      opacity: 1;
+    }
+    .tpl-card.is-selected:hover .tpl-check {
+      opacity: 1;
+    }
+
+    /* ── 档位卡 ── */
+    .tier-card {
+      padding: var(--space-4);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: all var(--motion-base) var(--ease-out);
+      background: var(--neutral-0);
+    }
+    .tier-card:hover {
+      border-color: var(--brand-300);
+    }
+    .tier-card.is-selected {
+      border-color: var(--brand-500);
+      background: var(--brand-50);
+      box-shadow: 0 0 0 1px var(--brand-500);
+    }
+    .tier-card.is-recommended::before {
+      content: "推荐";
+      position: absolute;
+      top: -8px;
+      left: var(--space-3);
+      background: var(--brand-500);
+      color: white;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: var(--radius-sm);
+      font-weight: 500;
+    }
+    .tier-card {
+      position: relative;
+    }
+
+    /* ── 大输入框 ── */
+    .big-input {
+      width: 100%;
+      min-height: 140px;
+      padding: var(--space-4);
+      border: 1.5px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+      background: var(--neutral-0);
+      color: var(--neutral-900);
+      font-family: 'Newsreader', 'Noto Serif SC', Georgia, serif;
+      font-size: 18px;
+      line-height: 1.7;
+      resize: vertical;
+      transition: all var(--motion-base) var(--ease-out);
+    }
+    .big-input:focus {
+      outline: none;
+      border-color: var(--brand-500);
+      box-shadow: 0 0 0 4px rgba(61, 71, 137, 0.10);
+    }
+    .big-input::placeholder {
+      color: var(--neutral-400);
+      font-style: italic;
+    }
+
+    /* ── Planner 实时解析区 ── */
+    .planner-live {
+      display: flex;
+      gap: var(--space-2);
+      align-items: center;
+      padding: var(--space-2) var(--space-3);
+      background: var(--brand-50);
+      border-radius: var(--radius-sm);
+      font-size: var(--font-xs);
+      color: var(--brand-700);
+      font-weight: 500;
+      margin-top: var(--space-3);
+      transition: all var(--motion-base) var(--ease-out);
+    }
+    .planner-live.is-thinking {
+      background: rgba(208, 138, 46, 0.10);
+      color: var(--warning-500);
+    }
+    .typing-dot {
+      width: 4px;
+      height: 4px;
+      background: currentColor;
+      border-radius: var(--radius-full);
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+    /* ── 示例问题 chips ── */
+    .example-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      padding: var(--space-1) var(--space-3);
+      background: var(--neutral-50);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-full);
+      font-size: var(--font-xs);
+      color: var(--neutral-600);
+      cursor: pointer;
+      transition: all var(--motion-fast) var(--ease-out);
+    }
+    .example-chip:hover {
+      background: var(--brand-50);
+      border-color: var(--brand-300);
+      color: var(--brand-700);
+    }
+
+    /* ── 右侧预览卡 ── */
+    .preview-card {
+      background: var(--neutral-0);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-lg);
+      padding: var(--space-6);
+      position: sticky;
+      top: 80px;
+    }
+    .preview-row {
+      display: flex;
+      justify-content: space-between;
+      padding: var(--space-2) 0;
+      border-bottom: 1px dashed var(--neutral-200);
+      font-size: var(--font-sm);
+    }
+    .preview-row:last-child {
+      border-bottom: none;
+    }
+    .preview-key {
+      color: var(--neutral-600);
+    }
+    .preview-val {
+      color: var(--neutral-900);
+      font-weight: 500;
+    }
+
+    /* ── 模板/示例标题小字 ── */
+    .label-cap {
+      font-size: var(--font-xs);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--neutral-400);
+      font-weight: 600;
+      margin-bottom: var(--space-3);
+    }
+  </style>
+</head>
+<body>
+  <!-- Top bar -->
+  <header class="topbar">
+    <a href="../index.html" class="topbar-logo">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <rect x="2" y="2" width="16" height="16" rx="3" fill="var(--brand-500)"/>
+        <path d="M6 7h8M6 10h6M6 13h7" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+      AI 研究者助手
+    </a>
+    <nav class="topbar-nav">
+      <a href="./01-home.html" class="topbar-link">首页</a>
+      <a href="#" class="topbar-link active">项目</a>
+      <a href="#" class="topbar-link">模板</a>
+      <a href="#" class="topbar-link">知识库</a>
+    </nav>
+    <div class="topbar-actions">
+      <button class="btn btn-ghost btn-sm">取消</button>
+      <button class="btn btn-secondary btn-sm">💾 保存草稿</button>
+      <div class="w-8 h-8 rounded-full bg-[var(--brand-100)] flex items-center justify-center text-xs font-medium text-[var(--brand-700)] cursor-pointer">
+        LJ
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-8 py-10">
+
+    <!-- Page title -->
+    <div class="mb-8 animate-fade-in">
+      <div class="text-xs text-muted uppercase tracking-wider mb-2 font-medium">发起新研究</div>
+      <h1 class="font-display text-2xl text-primary leading-tight mb-2">
+        描述你的研究问题，<span class="italic text-[var(--brand-700)]">5 步</span> 即可启动
+      </h1>
+      <p class="text-sm text-secondary max-w-2xl">
+        Planner 会实时解析你的问题，识别关键维度并预生成子问题清单。在确认前随时可调整。
+      </p>
+    </div>
+
+    <div class="wizard-grid">
+
+      <!-- Left: step indicator -->
+      <aside class="animate-fade-in">
+        <div class="label-cap">研究流程</div>
+        <div>
+          <div class="step-item is-current">
+            <div class="step-circle">1</div>
+            <div class="step-meta">
+              <div class="step-title">选择模板</div>
+              <div class="step-sub">3 / 8 已选</div>
+            </div>
+          </div>
+          <div class="step-item">
+            <div class="step-circle">2</div>
+            <div class="step-meta">
+              <div class="step-title">描述问题</div>
+              <div class="step-sub">实时解析中</div>
+            </div>
+          </div>
+          <div class="step-item">
+            <div class="step-circle">3</div>
+            <div class="step-meta">
+              <div class="step-title">选择档位</div>
+              <div class="step-sub">成本与深度</div>
+            </div>
+          </div>
+          <div class="step-item">
+            <div class="step-circle">4</div>
+            <div class="step-meta">
+              <div class="step-title">数据源</div>
+              <div class="step-sub">公域 + 私域</div>
+            </div>
+          </div>
+          <div class="step-item">
+            <div class="step-circle">5</div>
+            <div class="step-meta">
+              <div class="step-title">确认启动</div>
+              <div class="step-sub">预览子问题</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Help card -->
+        <div class="card mt-8" style="padding: var(--space-4);">
+          <div class="text-xs font-semibold text-brand-dark uppercase tracking-wider mb-2">💡 小贴士</div>
+          <div class="text-xs text-secondary leading-relaxed">
+            一个好的研究问题应当包含：<strong>对象</strong>（研究谁/什么）、<strong>目标</strong>（要回答什么）、<strong>约束</strong>（时间、地域、范围）。
+          </div>
+        </div>
+      </aside>
+
+      <!-- Center: form area -->
+      <section class="animate-fade-in">
+
+        <!-- Step 1: Template selection -->
+        <div class="mb-8">
+          <h2 class="font-display text-md text-primary mb-2">1 · 选择研究模板</h2>
+          <p class="text-sm text-secondary mb-6">模板将决定 Planner 的子问题生成策略与最终报告结构。</p>
+
+          <div class="grid grid-cols-2 gap-3 stagger">
+            <div class="tpl-card is-selected">
+              <div class="tpl-check">✓</div>
+              <span class="badge badge-brand mb-2">行业研究</span>
+              <div class="font-display text-base text-primary mb-1.5">行业深度研究</div>
+              <p class="text-xs text-secondary leading-relaxed mb-3">
+                市场规模、竞争格局、政策环境、用户画像的结构化输出。
+              </p>
+              <div class="text-xs text-muted">平均 18 分钟 · 156 次使用</div>
+            </div>
+
+            <div class="tpl-card">
+              <div class="tpl-check">✓</div>
+              <span class="badge badge-brand mb-2">技术调研</span>
+              <div class="font-display text-base text-primary mb-1.5">技术方案对比</div>
+              <p class="text-xs text-secondary leading-relaxed mb-3">
+                多技术方案对比，附官方文档、性能基准与适用场景。
+              </p>
+              <div class="text-xs text-muted">平均 22 分钟 · 89 次使用</div>
+            </div>
+
+            <div class="tpl-card is-selected">
+              <div class="tpl-check">✓</div>
+              <span class="badge badge-brand mb-2">竞品分析</span>
+              <div class="font-display text-base text-primary mb-1.5">竞品功能拆解</div>
+              <p class="text-xs text-secondary leading-relaxed mb-3">
+                拆解产品功能、用户评价、市场份额变化，输出差异化建议。
+              </p>
+              <div class="text-xs text-muted">平均 16 分钟 · 64 次使用</div>
+            </div>
+
+            <div class="tpl-card">
+              <div class="tpl-check">✓</div>
+              <span class="badge badge-brand mb-2">政策解读</span>
+              <div class="font-display text-base text-primary mb-1.5">政策法规解读</div>
+              <p class="text-xs text-secondary leading-relaxed mb-3">
+                政策梳理、影响分析、合规要点提示。
+              </p>
+              <div class="text-xs text-muted">平均 14 分钟 · 42 次使用</div>
+            </div>
+
+            <div class="tpl-card">
+              <div class="tpl-check">✓</div>
+              <span class="badge badge-brand mb-2">市场调研</span>
+              <div class="font-display text-base text-primary mb-1.5">用户访谈分析</div>
+              <p class="text-xs text-secondary leading-relaxed mb-3">
+                定性访谈内容编码、主题提炼、洞察提取。
+              </p>
+              <div class="text-xs text-muted">平均 24 分钟 · 31 次使用</div>
+            </div>
+
+            <div class="tpl-card">
+              <div class="tpl-check">✓</div>
+              <span class="badge badge-brand mb-2">财报分析</span>
+              <div class="font-display text-base text-primary mb-1.5">公司财务分析</div>
+              <p class="text-xs text-secondary leading-relaxed mb-3">
+                三表勾稽、关键比率、跨期对比与同行对照。
+              </p>
+              <div class="text-xs text-muted">平均 20 分钟 · 28 次使用</div>
+            </div>
+
+          </div>
+
+          <!-- 自定义模板入口 -->
+          <div class="mt-4 flex items-center justify-between p-3 bg-[var(--neutral-50)] rounded-[var(--radius-sm)]">
+            <span class="text-xs text-secondary">没有合适的模板？</span>
+            <button class="btn btn-ghost btn-sm">+ 从空白开始</button>
+          </div>
+        </div>
+
+        <!-- Step 2: Question input -->
+        <div class="mb-8">
+          <h2 class="font-display text-md text-primary mb-2">2 · 描述研究问题</h2>
+          <p class="text-sm text-secondary mb-4">用一两句话描述清楚研究对象、目标和约束。Planner 会实时解析。</p>
+
+          <textarea
+            class="big-input"
+            placeholder="例：评估中国头部新能源车企（比亚迪、蔚来、奇瑞）在 2024-2025 年进入欧洲主要市场（德、法、挪威）的可行性与风险，重点关注关税政策影响、本土用户接受度、渠道策略。"
+          >评估中国头部新能源车企（比亚迪、蔚来、奇瑞）在 2024-2025 年进入欧洲主要市场（德、法、挪威）的可行性与风险，重点关注关税政策影响、本土用户接受度、渠道策略。</textarea>
+
+          <!-- Planner live feedback -->
+          <div class="planner-live is-thinking">
+            <span class="typing-dot"></span>
+            <span class="typing-dot"></span>
+            <span class="typing-dot"></span>
+            <span>Planner 正在解析 · 已识别 <strong style="margin: 0 4px;">3 个研究对象</strong>、<strong style="margin: 0 4px;">2 个时间窗口</strong>、<strong style="margin: 0 4px;">3 个地理范围</strong></span>
+          </div>
+
+          <!-- Quick examples -->
+          <div class="mt-5">
+            <div class="label-cap">或参考这些问题</div>
+            <div class="flex flex-wrap gap-2">
+              <span class="example-chip">📊 2024 年 SaaS 行业并购趋势</span>
+              <span class="example-chip">🤖 大模型推理能力评测方法</span>
+              <span class="example-chip">🌍 东南亚电商市场结构分析</span>
+              <span class="example-chip">🏥 创新药出海监管对比研究</span>
+              <span class="example-chip">💼 跨境数据合规政策梳理</span>
+            </div>
+          </div>
+
+          <!-- Clarifier 追问区 -->
+          <div class="card mt-6" style="background: linear-gradient(135deg, var(--brand-50) 0%, var(--neutral-0) 100%); border-color: var(--brand-100);">
+            <div class="flex items-start gap-3">
+              <div class="w-8 h-8 rounded-full bg-[var(--brand-500)] text-white flex items-center justify-center text-sm font-semibold flex-shrink-0">
+                ✦
+              </div>
+              <div class="flex-1">
+                <div class="text-xs text-brand-dark font-semibold uppercase tracking-wider mb-1">Clarifier 建议补充</div>
+                <p class="text-sm text-primary mb-3 leading-relaxed">
+                  为提高研究质量，建议补充：<strong>是否需要包含价格区间分析</strong>？是否需要对比<strong>特斯拉、大众 ID 系列</strong>作为竞品？
+                </p>
+                <div class="flex items-center gap-2">
+                  <button class="btn btn-primary btn-sm">补充到问题</button>
+                  <button class="btn btn-ghost btn-sm">暂不补充</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 3: Tier preview -->
+          <div class="mt-8">
+            <h2 class="font-display text-md text-primary mb-2">3 · 选择研究档位</h2>
+            <p class="text-sm text-secondary mb-4">档位决定检索深度、子问题数与成本。深度档位推荐用于此类多对象对比研究。</p>
+
+            <div class="grid grid-cols-4 gap-3">
+              <div class="tier-card">
+                <div class="text-xs text-muted uppercase tracking-wider font-medium mb-1">快速</div>
+                <div class="font-display text-md text-primary mb-1">¥ 4</div>
+                <div class="text-xs text-secondary mb-3">3-5 个子问题<br/>约 8 分钟</div>
+                <div class="text-xs text-muted">基础检索 + 单层信源</div>
+              </div>
+
+              <div class="tier-card">
+                <div class="text-xs text-muted uppercase tracking-wider font-medium mb-1">标准</div>
+                <div class="font-display text-md text-primary mb-1">¥ 12</div>
+                <div class="text-xs text-secondary mb-3">5-8 个子问题<br/>约 18 分钟</div>
+                <div class="text-xs text-muted">多源交叉验证</div>
+              </div>
+
+              <div class="tier-card is-selected is-recommended">
+                <div class="text-xs text-brand-dark uppercase tracking-wider font-medium mb-1">深度</div>
+                <div class="font-display text-md text-primary mb-1">¥ 30</div>
+                <div class="text-xs text-secondary mb-3">8-12 个子问题<br/>约 28 分钟</div>
+                <div class="text-xs text-muted">私域接入 · 批判收敛</div>
+              </div>
+
+              <div class="tier-card">
+                <div class="text-xs text-muted uppercase tracking-wider font-medium mb-1">极致</div>
+                <div class="font-display text-md text-primary mb-1">¥ 80</div>
+                <div class="text-xs text-secondary mb-3">12-18 个子问题<br/>约 50 分钟</div>
+                <div class="text-xs text-muted">专家评审 · 学术级</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 4: Data sources (公域 + 私域连接器) -->
+          <div class="mt-10">
+            <h2 class="font-display text-md text-primary mb-2">4 · 选择数据源</h2>
+            <p class="text-sm text-secondary mb-5">公域信源已内置；私域连接器授权后可在材料标准化阶段引入。共选择 5 项数据源，影响溯源链与隐私边界。</p>
+
+            <!-- 公域信源 -->
+            <div class="mb-6">
+              <div class="flex items-center justify-between mb-3">
+                <div class="text-xs text-muted uppercase tracking-wider font-medium">公域信源（已内置，必选）</div>
+                <span class="text-xs text-muted">已选 4 / 4</span>
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <label style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--neutral-200); border-radius: var(--radius-sm); cursor: pointer; background: var(--neutral-50);">
+                  <input type="checkbox" checked disabled>
+                  <div class="flex-1">
+                    <div class="text-sm font-medium text-primary">官方与监管文档</div>
+                    <div class="text-xs text-muted">欧盟公报 · 上市公司披露 · 政府数据</div>
+                  </div>
+                  <span class="badge badge-brand text-[10px]">必选</span>
+                </label>
+                <label style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--neutral-200); border-radius: var(--radius-sm); cursor: pointer; background: var(--neutral-50);">
+                  <input type="checkbox" checked disabled>
+                  <div class="flex-1">
+                    <div class="text-sm font-medium text-primary">主流媒体</div>
+                    <div class="text-xs text-muted">Reuters · FT · 财新 · 36 氪</div>
+                  </div>
+                  <span class="badge badge-brand text-[10px]">必选</span>
+                </label>
+                <label style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--neutral-200); border-radius: var(--radius-sm); cursor: pointer;">
+                  <input type="checkbox" checked>
+                  <div class="flex-1">
+                    <div class="text-sm font-medium text-primary">学术与行业研究</div>
+                    <div class="text-xs text-muted">Nature · SSRN · 头部咨询白皮书</div>
+                  </div>
+                </label>
+                <label style="display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--neutral-200); border-radius: var(--radius-sm); cursor: pointer;">
+                  <input type="checkbox" checked>
+                  <div class="flex-1">
+                    <div class="text-sm font-medium text-primary">社区与论坛</div>
+                    <div class="text-xs text-muted">Reddit · 即刻 · 行业垂直社区</div>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <!-- 私域连接器 -->
+            <div>
+              <div class="flex items-center justify-between mb-3">
+                <div>
+                  <div class="text-xs text-muted uppercase tracking-wider font-medium">私域连接器（授权后可选）</div>
+                  <div class="text-xs text-secondary mt-1">每项连接器受项目级权限控制，授权后该研究可访问的数据范围如下：</div>
+                </div>
+                <span class="text-xs text-muted">已选 1 / 5</span>
+              </div>
+              <div class="space-y-2">
+
+                <div style="display: grid; grid-template-columns: 1fr auto; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1.5px solid var(--brand-500); background: var(--brand-50); border-radius: var(--radius-md);">
+                  <div class="flex items-center gap-3">
+                    <input type="checkbox" checked>
+                    <div class="w-8 h-8 rounded-md bg-[var(--brand-500)] text-white flex items-center justify-center text-xs font-semibold flex-shrink-0">CRM</div>
+                    <div class="flex-1">
+                      <div class="text-sm font-medium text-primary">客户 CRM</div>
+                      <div class="text-xs text-secondary mt-0.5">已连接 · 最后同步 12 分钟前 · owner: sales-team</div>
+                      <div class="text-xs text-muted mt-1">授权范围：欧亚市场潜客名单（n=2,840），不含个人信息</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="badge badge-success text-[10px]">已授权</span>
+                    <button class="btn btn-ghost btn-sm">⚙</button>
+                  </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr auto; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--neutral-200); border-radius: var(--radius-md);">
+                  <div class="flex items-center gap-3">
+                    <input type="checkbox">
+                    <div class="w-8 h-8 rounded-md bg-[#3D7AB8] text-white flex items-center justify-center text-xs font-semibold flex-shrink-0">DB</div>
+                    <div class="flex-1">
+                      <div class="text-sm font-medium text-primary">内部销售数据库</div>
+                      <div class="text-xs text-secondary mt-0.5">已连接 · 最后同步 2 小时前 · owner: data-ops</div>
+                      <div class="text-xs text-muted mt-1">授权范围：历史 GMV、订单明细、品类拆分</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="badge badge-neutral text-[10px]">未授权</span>
+                    <button class="btn btn-secondary btn-sm">申请授权</button>
+                  </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr auto; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--neutral-200); border-radius: var(--radius-md);">
+                  <div class="flex items-center gap-3">
+                    <input type="checkbox">
+                    <div class="w-8 h-8 rounded-md bg-[var(--neutral-800)] text-white flex items-center justify-center text-xs font-semibold flex-shrink-0">Notion</div>
+                    <div class="flex-1">
+                      <div class="text-sm font-medium text-primary">Notion 团队空间</div>
+                      <div class="text-xs text-secondary mt-0.5">已连接 · 最后同步 1 小时前 · owner: 李静</div>
+                      <div class="text-xs text-muted mt-1">授权范围：竞品分析报告 12 篇、市场调研模板 5 项</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="badge badge-neutral text-[10px]">未授权</span>
+                    <button class="btn btn-secondary btn-sm">申请授权</button>
+                  </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr auto; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--neutral-200); border-radius: var(--radius-md);">
+                  <div class="flex items-center gap-3">
+                    <input type="checkbox">
+                    <div class="w-8 h-8 rounded-md bg-[#0052CC] text-white flex items-center justify-center text-xs font-semibold flex-shrink-0">Conf</div>
+                    <div class="flex-1">
+                      <div class="text-sm font-medium text-primary">Confluence 技术文档</div>
+                      <div class="text-xs text-secondary mt-0.5">已连接 · 最后同步 30 分钟前 · owner: 研发中心</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="badge badge-neutral text-[10px]">未授权</span>
+                    <button class="btn btn-secondary btn-sm">申请授权</button>
+                  </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr auto; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px dashed var(--neutral-200); border-radius: var(--radius-md); cursor: pointer;">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-md bg-[var(--neutral-100)] text-[var(--neutral-600)] flex items-center justify-center text-base flex-shrink-0">+</div>
+                    <div class="flex-1">
+                      <div class="text-sm font-medium text-secondary">添加更多连接器</div>
+                      <div class="text-xs text-muted mt-0.5">支持 Notion、Confluence、Slack、Google Drive、Salesforce、自定义 API</div>
+                    </div>
+                  </div>
+                  <button class="btn btn-ghost btn-sm">浏览市场 →</button>
+                </div>
+
+              </div>
+
+              <!-- 隐私提示 -->
+              <div style="display: flex; gap: var(--space-2); align-items: flex-start; padding: var(--space-3); background: #FCF6E8; border-radius: var(--radius-sm); margin-top: var(--space-3);">
+                <div class="text-[var(--warning-500)] flex-shrink-0">⚠</div>
+                <div class="text-xs text-secondary leading-relaxed">
+                  <strong>数据合规提示：</strong>私域连接器中的所有数据访问将记录到审计日志，并受项目级权限矩阵控制。仅项目成员可访问相应字段，最终报告中将显示数据来源与授权链路。
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Action bar -->
+          <div class="flex items-center justify-between mt-10 pt-6 border-t border-[var(--neutral-200)]">
+            <button class="btn btn-ghost btn-lg">← 上一步</button>
+            <div class="flex items-center gap-3">
+              <span class="text-xs text-muted">预计成本：<span class="font-mono text-brand-dark font-semibold">¥ 30.00</span></span>
+              <a href="./02-cockpit.html" class="btn btn-primary btn-lg">
+                下一步：确认启动
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M3 7h8M7 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </a>
+            </div>
+          </div>
+
+        </div>
+
+      </section>
+
+      <!-- Right: live preview -->
+      <aside class="animate-slide-in-right">
+        <div class="preview-card">
+          <div class="text-xs text-muted uppercase tracking-wider font-medium mb-3">实时预览</div>
+
+          <!-- Preview content -->
+          <div class="mb-4">
+            <div class="text-xs text-muted mb-1.5">研究标题（自动生成）</div>
+            <div class="font-display text-base text-primary leading-snug">
+              中国新能源车企出海欧洲三国（德、法、挪威）可行性评估
+            </div>
+          </div>
+
+          <div class="divider" style="margin: var(--space-3) 0;"></div>
+
+          <div class="preview-row">
+            <span class="preview-key">模板</span>
+            <span class="preview-val">行业研究 + 竞品分析</span>
+          </div>
+          <div class="preview-row">
+            <span class="preview-key">档位</span>
+            <span class="preview-val">深度（¥ 30）</span>
+          </div>
+          <div class="preview-row">
+            <span class="preview-key">预计子问题</span>
+            <span class="preview-val font-mono">8 - 12</span>
+          </div>
+          <div class="preview-row">
+            <span class="preview-key">预计证据</span>
+            <span class="preview-val font-mono">200 - 320</span>
+          </div>
+          <div class="preview-row">
+            <span class="preview-key">预计耗时</span>
+            <span class="preview-val">28 分钟</span>
+          </div>
+
+          <div class="divider" style="margin: var(--space-3) 0;"></div>
+
+          <!-- Planner parsed dimensions -->
+          <div class="text-xs text-muted uppercase tracking-wider font-medium mb-2">已识别的研究维度</div>
+          <div class="space-y-2">
+            <div class="flex items-center justify-between text-xs">
+              <span class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-[var(--brand-500)]"></span>
+                研究对象
+              </span>
+              <span class="badge badge-brand">3 个</span>
+            </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-[var(--brand-500)]"></span>
+                地理范围
+              </span>
+              <span class="badge badge-brand">3 国</span>
+            </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-[var(--brand-500)]"></span>
+                时间窗口
+              </span>
+              <span class="badge badge-brand">2024-2025</span>
+            </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-[var(--warning-500)]"></span>
+                待补充维度
+              </span>
+              <span class="badge badge-warning">2 项</span>
+            </div>
+          </div>
+
+          <div class="divider" style="margin: var(--space-3) 0;"></div>
+
+          <!-- Sub-questions preview -->
+          <div class="text-xs text-muted uppercase tracking-wider font-medium mb-2">预生成的子问题（前 5）</div>
+          <div class="space-y-2 text-xs text-secondary">
+            <div class="flex items-start gap-2">
+              <span class="font-mono text-brand-dark flex-shrink-0">Q1</span>
+              <span class="leading-relaxed">欧盟对中国电动车关税政策最新进展</span>
+            </div>
+            <div class="flex items-start gap-2">
+              <span class="font-mono text-brand-dark flex-shrink-0">Q2</span>
+              <span class="leading-relaxed">比亚迪/蔚来/奇瑞在欧洲市场份额</span>
+            </div>
+            <div class="flex items-start gap-2">
+              <span class="font-mono text-brand-dark flex-shrink-0">Q3</span>
+              <span class="leading-relaxed">欧洲用户对中国品牌接受度</span>
+            </div>
+            <div class="flex items-start gap-2">
+              <span class="font-mono text-brand-dark flex-shrink-0">Q4</span>
+              <span class="leading-relaxed">三国充电基础设施现状</span>
+            </div>
+            <div class="flex items-start gap-2">
+              <span class="font-mono text-brand-dark flex-shrink-0">Q5</span>
+              <span class="leading-relaxed">渠道与售后策略对比</span>
+            </div>
+            <div class="text-center text-muted mt-2 font-mono">+ 3 个待补充</div>
+          </div>
+
+        </div>
+      </aside>
+
+    </div>
+  </main>
+
+</body>
+</html>

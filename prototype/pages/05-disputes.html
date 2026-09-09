@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>分歧处理 · 中国新能源汽车出海欧洲研究 · AI 研究者助手</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,wght@0,400;0,500;0,600;1,400&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="../styles/tokens.css" />
+  <style>
+    /* 双列布局：分歧列表 + 分歧详情 */
+    .disputes-grid {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: var(--space-8);
+      align-items: start;
+    }
+
+    /* ── 分歧严重度色阶 ── */
+    .sev-high   { color: var(--danger-500); }
+    .sev-medium { color: var(--warning-500); }
+    .sev-low    { color: var(--neutral-600); }
+
+    /* ── 分歧类型标签 ── */
+    .dispute-type {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      padding: 2px var(--space-2);
+      border-radius: var(--radius-sm);
+      font-size: var(--font-xs);
+      font-weight: 500;
+    }
+    .type-data    { background: #F7E0E0; color: var(--danger-500); }
+    .type-fact    { background: #F8ECD9; color: var(--warning-500); }
+    .type-method  { background: var(--brand-50); color: var(--brand-700); }
+    .type-coverage{ background: var(--neutral-100); color: var(--neutral-600); }
+
+    /* ── 分歧列表项 ── */
+    .dispute-item {
+      padding: var(--space-4);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+      background: var(--neutral-0);
+      cursor: pointer;
+      transition: all var(--motion-base) var(--ease-out);
+      margin-bottom: var(--space-2);
+    }
+    .dispute-item:hover {
+      border-color: var(--neutral-400);
+    }
+    .dispute-item.is-active {
+      border-color: var(--danger-500);
+      background: #FCF6F6;
+      box-shadow: 0 0 0 1px var(--danger-500);
+    }
+    .dispute-item.is-resolved {
+      opacity: 0.55;
+    }
+
+    /* ── 智能体标签 ── */
+    .agent-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      padding: 2px var(--space-2);
+      border-radius: var(--radius-sm);
+      font-size: var(--font-xs);
+      font-weight: 500;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .agent-researcher { background: #E5F2EB; color: var(--success-500); }
+    .agent-critic     { background: #F7E0E0; color: var(--danger-500); }
+    .agent-orchestrator { background: var(--brand-50); color: var(--brand-700); }
+
+    /* ── 对比双列 ── */
+    .compare-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-4);
+    }
+    .compare-side {
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+      background: var(--neutral-0);
+      overflow: hidden;
+    }
+    .compare-side.is-a { border-top: 3px solid var(--success-500); }
+    .compare-side.is-b { border-top: 3px solid var(--danger-500); }
+    .compare-header {
+      padding: var(--space-3) var(--space-4);
+      background: var(--neutral-50);
+      border-bottom: 1px solid var(--neutral-200);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .compare-body {
+      padding: var(--space-4);
+    }
+
+    /* ── 证据行 ── */
+    .evidence-row {
+      display: flex;
+      gap: var(--space-3);
+      padding: var(--space-2) 0;
+      font-size: var(--font-sm);
+      color: var(--neutral-800);
+      border-bottom: 1px solid var(--neutral-100);
+    }
+    .evidence-row:last-child {
+      border-bottom: none;
+    }
+    .evidence-num {
+      flex-shrink: 0;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: var(--font-xs);
+      color: var(--neutral-400);
+      font-feature-settings: 'tnum' 1;
+      width: 18px;
+    }
+    .evidence-title {
+      flex: 1;
+      color: var(--neutral-800);
+    }
+    .evidence-source {
+      font-size: var(--font-xs);
+      color: var(--neutral-400);
+    }
+
+    /* ── 数据点卡片（紧凑版） ── */
+    .data-chip {
+      display: inline-flex;
+      align-items: baseline;
+      gap: var(--space-1);
+      padding: var(--space-1) var(--space-2);
+      background: var(--neutral-50);
+      border-radius: var(--radius-sm);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: var(--font-xs);
+      color: var(--brand-700);
+      border: 1px solid var(--neutral-200);
+    }
+    .data-chip strong {
+      font-weight: 600;
+      color: var(--neutral-900);
+    }
+
+    /* ── 裁决选项卡 ── */
+    .verdict-option {
+      display: flex;
+      gap: var(--space-3);
+      padding: var(--space-3) var(--space-4);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+      background: var(--neutral-0);
+      cursor: pointer;
+      transition: all var(--motion-base) var(--ease-out);
+      margin-bottom: var(--space-2);
+    }
+    .verdict-option:hover {
+      border-color: var(--neutral-400);
+      background: var(--neutral-50);
+    }
+    .verdict-option.is-selected {
+      border-color: var(--brand-500);
+      background: var(--brand-50);
+      box-shadow: 0 0 0 1px var(--brand-500);
+    }
+    .verdict-radio {
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: var(--radius-full);
+      border: 2px solid var(--neutral-400);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 2px;
+    }
+    .verdict-option.is-selected .verdict-radio {
+      border-color: var(--brand-500);
+    }
+    .verdict-option.is-selected .verdict-radio::after {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: var(--radius-full);
+      background: var(--brand-500);
+    }
+    .verdict-title {
+      font-size: var(--font-sm);
+      font-weight: 500;
+      color: var(--neutral-900);
+      margin-bottom: 2px;
+    }
+    .verdict-desc {
+      font-size: var(--font-xs);
+      color: var(--neutral-600);
+      line-height: 1.5;
+    }
+
+    /* ── 已裁决态标记 ── */
+    .verdict-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      padding: 2px var(--space-2);
+      border-radius: var(--radius-sm);
+      font-size: var(--font-xs);
+      font-weight: 500;
+    }
+    .verdict-a    { background: #E5F2EB; color: var(--success-500); }
+    .verdict-b    { background: #F7E0E0; color: var(--danger-500); }
+    .verdict-both { background: var(--brand-50); color: var(--brand-700); }
+    .verdict-new  { background: #F8ECD9; color: var(--warning-500); }
+    .verdict-skip { background: var(--neutral-100); color: var(--neutral-600); }
+
+    /* ── 关联论断提示 ── */
+    .quote-link {
+      background: var(--neutral-50);
+      border-left: 3px solid var(--brand-500);
+      padding: var(--space-3) var(--space-4);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      font-family: 'Newsreader', serif;
+      font-size: 15px;
+      line-height: 1.65;
+      color: var(--neutral-800);
+    }
+    .quote-link .cite-ref {
+      vertical-align: baseline;
+      margin-left: 2px;
+    }
+
+    /* ── 顶部状态条 ── */
+    .stats-bar {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: var(--space-4);
+    }
+    .stat-card {
+      padding: var(--space-4) var(--space-5);
+      background: var(--neutral-0);
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+    }
+    .stat-num {
+      font-family: 'Newsreader', serif;
+      font-size: 32px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+    .stat-label {
+      font-size: var(--font-xs);
+      color: var(--neutral-600);
+      margin-top: var(--space-2);
+    }
+
+    /* ── 描述列表 ── */
+    .desc-list {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: var(--space-2) var(--space-4);
+      font-size: var(--font-sm);
+    }
+    .desc-list dt {
+      color: var(--neutral-400);
+    }
+    .desc-list dd {
+      color: var(--neutral-900);
+    }
+  </style>
+</head>
+<body>
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="topbar-logo">
+      <span style="width:24px;height:24px;background:var(--brand-500);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;color:white;font-family:'Newsreader',serif;font-weight:700;font-size:14px;">A</span>
+      AI 研究者助手
+    </div>
+    <nav class="topbar-nav">
+      <a class="topbar-link" href="01-home.html">首页</a>
+      <a class="topbar-link" href="02-cockpit.html">研究指挥舱</a>
+      <a class="topbar-link" href="03-report.html">报告</a>
+      <a class="topbar-link active" href="05-disputes.html">分歧处理</a>
+      <a class="topbar-link" href="06-knowledge.html">知识库</a>
+    </nav>
+    <div class="topbar-actions">
+      <button class="btn btn-ghost btn-sm">Cmd+K</button>
+      <button class="btn btn-secondary btn-sm">导出裁决记录</button>
+    </div>
+  </header>
+
+  <main style="max-width:1280px;margin:0 auto;padding:var(--space-8) var(--space-8) var(--space-16);">
+
+    <!-- 面包屑 + 标题 -->
+    <div class="text-sm text-secondary dot-sep mb-3">
+      <span><a href="02-cockpit.html" style="color:var(--neutral-600);text-decoration:none;">研究指挥舱</a></span>
+      <span style="color:var(--neutral-900);font-weight:500;">分歧处理</span>
+    </div>
+
+    <div class="flex items-start justify-between mb-2">
+      <div>
+        <h1 class="font-display text-xl text-primary mb-1">分歧处理工作台</h1>
+        <p class="text-sm text-secondary">来自多智能体批判收敛阶段。每一处不可调和的分歧都需要你做出判断,裁决结果将影响报告生成阶段的最终结论。</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="badge badge-danger">3 处待裁决</span>
+        <span class="badge badge-success">12 处已裁决</span>
+      </div>
+    </div>
+
+    <!-- 顶部状态卡片 -->
+    <section class="stats-bar mt-6 mb-8 stagger">
+      <div class="stat-card">
+        <div class="stat-num sev-high">3</div>
+        <div class="stat-label">待裁决分歧</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num">12</div>
+        <div class="stat-label">本轮已裁决</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num">87%</div>
+        <div class="stat-label">裁决采纳率</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num text-brand">6 阶段</div>
+        <div class="stat-label">当前阶段 · 批判收敛中</div>
+      </div>
+    </section>
+
+    <!-- 主体双列 -->
+    <section class="disputes-grid">
+
+      <!-- 左栏：分歧列表 -->
+      <aside>
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-medium text-primary">分歧列表</h2>
+          <button class="btn btn-ghost btn-sm">展开筛选</button>
+        </div>
+
+        <!-- 筛选标签 -->
+        <div class="flex flex-wrap gap-1 mb-4">
+          <span class="badge badge-danger" style="cursor:pointer;">全部 · 15</span>
+          <span class="badge badge-neutral" style="cursor:pointer;">待裁决 · 3</span>
+          <span class="badge badge-neutral" style="cursor:pointer;">已裁决 · 12</span>
+          <span class="badge badge-neutral" style="cursor:pointer;">数据冲突</span>
+          <span class="badge badge-neutral" style="cursor:pointer;">事实质疑</span>
+        </div>
+
+        <!-- 待裁决分组 -->
+        <div class="text-xs text-muted mb-2 font-medium">待裁决</div>
+
+        <div class="dispute-item is-active animate-fade-in">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="dispute-type type-data">数据冲突</span>
+            <span class="badge badge-danger">高</span>
+          </div>
+          <div class="text-sm text-primary font-medium mb-1">欧盟 2025 关税税率口径</div>
+          <div class="text-xs text-secondary mb-2">两路信源对反补贴税的最终生效税率给出不同数值,差异 4.7 个百分点。</div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-muted">影响 2 处论断 · §2.1 / §3.3</span>
+            <span class="text-muted">2 分钟前</span>
+          </div>
+        </div>
+
+        <div class="dispute-item animate-fade-in">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="dispute-type type-fact">事实质疑</span>
+            <span class="badge badge-warning">中</span>
+          </div>
+          <div class="text-sm text-primary font-medium mb-1">比亚迪 2024Q4 北欧交付量</div>
+          <div class="text-xs text-secondary mb-2">Researcher 引用 4.2 万辆,Critic 指出统计样本未区分挪威/瑞典整车进口与本地组装。</div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-muted">影响 1 处论断 · §2.3</span>
+            <span class="text-muted">8 分钟前</span>
+          </div>
+        </div>
+
+        <div class="dispute-item animate-fade-in">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="dispute-type type-method">方法质疑</span>
+            <span class="badge badge-warning">中</span>
+          </div>
+          <div class="text-sm text-primary font-medium mb-1">用户购买意愿调研样本量</div>
+          <div class="text-xs text-secondary mb-2">Researcher 引用 1,200 份样本,Critic 认为样本未覆盖 35-45 岁主力消费群体。</div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-muted">影响 1 处论断 · §4.2</span>
+            <span class="text-muted">15 分钟前</span>
+          </div>
+        </div>
+
+        <!-- 已裁决分组 -->
+        <div class="text-xs text-muted mt-5 mb-2 font-medium flex items-center gap-2">
+          <span>已裁决</span>
+          <span style="font-weight:400;color:var(--neutral-400);">·  显示 3 / 12</span>
+        </div>
+
+        <div class="dispute-item is-resolved">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="dispute-type type-data">数据冲突</span>
+            <span class="verdict-badge verdict-a">采纳 A</span>
+          </div>
+          <div class="text-sm text-primary font-medium mb-1" style="text-decoration:line-through;">中国整车出口 2024 年同比增速</div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-muted">由张伟裁决 · 1 小时前</span>
+          </div>
+        </div>
+
+        <div class="dispute-item is-resolved">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="dispute-type type-coverage">覆盖盲区</span>
+            <span class="verdict-badge verdict-both">同时呈现</span>
+          </div>
+          <div class="text-sm text-primary font-medium mb-1" style="text-decoration:line-through;">法国市场经销商网络密度</div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-muted">由张伟裁决 · 2 小时前</span>
+          </div>
+        </div>
+
+        <div class="dispute-item is-resolved">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="dispute-type type-fact">事实质疑</span>
+            <span class="verdict-badge verdict-new">追加检索</span>
+          </div>
+          <div class="text-sm text-primary font-medium mb-1" style="text-decoration:line-through;">德国新能源补贴退坡时间</div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-muted">已发起子任务 #04 · 进行中</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 右栏：分歧详情 -->
+      <article class="card card-lg animate-fade-in" style="border-color:var(--danger-500);box-shadow:0 0 0 1px var(--danger-500);">
+
+        <!-- 详情顶部 -->
+        <header class="flex items-start justify-between mb-5">
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <span class="dispute-type type-data">数据冲突</span>
+              <span class="badge badge-danger">高严重度</span>
+              <span class="text-xs text-muted">分歧 #D-007</span>
+            </div>
+            <h2 class="font-display text-md text-primary mb-2">欧盟 2025 反补贴税税率口径差异</h2>
+            <p class="text-sm text-secondary">两条信源对最终生效税率给出不同数值,差值 4.7 个百分点,将影响报告 §2.1 和 §3.3 的两处核心论断。</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-ghost btn-sm">查看原始证据</button>
+            <button class="btn btn-ghost btn-sm">跳过本次</button>
+          </div>
+        </header>
+
+        <!-- 关联论断提示 -->
+        <div class="quote-link mb-6">
+          根据欧盟委员会 2024 年 10 月终裁,比亚迪、吉利、上汽集团将分别被征收
+          <strong>17.0% / 18.8% / 35.3%</strong> 的反补贴税<span class="cite-ref is-disputed">[7]</span>……
+        </div>
+
+        <!-- 双列对比 -->
+        <div class="compare-grid mb-6">
+
+          <!-- 观点 A -->
+          <div class="compare-side is-a">
+            <div class="compare-header">
+              <div class="flex items-center gap-2">
+                <span class="agent-tag agent-researcher">Researcher</span>
+                <span class="text-xs text-muted">观点 A</span>
+              </div>
+              <span class="text-xs text-muted">置信度 78%</span>
+            </div>
+            <div class="compare-body">
+              <div class="text-sm text-primary font-medium mb-2">税率 17.0% / 18.8% / 35.3%</div>
+              <div class="text-xs text-secondary mb-4">基于欧盟委员会官方公告原文,2024-10-29 发布的终裁决定 (EU) 2024/2489。</div>
+
+              <div class="text-xs text-muted font-medium mb-2">关键证据 (3 条)</div>
+              <div>
+                <div class="evidence-row">
+                  <span class="evidence-num">[A1]</span>
+                  <div>
+                    <div class="evidence-title">欧盟委员会终裁决定 (EU) 2024/2489 原文</div>
+                    <div class="evidence-source">EUR-Lex · 官方文件 · 2024-10-29</div>
+                  </div>
+                </div>
+                <div class="evidence-row">
+                  <span class="evidence-num">[A2]</span>
+                  <div>
+                    <div class="evidence-title">中国商务部新闻发言人答记者问</div>
+                    <div class="evidence-source">商务部官网 · 官方文件 · 2024-10-30</div>
+                  </div>
+                </div>
+                <div class="evidence-row">
+                  <span class="evidence-num">[A3]</span>
+                  <div>
+                    <div class="evidence-title">Bloomberg 解读: 比亚迪税率显著低于上汽</div>
+                    <div class="evidence-source">Bloomberg · 主流媒体 · 2024-10-30</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-4 flex flex-wrap gap-2">
+                <span class="data-chip">官方监管 · 1级</span>
+                <span class="data-chip">2 国信源</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 观点 B -->
+          <div class="compare-side is-b">
+            <div class="compare-header">
+              <div class="flex items-center gap-2">
+                <span class="agent-tag agent-critic">Critic</span>
+                <span class="text-xs text-muted">观点 B</span>
+              </div>
+              <span class="text-xs text-muted">置信度 71%</span>
+            </div>
+            <div class="compare-body">
+              <div class="text-sm text-primary font-medium mb-2">税率 21.3% / 23.6% / 38.1%</div>
+              <div class="text-xs text-secondary mb-4">基于行业咨询机构测算,考虑了样本加权与抽样调查抽样率调整后口径。</div>
+
+              <div class="text-xs text-muted font-medium mb-2">关键证据 (3 条)</div>
+              <div>
+                <div class="evidence-row">
+                  <span class="evidence-num">[B1]</span>
+                  <div>
+                    <div class="evidence-title">ICCT 乘用车关税影响测算报告</div>
+                    <div class="evidence-source">ICCT · 智库 · 2024-11-12</div>
+                  </div>
+                </div>
+                <div class="evidence-row">
+                  <span class="evidence-num">[B2]</span>
+                  <div>
+                    <div class="evidence-title">JATO Dynamics 欧洲市场月度追踪</div>
+                    <div class="evidence-source">JATO · 行业数据 · 2024-11-08</div>
+                  </div>
+                </div>
+                <div class="evidence-row">
+                  <span class="evidence-num">[B3]</span>
+                  <div>
+                    <div class="evidence-title">FT 中文: 抽样权重差异使税率被低估</div>
+                    <div class="evidence-source">FT 中文 · 主流媒体 · 2024-11-15</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-4 flex flex-wrap gap-2">
+                <span class="data-chip">智库 · 2级</span>
+                <span class="data-chip">行业测算</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 信源等级对比 -->
+        <div class="mb-6" style="background:var(--neutral-50);padding:var(--space-4);border-radius:var(--radius-md);">
+          <div class="text-xs text-muted font-medium mb-3">信源等级对比</div>
+          <dl class="desc-list">
+            <dt>信源数量</dt>
+            <dd>观点 A · 3 条 (1级 ×2 + 2级 ×1) &nbsp;·&nbsp; 观点 B · 3 条 (2级 ×3)</dd>
+            <dt>等级分布</dt>
+            <dd>观点 A 含 1级官方监管;观点 B 均为 2级二手信源</dd>
+            <dt>时效</dt>
+            <dd>观点 A 平均 4 天前 ·观点 B 平均 9 天前</dd>
+            <dt>分歧性质</dt>
+            <dd>口径差异 · 同一数据的不同加权方式</dd>
+          </dl>
+        </div>
+
+        <!-- 裁决区 -->
+        <div class="divider" style="margin:var(--space-4) 0 var(--space-6);"></div>
+
+        <h3 class="text-sm font-medium text-primary mb-3">你的裁决</h3>
+
+        <div class="verdict-option is-selected">
+          <div class="verdict-radio"></div>
+          <div>
+            <div class="verdict-title">采纳 A · 官方原文口径</div>
+            <div class="verdict-desc">引用欧盟委员会公告原文,标记 B 系列为辅助参考。报告 §2.1、§3.3 将按 17.0% / 18.8% / 35.3% 表述。</div>
+          </div>
+        </div>
+
+        <div class="verdict-option">
+          <div class="verdict-radio"></div>
+          <div>
+            <div class="verdict-title">采纳 B · 行业测算口径</div>
+            <div class="verdict-desc">采纳抽样加权后的口径,标记 A 系列为公告原文。报告将按 21.3% / 23.6% / 38.1% 表述,并附口径说明。</div>
+          </div>
+        </div>
+
+        <div class="verdict-option">
+          <div class="verdict-radio"></div>
+          <div>
+            <div class="verdict-title">同时呈现 · 标注口径差异</div>
+            <div class="verdict-desc">两组数据并列展示,附口径说明。报告末尾研究局限区块追加"信源口径分歧"条目。</div>
+          </div>
+        </div>
+
+        <div class="verdict-option">
+          <div class="verdict-radio"></div>
+          <div>
+            <div class="verdict-title">追加检索 · 引入第三信源</div>
+            <div class="verdict-desc">触发 ResearchAgent 补检子任务,引入第 4 方信源重新交叉验证。预计耗时 4 分钟,消耗约 ¥1.20 token 预算。</div>
+          </div>
+        </div>
+
+        <!-- 裁决说明 -->
+        <div class="mt-4">
+          <label class="text-xs text-muted font-medium mb-2 block">裁决说明 (可选,记录到审计日志)</label>
+          <textarea class="input" rows="3">采纳官方原文口径,B 系列作为补充参考。理由:1级官方信源权威性高于二手测算。</textarea>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="flex items-center justify-between mt-5">
+          <div class="text-xs text-secondary">
+            <span class="badge badge-neutral">未裁决 · 仅你可见</span>
+            裁决后将同步到 Critic、Reporter、Orchestrator
+          </div>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-secondary">取消</button>
+            <button class="btn btn-primary">确认裁决 · 进入下一分歧</button>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <!-- 底部审计说明 -->
+    <section class="card mt-8" style="background:var(--neutral-50);border-style:dashed;">
+      <div class="flex items-start gap-3">
+        <div style="width:24px;height:24px;border-radius:var(--radius-full);background:var(--brand-50);color:var(--brand-700);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;">i</div>
+        <div>
+          <div class="text-sm text-primary font-medium mb-1">裁决记录</div>
+          <div class="text-xs text-secondary" style="line-height:1.65;">所有裁决操作都会记录到审计日志,包含裁决人、时间戳、选择的裁决方式、附加说明。审计记录可导出为 CSV / JSON,用于合规审查与模型迭代训练。Orchestrator 会读取你的裁决模式,自动调整后续阶段的分歧阈值与追问策略。</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</body>
+</html>
