@@ -11,6 +11,9 @@ Thumbs.db
 frontend/node_modules/
 frontend/dist/
 frontend/*.local
+frontend/.vite/
+frontend/src/types/auto-imports.d.ts
+frontend/src/types/components.d.ts
 
 # 后端 (Python3.11 FastAPI + uv)
 backend/.venv/

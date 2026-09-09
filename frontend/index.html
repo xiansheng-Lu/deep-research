@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- 防闪：在应用挂载前按用户偏好或系统主题写入 data-theme -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('themeMode')
+          var mode = stored || 'system'
+          var prefersDark =
+            window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+          var resolved = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode
+          document.documentElement.dataset.theme = resolved
+          document.documentElement.dataset.themeMode = mode
+        } catch (_) {
+          document.documentElement.dataset.theme = 'light'
+          document.documentElement.dataset.themeMode = 'system'
+        }
+      })()
+    </script>
+    <title>AI 研究者助手</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

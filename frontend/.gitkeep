@@ -1,7 +1,0 @@
-# frontend
-
-「AI 研究者助手」前端工程。
-
-- 技术栈：Vue 3 + Vue Router 4 + Pinia + TypeScript（strict）
-- 构建：Vite + pnpm
-- 本目录为骨架占位，后续在此初始化 Vue 工程。

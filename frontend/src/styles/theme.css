@@ -1,0 +1,43 @@
+/* 深色主题覆盖：依据 [前端详细设计 §5.1]
+ * 仅重写浅色层中需要反转的 token，组件样式仍只引用浅色层定义的同名变量 */
+
+@layer tokens {
+  [data-theme='dark'] {
+    /* ── 中性灰阶反转 ── */
+    --neutral-0: #15171f;
+    --neutral-50: #1a1d27;
+    --neutral-100: #232734;
+    --neutral-200: #2d3340;
+    --neutral-400: #5c6478;
+    --neutral-600: #9aa1b0;
+    --neutral-800: #dbdfe6;
+    --neutral-900: #f8f9fb;
+
+    /* ── 品牌主色在深色下提亮 ── */
+    --brand-50: #232744;
+    --brand-100: #2d335a;
+    --brand-300: #5c6499;
+    --brand-500: #8e97c4;
+    --brand-700: #b9c0d9;
+    --brand-900: #eef0f8;
+
+    /* ── 状态色背景微调（深色下饱和度下调） ── */
+    --success-50: #1c3a2c;
+    --warning-50: #3d2f17;
+    --danger-50: #3d1f1f;
+
+    /* ── 阴影加深 ── */
+    --shadow-popover: 0 2px 8px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-dropdown: 0 4px 12px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.3);
+    --shadow-modal: 0 12px 32px rgba(0, 0, 0, 0.6), 0 4px 8px rgba(0, 0, 0, 0.4);
+    --shadow-drawer: -8px 0 24px rgba(0, 0, 0, 0.5);
+
+    /* ── 表层色 ── */
+    --color-bg: #0f1117;
+    --color-surface: var(--neutral-0);
+    --color-text: var(--neutral-800);
+    --color-text-strong: var(--neutral-900);
+    --color-text-muted: var(--neutral-400);
+    --color-border: var(--neutral-200);
+  }
+}

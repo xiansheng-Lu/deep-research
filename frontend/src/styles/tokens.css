@@ -1,0 +1,92 @@
+/* AI 研究者助手 · Design Tokens
+ * 来源：迁移自 prototype/styles/tokens.css
+ * 上游：[交互设计规范 §2]
+ * 风格锚点：研究报告工作站 · 工业中性 · 学术克制
+ * 所有组件样式只允许引用这里的 CSS 变量，禁止硬编码色值/字号（见 [前端详细设计 §5.1]）
+ */
+
+@layer tokens {
+  :root,
+  [data-theme='light'] {
+    /* ── 品牌主色：深靛蓝 ── */
+    --brand-50: #eef0f8;
+    --brand-100: #d9deef;
+    --brand-300: #8e97c4;
+    --brand-500: #3d4789;
+    --brand-700: #2a3163;
+    --brand-900: #1a1f45;
+
+    /* ── 中性灰阶 ── */
+    --neutral-0: #ffffff;
+    --neutral-50: #f8f9fb;
+    --neutral-100: #eef1f5;
+    --neutral-200: #dbdfe6;
+    --neutral-400: #9aa1b0;
+    --neutral-600: #5c6478;
+    --neutral-800: #2d3340;
+    --neutral-900: #15171f;
+
+    /* ── 状态色 ── */
+    --success-500: #2f9e6b;
+    --success-50: #e5f2eb;
+    --warning-500: #d08a2e;
+    --warning-50: #f8ecd9;
+    --danger-500: #c84a4a;
+    --danger-50: #f7e0e0;
+    --info-500: #3d7ab8;
+
+    /* ── 信源语义 ── */
+    --source-primary: var(--brand-500);
+    --source-secondary: var(--neutral-600);
+    --source-private: var(--success-500);
+    --source-disputed: var(--danger-500);
+
+    /* ── 字号（7 级） ── */
+    --font-xs: 11px;
+    --font-sm: 13px;
+    --font-base: 15px;
+    --font-md: 18px;
+    --font-lg: 22px;
+    --font-xl: 28px;
+    --font-2xl: 36px;
+
+    /* ── 间距（8px 基线） ── */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-12: 48px;
+    --space-16: 64px;
+
+    /* ── 圆角（双层） ── */
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --radius-full: 9999px;
+
+    /* ── 阴影（极浅，仅浮层） ── */
+    --shadow-popover: 0 2px 8px rgba(15, 17, 23, 0.06), 0 1px 2px rgba(15, 17, 23, 0.04);
+    --shadow-dropdown: 0 4px 12px rgba(15, 17, 23, 0.08), 0 2px 4px rgba(15, 17, 23, 0.04);
+    --shadow-modal: 0 12px 32px rgba(15, 17, 23, 0.12), 0 4px 8px rgba(15, 17, 23, 0.06);
+    --shadow-drawer: -8px 0 24px rgba(15, 17, 23, 0.08);
+
+    /* ── 动效 ── */
+    --motion-fast: 150ms;
+    --motion-base: 220ms;
+    --motion-slow: 300ms;
+    --motion-slower: 450ms;
+    --ease-out: cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* ── 表层色 ── */
+    --color-bg: var(--neutral-50);
+    --color-surface: var(--neutral-0);
+    --color-text: var(--neutral-800);
+    --color-text-strong: var(--neutral-900);
+    --color-text-muted: var(--neutral-400);
+    --color-border: var(--neutral-200);
+  }
+}
