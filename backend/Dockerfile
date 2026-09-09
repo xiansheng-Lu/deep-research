@@ -24,7 +24,7 @@ FROM python:3.11-slim AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/install/bin:${PATH}" \
-    PYTHONPATH="/app/apps/api:${PYTHONPATH}"
+    PYTHONPATH="/app:${PYTHONPATH}"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl tini libpq5 \
@@ -33,7 +33,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=builder /install /install
-COPY apps ./apps
+COPY app ./app
 COPY alembic.ini ./
 
 EXPOSE 8000
