@@ -1,6 +1,6 @@
 # AI 研究者助手 · Git 协作与代码版本管理规范
 
-> 版本: v1.1 · 生效日期: 2026-09-09 · 适用范围: 全项目（M1-M3 及后续迭代）
+> 版本: v1.2 · 生效日期: 2026-09-10 · 适用范围: 全项目（M1-M3 及后续迭代）
 > 适用角色: 开发（前端/后端）、产品、设计 · 上游依据: SDP《软件开发计划》
 > 目标: 支撑前后端并行开发与多角色协作场景下的文件变更管理，保障代码库整洁、可追溯、协作高效
 
@@ -42,30 +42,34 @@
 
 | 分支类型 | 命名规则 | 示例 | 生命周期 | 权限 |
 | --- | --- | --- | --- | --- |
-| 主分支 | `main` | `main` | 长期 | 只读，禁止直接 push，仅经 MR 合并 |
-| 开发分支 | `develop` | `develop` | 长期 | 只读，禁止直接 push，仅经 MR 合并 |
-| 功能分支 | `feature/{说明}` | `feature/research-pipeline` | 任务完成即删除 | 各角色自行创建与维护 |
-| 发布分支 | `release/{版本号}` | `release/v1.0.0` | 发布后删除 | 受限，仅 release manager |
+| 主分支 | `main` | `main` | 长期 | 平台级强保护，禁止直推与强制推送，仅经 PR 评审合并 |
+| 开发分支 | `dev` | `dev` | 长期 | 禁止直接 push，仅经 PR 评审合并 |
+| 功能分支 | `feature/{前缀}-{说明}` | `feature/backend-research-pipeline` | 任务完成即删除 | 各角色自行创建与维护 |
+| 文档分支 | `feature/{docs|proto}-{说明}` | `feature/docs-arch-overview` | 合并后删除 | 产品/设计/开发 |
+| 发布分支 | `release/{版本号}` | `release/v1.0.0` | 发布后删除 | 受限，按需创建 |
 | 修复分支 | `bugfix/{说明}` | `bugfix/report-404` | 修复合并后删除 | 开发 |
-| 紧急修复分支 | `hotfix/{版本号}` | `hotfix/v1.0.1` | 修复合并后删除 | 开发（紧急） |
+| 紧急修复分支 | `hotfix/{说明}` | `hotfix/login-500` | 修复合并后删除 | 开发（紧急） |
 
 命名补充约定：
 
 - 小写字母与数字，单词以 `-` 分隔，避免中文、空格、`_` 混用带来的跨平台问题。
-- 分支名应能短化概括改动意图，如 `feature/crm-data-connector`。
-- 同一大功能前后端并行时，允许按端二次划分，如 `feature/research-pipeline-frontend` 与 `feature/research-pipeline-backend`；若必须共享契约改动，应在 MR 描述互相引用以保持同步。
-- 文档/原型类变更使用 `feature/{角色}-{说明}`，如 `feature/design-interaction-spec`、`feature/proto-knowledge-page`。
+- 分支名应能短化概括改动意图，如 `feature/backend-crm-connector`。
+- 同一大功能前后端并行时，按端使用统一前缀归档：`feature/backend-*` 与 `feature/frontend-*`，不设前后端常驻分支；`dev` 为唯一集成中心。若须共享契约改动，在 MR 描述互相引用以保持同步。
+- 文档/原型类变更独立于某次代码时使用 `feature/docs-*`、`feature/proto-*`；随某功能代码演进的设计/契约文档不单开分支，与对应代码同分支同 PR 提交（见 §3.2）。
 
 ### 3.2 分支流向
 
-- 主流程：`feature/* → develop` 集成，`develop → release/vX.Y.Z → main` 发布。
-- 紧急修复：`hotfix` 从 `main` 拉出，合并回 `main` 与 `develop`。
+- 主流程：`feature/* → dev` 集成；**日常发版不经 release，直接通过 `dev → main` 的 PR 合并，并在 `main` 上打 `vX.Y.Z` 标签**。
+- 文档策略：随代码演进的设计/契约文档与对应代码同 PR；不绑定代码的 PRD、计划、规范、整体方案等管理类文档走 `feature/docs-* → dev`。
+- 发布分支仅按需：需要版本冻结或并发维护上一版本时才拉 `release/`。
+- 紧急修复：`hotfix` 从 `main` 拉出，合并回 `main` 与 `dev`。
 
 ### 3.3 分支使用规范
 
-1. 从正确的基分支拉取：功能分支一律从 `develop`（或经批准的 `release`）拉取，修复分支从对应的发布/主分支拉取。
+1. 从正确的基分支拉取：功能/文档分支一律从 `dev`（或经批准的 `release`、`hotfix`）拉取，修复分支从对应的发布/主分支拉取。
 2. 分支应只在创建者与协作范围内使用，完成并合并后及时删除，避免分支堆积。
 3. 禁止将禁用命令/破坏性操作作用于共享分支（详见 §10.1）。
+4. `main` 与 `dev` 均为共享分支，任何改动（含文档）必须经 PR 评审合入，分支保护规则由托管平台强制执行（详见 §13）。
 
 ---
 
@@ -135,11 +139,12 @@ chore: 初始化 backend、frontend 目录骨架
 
 | 场景 | 推荐策略 | 说明 |
 | --- | --- | --- |
-| 功能分支 → develop | Squash Merge | 仅保留一条汇总提交，历史简洁；feature 内部提交可粗略 |
-| 修复分支 → develop | Squash 或 Fast-forward | 保持修复记录单一清晰 |
+| 功能/文档分支 → dev | Squash Merge | 仅保留一条汇总提交，历史简洁；feature 内部提交可粗略 |
+| 修复分支 → dev | Squash 或 Fast-forward | 保持修复记录单一清晰 |
+| dev → main（日常发版） | Merge, `--no-ff` | 保留发布节点结构，便于回看发布边界 |
 | hotfix → main | Merge, `--no-ff` | 保留紧急修复节点，便于追溯 |
-| hotfix → develop | Merge, `--no-ff` | 保证 develop 承接线上修复，避免回归缺失 |
-| release → main | Merge, `--no-ff` | 保留发布节点结构，便于回看发布边界 |
+| hotfix → dev | Merge, `--no-ff` | 保证 dev 承接线上修复，避免回归缺失 |
+| release → main | Merge, `--no-ff` | 按需发布冻结时使用，便于回看发布边界 |
 
 ### 5.2 合并前置条件
 
@@ -160,7 +165,7 @@ chore: 初始化 backend、frontend 目录骨架
 
 ### 6.1 触发时机
 
-所有合并到 `develop`、`release`、`main` 的变更，原则上必须通过 MR/PR 评审；紧急 hotfix 可先合并后补审并在描述中标注。
+所有合并到 `dev`、`release`、`main` 的变更必须通过 PR 评审；评审要求由分支保护规则强制执行（见 §13）。`hotfix` 走快速评审通道：仍提交 PR，由 1 名非作者的评审者通过即可合并（禁止 self-approval），风险描述须在 PR 中标注。
 
 ### 6.2 评审角色与职责
 
@@ -195,6 +200,8 @@ chore: 初始化 backend、frontend 目录骨架
 
 ### 6.5 质量控制指标
 
+- 合并到 `dev` 的功能/文档改动至少 1 名评审者通过；合并到 `main` 的发版改动需 `1 名评审者 + 1 名 Code Owner` 通过（见 §13.1）。
+- 禁止 PR 提交者审批自己的改动（禁止 self-approval），须由其他团队成员评审。
 - MR/PR 应小而聚焦，单条原则上控制在可完整审阅的规模（大改动拆分为多个 MR）。
 - 关键路径（研究流水线、数据模型、契约）改动必须双人评审。
 
@@ -223,11 +230,21 @@ chore: 初始化 backend、frontend 目录骨架
 
 ### 7.3 发布流程
 
-1. 从 `develop` 拉出 `release/vX.Y.Z`。
-2. 冻结功能，仅接受修复与文档微调。
-3. 提升版本号并补充变更记录（Changelog）。
-4. 验证通过后 `--no-ff` 合并到 `main`，打标签。
-5. 若无主版本变更，`main` 需同步回 `develop` 以避免版本回溯。
+日常发布（默认路径）：
+
+1. 将可发布的功能/修复已合入 `dev`。
+2. 提升版本号并补充 Changelog，提交到 `dev`。
+3. 提交 `dev → main` 的 PR，经 2 名评审者通过后合并。
+4. 在 `main` 上打 `vX.Y.Z` 标签。
+
+按需发布（冻结/维护旧版）：
+
+1. 从 `dev` 拉出 `release/vX.Y.Z`，冻结功能，仅接受修复与文档微调。
+2. 提升版本号并补充变更记录。
+3. 验证通过后 `--no-ff` 合并到 `main`，打标签。
+4. 若无主版本变更，`main` 同步回 `dev` 以避免版本回溯。
+
+无论走哪条路径，自 `v1.2` 起 `feature/* → dev → main` 为唯一出入口，禁止绕开 PR 向 `main` 直推。
 
 ### 7.4 变更记录
 
@@ -242,11 +259,11 @@ chore: 初始化 backend、frontend 目录骨架
 
 1. 按角色/模块划分目录责任（见 §2），减少同名文件交集。
 2. 高频变动的契约文件（后端契约草案、接口类型）新增而非原地覆盖，必要时拆分文件。
-3. 定期同步 `develop` 最新代码，缩短分支存活时间。
+3. 定期同步 `dev` 最新代码，缩短分支存活时间。
 
 ### 8.2 冲突处理规范
 
-1. 冲突在个人工作分支上解决，禁止在共享分支（`main`/`develop`）直接改提交或强推解决冲突。
+1. 冲突在个人工作分支上解决，禁止在共享分支（`main`/`dev`）直接改提交或强推解决冲突。
 2. 处理流程：
    - `git fetch` 获取最新目标分支；
    - 将目标分支 rebase 或 merge 进当前分支触发冲突；
@@ -270,7 +287,7 @@ chore: 初始化 backend、frontend 目录骨架
 
 | 事项 | 要求 |
 | --- | --- |
-| 基分支 | 一律从 `develop` 拉取 `feature/*` |
+| 基分支 | 一律从 `dev` 拉取 `feature/*` |
 | 提交类型 | `feat`/`fix`/`refactor`/`perf`/`test`/`build`/`style`/`chore` |
 | MR 通过条件 | 构建通过 + 相关测试通过 + 评审通过 |
 | 契约变更 | 后端先更新契约草案，前端其后承接；MR 互相引用 |
@@ -282,7 +299,7 @@ chore: 初始化 backend、frontend 目录骨架
 
 | 事项 | 要求 |
 | --- | --- |
-| 基分支 | 一律从 `develop` 拉取 `feature/product-{说明}`，变更经 MR/PR 合入 |
+| 基分支 | 一律从 `dev` 拉取 `feature/product-{说明}`，变更经 MR/PR 合入 |
 | 提交类型 | `docs`、`feat`（当新增需求说明）、`chore` |
 | 评审 | 由产品负责人初评、研发/设计对照确认可落地性 |
 | 变更记录 | 需求变更需关联《软件需求规格说明书》相应条目，标注版本与变更原因 |
@@ -293,7 +310,7 @@ chore: 初始化 backend、frontend 目录骨架
 
 | 事项 | 要求 |
 | --- | --- |
-| 基分支 | `develop` 上拉 `feature/design-{说明}` 或 `feature/proto-{说明}` |
+| 基分支 | `dev` 上拉 `feature/design-{说明}` 或 `feature/proto-{说明}` |
 | 提交类型 | `design`、`docs`、`feat`（当新增设计能力或原型页） |
 | 评审 | 由设计负责人初评；原型交付前由研发确认可实现性与交互约束 |
 | 契约衔接 | 交互规范修订后与后端契约、前端实现同步对齐，在 MR 中引用 |
@@ -312,7 +329,7 @@ chore: 初始化 backend、frontend 目录骨架
 
 ### 10.1 日常操作红线
 
-1. 不直接向 `main`/`develop` push 改动，一切经 MR/PR。
+1. 不直接向 `main`/`dev` push 改动，一切经 MR/PR。
 2. 不使用 `push --force` 改写共享分支历史；个人未合并分支视情况经团队同意方可强推。
 3. 不合并未评审、未通过构建的 MR/PR。
 4. 不提交密钥、生产环境凭据、真实敏感数据。
@@ -333,11 +350,56 @@ chore: 初始化 backend、frontend 目录骨架
 
 | 用途 | 命令 |
 | --- | --- |
-| 拉取最新并创建功能分支 | `git checkout -b feature/xxx develop` |
+| 拉取最新并创建功能分支 | `git checkout -b feature/xxx dev` |
 | 查看本地分支与跟踪 | `git branch -vv` |
-| 查看尚未合入的提交 | `git log develop..feature/xxx --oneline` |
+| 查看尚未合入的提交 | `git log dev..feature/xxx --oneline` |
 | 清理已合并分支 | `git branch -d feature/xxx` |
 | 暂存冲突之外的改动 | `git add -u`（按需指定文件） |
+
+---
+
+## 13. GitHub 分支保护规则
+
+> `main` 与 `dev` 的强保护必须在 GitHub（Settings → Branches → Branch protection rules）上落地为分支保护规则，作为加锁动作强制执行，防止绕过规范直接推送。
+
+### 13.1 `main` 分支保护
+
+| 规则项 | 配置值 | 说明 |
+| --- | --- | --- |
+| Require status checks to pass | 暂不开启 | 待 CI 就绪后补配（见 §13.3） |
+| Require a pull request before merging | 开 | `main` 只接受 PR 合入 |
+| Required approvals | 1 | 发版改动需 1 名评审者（见 §6.5） |
+| Require review from Code Owners | 开 | 发版改动须含 1 名 Code Owner 审批 |
+| Dismiss stale pull request approvals | 建议开 | 有新提交后旧评审自动失效，需重新通过 |
+| Do not allow bypassing the above settings | 开 | 管理员也不跳过规则 |
+| Lock branch | 关 | 保持可合并（勿锁死） |
+| Require linear history | 建议关 | 与 `--no-ff` 发版合并冲突，保持默认关 |
+| Allow force pushes / deletions | 关闭/禁止 | 共享分支禁 force 与删除 |
+
+### 13.2 `dev` 分支保护
+
+| 规则项 | 配置值 | 说明 |
+| --- | --- | --- |
+| Require a pull request before merging | 开 | `dev` 只接受 PR 合入 |
+| Required approvals | 1 | 常规功能/文档改动需 1 名评审者（见 §6.5） |
+| Require status checks to pass | 暂不开启 | 待 CI 就绪后补配（见 §13.3） |
+| Allow force pushes / deletions | 关闭 | 共享分支禁 force 与删除 |
+| Do not allow bypassing the above settings | 开 | 管理员不例外 |
+
+### 13.3 评审人数与受保护分支的匹配
+
+- 评审人数：`dev` 为 1 人；`main` 为 `1 名评审者 + 1 名 Code Owner`（发版改动）。
+- 禁止 self-approval：PR 提交者不得审批自己提交的改动，评审须来自其他团队成员。
+- `hotfix` 快速通道：仍走 PR，由 1 名非作者评审者通过后合入，可通过分支上临时设定的较低门槛执行，但不降低 `main` 常规门槛。
+- status check：当前未配置 CI，故两个受保护分支暂不勾选 `Require status checks to pass`；待后续引入 CI（见 §11）时，再勾选并将构建/测试设为必备状态。
+
+### 13.4 落地顺序
+
+1. 将仓库推送到 GitHub，创建 `dev` 分支（建议默认分支保持 `main`）。
+2. 配置仓库级开关：关闭 "Allow pull request authors to approve their own pull requests"（禁止 self-approval），并提交 `CODEOWNERS` 文件明确目录责任人（见 §9 角色映射）。
+3. 为 `main`、`dev` 分别添加保护规则（§13.1 / §13.2）。
+4. 团队成员以特性分支 + PR 方式协作，禁止直接 push 到受保护分支。
+5. 开启后由集成负责人巡检是否符合规范（见 §11）。
 
 ---
 
@@ -346,7 +408,8 @@ chore: 初始化 backend、frontend 目录骨架
 | 版本 | 日期 | 变更项 |
 | --- | --- | --- |
 | v1.0 | 2026-09-09 | 首次发布 |
-| v1.1 | 2026-09-09 | 精简与精进修订：修正交叉引用（§3.3→§10.1）与版本演进规则；统一各角色分支隔离边界；补充 breaking change 表达约定；删除术语表、职责矩阵、分支 ASCII 图、重复命令速查项；版本示例统一 0.x 语义；新增 hotfix→develop 合并策略；后端版本载体改为待定项 |
+| v1.1 | 2026-09-09 | 精简与精进修订：修正交叉引用（§3.3→§10.1）与版本演进规则；统一各角色分支隔离边界；补充 breaking change 表达约定；删除术语表、职责矩阵、分支 ASCII 图、重复命令速查项；版本示例统一 0.x 语义；新增 hotfix→dev 合并策略；后端版本载体改为待定项 |
+| v1.2 | 2026-09-10 | 并发协作模型定型：确立 `dev` 为唯一集成中心，feature 按端前缀归档、不设前后端常驻分支；`main` 平台级强保护加锁；日常发版走 `dev → main` PR、release 改为按需；hotfix 走单评审者快速通道；docs 随代码同 PR、管理类文档走 `feature/docs-*`；新增 §13 GitHub 分支保护规则；评审配比定为 dev 1 人、main 1 评审 + 1 Code Owner，禁止 self-approval，status check 待 CI 就绪后开启 |
 
 ---
 
