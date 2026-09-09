@@ -1,0 +1,26 @@
+# 代码责任归属 (CODEOWNERS)
+# 语法: 路径模式 [负责人]
+# 负责人使用 GitHub 用户名、团队(@org/team)或邮箱。
+# 此文件对应《AI研究者助手-Git协作与代码版本管理规范》§2/§9 的目录角色映射。
+
+# 后端 (Python3.11 + FastAPI + uv)
+/backend/ @backend-maintainer
+
+# 前端 (Vue3 + Vite + pnpm)
+/frontend/ @frontend-maintainer
+
+# 需求与计划文档 (产品)
+/docs/prd/ @backend-maintainer @frontend-maintainer
+/docs/plan/ @backend-maintainer @frontend-maintainer
+
+# 设计类文档 (架构/前后端详细设计/交互/契约/智能体规格)
+/docs/design/ @backend-maintainer @frontend-maintainer
+
+# 工程协作与版本管理 (Git 规范等)
+/docs/AI研究者助手-Git协作与代码版本管理规范.md @backend-maintainer
+
+# 前端高保真原型 (设计/产品)
+/prototype/ @frontend-maintainer
+
+# 根级工程配置文件
+/.gitignore @backend-maintainer @frontend-maintainer
