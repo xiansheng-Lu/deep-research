@@ -1,6 +1,6 @@
 # AI 研究者助手 · Git 协作与代码版本管理规范
 
-> 版本: v1.2 · 生效日期: 2026-09-10 · 适用范围: 全项目（M1-M3 及后续迭代）
+> 版本: v1.3 · 生效日期: 2026-09-10 · 适用范围: 全项目（M1-M3 及后续迭代）
 > 适用角色: 开发（前端/后端）、产品、设计 · 上游依据: SDP《软件开发计划》
 > 目标: 支撑前后端并行开发与多角色协作场景下的文件变更管理，保障代码库整洁、可追溯、协作高效
 
@@ -396,7 +396,7 @@ chore: 初始化 backend、frontend 目录骨架
 ### 13.4 落地顺序
 
 1. 将仓库推送到 GitHub，创建 `dev` 分支（建议默认分支保持 `main`）。
-2. 配置仓库级开关：关闭 "Allow pull request authors to approve their own pull requests"（禁止 self-approval），并提交 `CODEOWNERS` 文件明确目录责任人（见 §9 角色映射）。
+2. 禁止 self-approval：该开关（"Allow pull request authors to approve their own pull requests"）仅在 GitHub 组织账号可见；个人账号仓库无此开关，禁止 self-approval 由 §6.5 评审纪律约束（评审须来自其他团队成员）。同时提交 `CODEOWNERS` 文件明确目录责任人（见 §9 角色映射）。
 3. 为 `main`、`dev` 分别添加保护规则（§13.1 / §13.2）。
 4. 团队成员以特性分支 + PR 方式协作，禁止直接 push 到受保护分支。
 5. 开启后由集成负责人巡检是否符合规范（见 §11）。
@@ -410,6 +410,7 @@ chore: 初始化 backend、frontend 目录骨架
 | v1.0 | 2026-09-09 | 首次发布 |
 | v1.1 | 2026-09-09 | 精简与精进修订：修正交叉引用（§3.3→§10.1）与版本演进规则；统一各角色分支隔离边界；补充 breaking change 表达约定；删除术语表、职责矩阵、分支 ASCII 图、重复命令速查项；版本示例统一 0.x 语义；新增 hotfix→dev 合并策略；后端版本载体改为待定项 |
 | v1.2 | 2026-09-10 | 并发协作模型定型：确立 `dev` 为唯一集成中心，feature 按端前缀归档、不设前后端常驻分支；`main` 平台级强保护加锁；日常发版走 `dev → main` PR、release 改为按需；hotfix 走单评审者快速通道；docs 随代码同 PR、管理类文档走 `feature/docs-*`；新增 §13 GitHub 分支保护规则；评审配比定为 dev 1 人、main 1 评审 + 1 Code Owner，禁止 self-approval，status check 待 CI 就绪后开启 |
+| v1.3 | 2026-09-10 | 落地澄清：self-approval 开关仅组织账号可见，个人仓库由 §6.5 评审纪律约束 |
 
 ---
 
