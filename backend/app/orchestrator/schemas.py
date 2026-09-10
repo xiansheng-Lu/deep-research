@@ -47,4 +47,33 @@ class ClarificationSchema(BaseModel):
     structured_question: dict[str, Any] = Field(default_factory=dict)
 
 
-__all__ = ["ClarificationQuestion", "ClarificationSchema"]
+class SubQuestionItem(BaseModel):
+    """单条子问题（§6.5.3）。
+
+    Attributes:
+        question: 子问题完整文本。
+        depends_on: 依赖的上游子问题 ID（拓扑顺序执行用）。
+        rationale: 拆解理由（仅用于审计，前端不展示）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=1, max_length=500)
+    depends_on: list[str] = Field(default_factory=list)
+    rationale: str = Field(default="", max_length=500)
+
+
+class SubQuestionListSchema(BaseModel):
+    """子问题列表（§6.5.3）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sub_questions: list[SubQuestionItem] = Field(default_factory=list)
+
+
+__all__ = [
+    "ClarificationQuestion",
+    "ClarificationSchema",
+    "SubQuestionItem",
+    "SubQuestionListSchema",
+]
