@@ -38,15 +38,5 @@ export default [
       ],
       'no-console': ['warn', { allow: ['warn', 'error'] }]
     }
-  },
-  {
-    // mock 网关仅在 development 下作为 Vite 插件运行，属于 Node 侧模拟代码
-    // WP-2 重写 mock 对齐冻结契约时收紧此处规则
-    files: ['src/services/mock/**/*.ts'],
-    rules: {
-      '@typescript-eslint/no-explicit-any': 'off',
-      'no-console': 'off',
-      'no-empty': 'off'
-    }
   }
 ]

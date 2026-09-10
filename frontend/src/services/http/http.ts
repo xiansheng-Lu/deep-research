@@ -1,5 +1,5 @@
 // HttpClient（[前端详细设计 §8.2]）
-// 职责：相对路径拼接 API 基址、Authorization 注入、RFC 7807 错误归一、
+// 职责：相对路径拼接 API 基址、Authorization 注入、后端错误体归一、
 //       401 时 single-flight 刷新 access token 并重放原请求。
 // 鉴权状态不直接依赖 pinia store（避免循环依赖），由应用启动时注册 AuthProvider。
 import type { ApiError } from './error'
@@ -85,18 +85,27 @@ async function request<T>(input: string, init: HttpOptions, allowRetry: boolean)
 }
 
 async function toApiError(response: Response): Promise<ApiError> {
-  // RFC 7807 application/problem+json；前端按 code 分支（§8.2）
+  // 后端错误体：业务异常 {code, message, details}（main.py AppError handler）；
+  // FastAPI 校验错误 {detail: [...]}；按字段存在性归一为 ApiError
   let body: Record<string, unknown> = {}
   try {
     body = (await response.json()) as Record<string, unknown>
   } catch {
     // 响应体非 JSON 时保留 status 用于回退
   }
+  const detail =
+    typeof body.detail === 'string'
+      ? body.detail
+      : typeof body.message === 'string'
+        ? body.message
+        : Array.isArray(body.detail)
+          ? JSON.stringify(body.detail)
+          : ''
   return {
     status: response.status,
     code: typeof body.code === 'string' ? body.code : `HTTP_${response.status}`,
     title: typeof body.title === 'string' ? body.title : response.statusText,
-    detail: typeof body.detail === 'string' ? body.detail : '',
+    detail,
     traceId: typeof body.trace_id === 'string' ? body.trace_id : response.headers.get('x-trace-id') ?? undefined
   }
 }

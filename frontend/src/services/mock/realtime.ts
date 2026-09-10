@@ -1,100 +1,86 @@
-// WebSocket 频道管理（[前端M0收尾方案 §4.3]）
-// 基于 ws 包实现 WS 服务端；鉴权方式对齐后端：URL query 参数 ?token=<jwt>
+// WebSocket 频道管理：基于 ws 包实现 WS 服务端
+// 与后端 app/realtime/ws.py 同构：/api/v1/ws/runs/{run_id}/stream?token=<access>，
+// 30s 心跳；终态事件由路由层广播后调用 closeWsConnections 关闭连接
 
 import type { WebSocket as WsWebSocket } from 'ws'
-import type { IncomingMessage } from 'node:http'
 import {
   REALTIME_PROTOCOL_VERSION,
   type RealtimeEnvelope,
   type RealtimePing,
   type RealtimePong
 } from '../realtime/types'
+import { store } from './store'
 
-// WS 连接池
+// WS 连接池：run_id -> 连接集合
 const wsConnections = new Map<string, Set<WsWebSocket>>()
 
 // 心跳定时器
 const heartbeatTimers = new Map<WsWebSocket, NodeJS.Timeout>()
 
-// 处理 WS 升级请求
-export function handleWsUpgrade(
-  ws: WsWebSocket,
-  req: IncomingMessage,
-  runId: string
-): void {
-  // 鉴权：query 参数必须携带非空 token（与后端 /ws/runs/{id}/stream 一致）
-  const requestUrl = new URL(req.url ?? '/', 'http://localhost')
-  if (!requestUrl.searchParams.get('token')) {
-    ws.close(1008, 'Missing token')
-    return
-  }
+// 心跳间隔与后端一致（30 秒）
+const HEARTBEAT_INTERVAL_MS = 30_000
 
+// 校验 query token：必须是登录后签发且仍有效的 mock access token
+// 网关在 WS 握手前调用，无效时直接拒绝升级（对齐后端 accept 前 close 的语义）
+export function isAccessTokenValid(token: string | null): boolean {
+  return !!token && store.accessTokens.has(token)
+}
+
+// 处理已通过鉴权的 WS 连接
+export function handleWsUpgrade(ws: WsWebSocket, runId: string): void {
   // 注册连接
-  if (!wsConnections.has(runId)) {
-    wsConnections.set(runId, new Set())
-  }
-  wsConnections.get(runId)!.add(ws)
+  const connections = wsConnections.get(runId) ?? new Set<WsWebSocket>()
+  connections.add(ws)
+  wsConnections.set(runId, connections)
 
-  // 启动心跳
   startHeartbeat(ws)
 
-  // 消息处理
   ws.on('message', (data) => {
     try {
-      const msg = JSON.parse(data.toString())
-      handleWsMessage(ws, runId, msg)
+      const msg: unknown = JSON.parse(data.toString())
+      handleWsMessage(ws, msg)
     } catch {
-      // 忽略无效消息
+      // 忽略无法解析的客户端消息
     }
   })
 
-  // 连接关闭
   ws.on('close', () => {
     stopHeartbeat(ws)
-    const connections = wsConnections.get(runId)
-    if (connections) {
-      connections.delete(ws)
-      if (connections.size === 0) {
-        wsConnections.delete(runId)
-      }
+    const set = wsConnections.get(runId)
+    if (!set) return
+    set.delete(ws)
+    if (set.size === 0) {
+      wsConnections.delete(runId)
     }
   })
 
-  // 错误处理
   ws.on('error', () => {
     stopHeartbeat(ws)
   })
 }
 
-// 处理客户端消息
-function handleWsMessage(ws: WsWebSocket, _runId: string, msg: any): void {
-  // 心跳：收到 ping 回复 pong
-  if (msg.type === 'ping') {
+// 处理客户端消息：M1 仅应答心跳
+function handleWsMessage(ws: WsWebSocket, msg: unknown): void {
+  if (typeof msg !== 'object' || msg === null) return
+  const type = (msg as { type?: unknown }).type
+  if (type !== 'ping' && type !== 'pong') return
+
+  if (type === 'ping') {
     const pong: RealtimePong = { v: REALTIME_PROTOCOL_VERSION, type: 'pong', ts: Date.now() }
-    sendWsMessage(ws, pong as any)
-    return
-  }
-
-  // 收到 pong 不处理
-  if (msg.type === 'pong') return
-
-  // 其他消息：按 envelope 处理（当前仅记录）
-  if (msg.event_id) {
-    // 可扩展：处理客户端指令（如 interrupt.respond）
+    sendWsMessage(ws, pong)
   }
 }
 
-// 启动心跳
+// 启动心跳：服务端定时发 ping
 function startHeartbeat(ws: WsWebSocket): void {
   stopHeartbeat(ws)
   const timer = setInterval(() => {
-    const ping: RealtimePing = { type: 'ping', ts: Date.now() }
-    sendWsMessage(ws, ping as any)
-  }, 25000) // 25s 心跳
+    const ping: RealtimePing = { v: REALTIME_PROTOCOL_VERSION, type: 'ping', ts: Date.now() }
+    sendWsMessage(ws, ping)
+  }, HEARTBEAT_INTERVAL_MS)
   heartbeatTimers.set(ws, timer)
 }
 
-// 停止心跳
 function stopHeartbeat(ws: WsWebSocket): void {
   const timer = heartbeatTimers.get(ws)
   if (timer) {
@@ -107,34 +93,31 @@ function stopHeartbeat(ws: WsWebSocket): void {
 export function broadcastWsEvent(runId: string, event: RealtimeEnvelope): void {
   const connections = wsConnections.get(runId)
   if (!connections) return
-
   for (const ws of connections) {
     sendWsMessage(ws, event)
   }
 }
 
-// 发送单个 WS 消息
-function sendWsMessage(ws: WsWebSocket, msg: any): void {
-  if (ws.readyState === 1) { // WebSocket.OPEN
-    try {
-      ws.send(JSON.stringify(msg))
-    } catch {
-      // 连接已关闭，忽略错误
-    }
+function sendWsMessage(ws: WsWebSocket, msg: RealtimePing | RealtimePong | RealtimeEnvelope): void {
+  // readyState 1 = WebSocket.OPEN
+  if (ws.readyState !== 1) return
+  try {
+    ws.send(JSON.stringify(msg))
+  } catch {
+    // 连接已关闭，发送失败时忽略
   }
 }
 
-// 关闭指定 run 的所有 WS 连接
+// 关闭指定 run 的所有连接（终态事件广播后调用）
 export function closeWsConnections(runId: string): void {
   const connections = wsConnections.get(runId)
   if (!connections) return
-
   for (const ws of connections) {
     stopHeartbeat(ws)
     try {
-      ws.close(1000, 'Run completed')
+      ws.close(1000, 'Run finished')
     } catch {
-      // 忽略
+      // 连接可能已关闭，忽略
     }
   }
   wsConnections.delete(runId)

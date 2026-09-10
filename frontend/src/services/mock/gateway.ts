@@ -1,14 +1,20 @@
-// Mock 网关 Vite 插件入口（[前端M0收尾方案 §4.3]）
-// 以 Vite dev 插件形式内嵌，拦截 /api、/ws、/sse 路由
+// Mock 网关 Vite 插件入口
+// development + VITE_MOCK=gateway 时内嵌，拦截 /api/v1、/healthz、/api/v1/ws 路由
 
 import type { Plugin, ViteDevServer } from 'vite'
-import type { IncomingMessage } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { Socket } from 'node:net'
 import type { WebSocket as WsWebSocket, WebSocketServer as WsWebSocketServer } from 'ws'
-import { handleRequest } from './router'
-import { prebufferBodySync } from './router'
-import { handleWsUpgrade } from './realtime'
-import { createSseConnection } from './sse'
+import { handleRequest, prebufferBodySync } from './router'
+import { handleWsUpgrade, isAccessTokenValid } from './realtime'
 import { seedInitialData } from './seed'
+
+// connect 中间件栈最小结构（unshift 到栈顶优先拦截）
+interface ConnectStack {
+  stack: Array<{ route: string; handle: (req: IncomingMessage, res: ServerResponse, next: () => void) => void }>
+}
+
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 export function mockGatewayPlugin(): Plugin {
   let initialized = false
@@ -17,46 +23,34 @@ export function mockGatewayPlugin(): Plugin {
     name: 'mock-gateway',
 
     configureServer(server: ViteDevServer) {
-      // 初始化种子数据（仅一次）
       if (!initialized) {
         seedInitialData()
         initialized = true
-        console.log('[mock-gateway] 种子数据已加载')
       }
 
-      // 强制插到 connect 栈最前面（unshift 私有 API）
-      // 关键：handle 函数体内第一行同步启动 body 监听，不使用 async
-      const middlewares: any = server.middlewares
-      const mockEntry = {
+      const middlewares = server.middlewares as unknown as ConnectStack
+      const entry = {
         route: '',
-        handle(req: any, res: any, next: () => void): void {
+        handle(req: IncomingMessage, res: ServerResponse, next: () => void): void {
           const url = new URL(req.url ?? '/', 'http://localhost')
           const pathname = url.pathname
+          const method = req.method ?? 'GET'
 
-          // SSE 端点
-          const sseMatch = pathname.match(/^\/api\/v1\/runs\/([^/]+)\/report\/stream$/)
-          if (sseMatch) {
-            const runId = sseMatch[1]
-            createSseConnection(req, res, runId)
-            return
-          }
-
-          // REST 端点：同步启动 body 预读抢占 data 监听
-          if (pathname.startsWith('/api/v1/')) {
-            const method = req.method ?? 'GET'
-            const bodyPromise = (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE')
+          // REST 与健康检查：写方法同步启动 body 预读抢占 data 监听
+          if (pathname.startsWith('/api/v1/') || pathname === '/healthz') {
+            const bodyPromise = WRITE_METHODS.has(method)
               ? prebufferBodySync(req)
               : Promise.resolve(undefined)
 
             bodyPromise.then(async () => {
-              // body 已设到 req._mockBody
               const handled = await handleRequest(req, res)
-              if (!handled) {
-                next()
+              if (!handled) next()
+            }).catch((err: unknown) => {
+              console.error('[mock-gateway] 请求处理失败:', err)
+              if (!res.headersSent) {
+                res.writeHead(500, { 'Content-Type': 'application/json' })
+                res.end(JSON.stringify({ code: 'internal_error', message: 'mock gateway error' }))
               }
-            }).catch((err) => {
-              console.error('[mock-gateway] 处理失败:', err)
-              try { res.writeHead(500); res.end() } catch {}
             })
             return
           }
@@ -64,39 +58,34 @@ export function mockGatewayPlugin(): Plugin {
           next()
         }
       }
-      if (Array.isArray(middlewares.stack)) {
-        middlewares.stack.unshift(mockEntry)
-      } else {
-        // 退化
-        server.middlewares.use((req: any, res: any, next: any) => mockEntry.handle(req, res, next))
-      }
+      middlewares.stack.unshift(entry)
 
-      // 获取底层 HTTP 服务器处理 WebSocket
+      // WebSocket 升级拦截
       const httpServer = server.httpServer
       if (!httpServer) return
 
-      // 拦截 WebSocket 升级请求
-      httpServer.on('upgrade', (req: IncomingMessage, socket: any, head: Buffer) => {
+      httpServer.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
         const url = new URL(req.url ?? '/', 'http://localhost')
-        const pathname = url.pathname
+        const wsMatch = url.pathname.match(/^\/api\/v1\/ws\/runs\/([^/]+)\/stream$/)
+        if (!wsMatch) return
+        const runId = wsMatch[1]
 
-        // WS 端点：/api/v1/ws/runs/{run_id}/stream
-        const wsMatch = pathname.match(/^\/api\/v1\/ws\/runs\/([^/]+)\/stream$/)
-        if (wsMatch) {
-          const runId = wsMatch[1]
-
-          // 动态加载 ws 模块
-          import('ws').then(({ WebSocketServer }) => {
-            const wss = new WebSocketServer({ noServer: true }) as WsWebSocketServer
-            wss.handleUpgrade(req, socket, head, (ws: WsWebSocket) => {
-              handleWsUpgrade(ws, req, runId)
-              wss.emit('connection', ws, req)
-            })
-          }).catch((err) => {
-            console.error('[mock-gateway] WS 升级失败:', err)
-            socket.destroy()
-          })
+        // 对齐后端：accept 前鉴权，token 缺失/无效直接以 HTTP 403 拒绝握手
+        if (!isAccessTokenValid(url.searchParams.get('token'))) {
+          socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+          socket.destroy()
+          return
         }
+
+        import('ws').then(({ WebSocketServer }) => {
+          const wss = new WebSocketServer({ noServer: true }) as WsWebSocketServer
+          wss.handleUpgrade(req, socket, head, (ws: WsWebSocket) => {
+            handleWsUpgrade(ws, runId)
+            wss.emit('connection', ws, req)
+          })
+        }).catch((err: unknown) => {
+          console.error('[mock-gateway] WS 升级失败:', err)
+        })
       })
     }
   }

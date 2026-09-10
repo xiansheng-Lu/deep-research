@@ -1,17 +1,9 @@
-// 指令脚本节点类型定义（[前端M0收尾方案 §4.3]）
-// TypeScript DSL：节点联合类型 + Builder 辅助函数
+// 剧本节点 DSL：M1 仅需顺序、发事件、等待三种节点
 
-import type { RealtimeEnvelope } from '../../realtime/types'
+import type { RawEvent } from './envelope'
 
 // 脚本节点联合类型
-export type ScriptNode =
-  | SequenceNode
-  | EmitNode
-  | ParallelNode
-  | WaitNode
-  | InterruptNode
-  | CompleteNode
-  | FailNode
+export type ScriptNode = SequenceNode | EmitNode | WaitNode
 
 // 顺序执行
 export interface SequenceNode {
@@ -19,17 +11,14 @@ export interface SequenceNode {
   nodes: ScriptNode[]
 }
 
-// 发送事件
+// 事件工厂：需要在发送瞬间才确定字段（如 occurred_at）时使用
+export type RawEventFactory = () => RawEvent
+
+// 发送原始事件（信封由 runner 在实际发送瞬间构造，ts/event_id 与发送时刻对齐）
 export interface EmitNode {
   type: 'emit'
-  event: RealtimeEnvelope
+  event: RawEvent | RawEventFactory
   delayMs?: number // 发送前延迟
-}
-
-// 并行执行
-export interface ParallelNode {
-  type: 'parallel'
-  nodes: ScriptNode[]
 }
 
 // 等待
@@ -38,51 +27,14 @@ export interface WaitNode {
   durationMs: number
 }
 
-// 中断（澄清/冲突）
-export interface InterruptNode {
-  type: 'interrupt'
-  interruptType: 'clarification' | 'conflict'
-  // 等待用户响应后继续
-}
-
-// 完成
-export interface CompleteNode {
-  type: 'complete'
-  status: 'succeeded' | 'failed' | 'cancelled'
-}
-
-// 故障注入
-export interface FailNode {
-  type: 'fail'
-  errorCode: string
-  errorMessage: string
-}
-
-// Builder 辅助函数
 export function sequence(...nodes: ScriptNode[]): SequenceNode {
   return { type: 'sequence', nodes }
 }
 
-export function emit(event: RealtimeEnvelope, delayMs?: number): EmitNode {
+export function emit(event: RawEvent | RawEventFactory, delayMs?: number): EmitNode {
   return { type: 'emit', event, delayMs }
-}
-
-export function parallel(...nodes: ScriptNode[]): ParallelNode {
-  return { type: 'parallel', nodes }
 }
 
 export function wait(durationMs: number): WaitNode {
   return { type: 'wait', durationMs }
-}
-
-export function interrupt(interruptType: 'clarification' | 'conflict'): InterruptNode {
-  return { type: 'interrupt', interruptType }
-}
-
-export function complete(status: 'succeeded' | 'failed' | 'cancelled' = 'succeeded'): CompleteNode {
-  return { type: 'complete', status }
-}
-
-export function fail(errorCode: string, errorMessage: string): FailNode {
-  return { type: 'fail', errorCode, errorMessage }
 }

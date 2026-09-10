@@ -43,8 +43,7 @@ export default defineConfig(({ mode }) => {
         ? undefined
         : {
             '/api': { target: apiBase, changeOrigin: true },
-            '/ws': { target: wsBase, ws: true, changeOrigin: true },
-            '/sse': { target: apiBase, changeOrigin: true }
+            '/ws': { target: wsBase, ws: true, changeOrigin: true }
           }
     },
     build: {
