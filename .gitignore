@@ -5,6 +5,7 @@ Thumbs.db
 # 编辑器
 .vscode/
 .idea/
+.trae/
 *.swp
 
 # 前端 (Vue3 + Vite + pnpm)
