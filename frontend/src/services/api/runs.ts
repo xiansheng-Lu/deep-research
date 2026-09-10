@@ -3,10 +3,15 @@ import { http } from '../http/http'
 import type { CreateRunRequest, RunResponse } from './types'
 
 // 创建研究运行；project_id 在请求体中（契约冻结口径）
-export function createRun(body: CreateRunRequest): Promise<RunResponse> {
+// options.idempotencyKey 透传 Idempotency-Key 头，重试必须复用同一键
+export function createRun(
+  body: CreateRunRequest,
+  options?: { idempotencyKey?: string }
+): Promise<RunResponse> {
   return http<RunResponse>('/runs', {
     method: 'POST',
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    idempotencyKey: options?.idempotencyKey
   })
 }
 
