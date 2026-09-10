@@ -1,0 +1,24 @@
+# WSL2 全局资源限额模板（低内存联调机专用）
+#
+# 安装位置：复制到当前用户目录，即 C:\Users\<用户名>\.wslconfig
+# PowerShell 一键复制：
+#   Copy-Item .\.wslconfig.example "$env:USERPROFILE\.wslconfig"
+#
+# 生效方式（会重启所有 WSL 发行版与 Docker 引擎，不影响磁盘数据）：
+#   wsl --shutdown
+# 然后重新启动 Docker Desktop。
+#
+# Docker Desktop 使用 WSL2 后端时，其虚拟机内存受本文件约束。
+
+[wsl2]
+# WSL2 虚拟机（含 Docker 引擎与全部容器）内存硬上限
+memory=2GB
+# 分配 4 个逻辑核，其余留给 IDE、前端 Node 与宿主机
+processors=4
+# 换页空间 2GB，交换文件放到空间充足的 D 盘
+swap=2GB
+swapFile=D:\\WSL\\swap.vhdx
+# 容器空闲后及时把内存回收给 Windows
+pageReporting=true
+# 联调不需要 WSLg 图形界面，关闭可降低虚拟机基础占用
+guiApplications=false

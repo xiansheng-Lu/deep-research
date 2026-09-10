@@ -1,0 +1,51 @@
+# 精简联调依赖栈（低内存机器专用）：仅 PostgreSQL 16 + pgvector
+#
+# 适用场景：16GB 内存且 IDE/浏览器占用较高的 Windows 联调机。
+# 裁剪依据（M1 阶段，见 app/core/lifespan.py）：
+# - 研究运行通过进程内 asyncio.create_task 调度，不经过 Celery，无需 Redis；
+# - 报告写入数据库，对象存储 MinIO 到 M2 知识库阶段才使用；
+# - 应用启动链路只强依赖 PostgreSQL。
+#
+# 使用：
+#   docker compose -f docker-compose.min.yml up -d
+# 数据卷与完整栈（docker-compose.dev.yml）共用 postgres_data，
+# 两套 compose 不可同时启动（容器名与 5432 端口相同），按阶段二选一。
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: dr_postgres
+    environment:
+      POSTGRES_DB: deep_research
+      POSTGRES_USER: deep_research
+      POSTGRES_PASSWORD: deep_research
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # 低内存调优：缩小共享缓冲、连接数与维护内存，避免单库吃满虚拟机配额
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - max_connections=20
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=16MB
+      - -c
+      - effective_cache_size=256MB
+      - -c
+      - wal_buffers=2MB
+    # 容器硬上限 384MB，允许 128MB 换页余量，预留 192MB 软预留
+    mem_limit: 384m
+    memswap_limit: 512m
+    mem_reservation: 192m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deep_research -d deep_research"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
