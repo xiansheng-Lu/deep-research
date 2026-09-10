@@ -15,7 +15,7 @@ from langchain_openai import ChatOpenAI
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import ProviderUnavailableError
-from app.provider.base import ChatMessage, ChatRequest, ChatResponse, LLMProvider
+from app.provider.base import ChatMessage, ChatRequest, ChatResponse
 
 
 def _to_langchain_message(msg: ChatMessage) -> SystemMessage | HumanMessage | AIMessage:
@@ -81,7 +81,12 @@ class OpenAIProvider:
         try:
             msgs = [_to_langchain_message(m) for m in request.messages]
             started = time.monotonic()
-            result = await self._chat.ainvoke(msgs)
+            invoke_kwargs: dict[str, Any] = {}
+            if request.max_tokens is not None:
+                invoke_kwargs["max_tokens"] = int(request.max_tokens)
+            if request.response_format is not None:
+                invoke_kwargs["response_format"] = request.response_format
+            result = await self._chat.ainvoke(msgs, **invoke_kwargs) if invoke_kwargs else await self._chat.ainvoke(msgs)
             latency_ms = int((time.monotonic() - started) * 1000)
 
             if not isinstance(result, AIMessage):
@@ -118,14 +123,30 @@ class OpenAIProvider:
             raise ProviderUnavailableError(f"OpenAI 流式调用失败：{exc}") from exc
 
 
+def _build_openai_provider(
+    cfg: Settings,
+    *,
+    model: str,
+    api_key_value: str,
+    base_url: str,
+) -> OpenAIProvider:
+    """主/备 Provider 共用构造器（消除工厂重复）。"""
+    return OpenAIProvider(
+        model=model,
+        api_key=api_key_value or None,
+        base_url=base_url or None,
+        timeout=float(cfg.llm_timeout_seconds),
+    )
+
+
 def build_openai_provider(settings: Settings | None = None) -> OpenAIProvider:
     """从配置构造 OpenAI Provider（主/备通用工厂）。"""
     cfg = settings or get_settings()
-    return OpenAIProvider(
+    return _build_openai_provider(
+        cfg,
         model=cfg.llm_primary_model or "gpt-4o",
-        api_key=cfg.llm_primary_api_key.get_secret_value() or None,
-        base_url=cfg.llm_primary_base_url or None,
-        timeout=float(cfg.llm_timeout_seconds),
+        api_key_value=cfg.llm_primary_api_key.get_secret_value(),
+        base_url=cfg.llm_primary_base_url,
     )
 
 
@@ -134,11 +155,11 @@ def build_openai_backup_provider(settings: Settings | None = None) -> OpenAIProv
     cfg = settings or get_settings()
     if not cfg.llm_backup_model:
         return None
-    return OpenAIProvider(
+    return _build_openai_provider(
+        cfg,
         model=cfg.llm_backup_model,
-        api_key=cfg.llm_backup_api_key.get_secret_value() or None,
-        base_url=cfg.llm_backup_base_url or None,
-        timeout=float(cfg.llm_timeout_seconds),
+        api_key_value=cfg.llm_backup_api_key.get_secret_value(),
+        base_url=cfg.llm_backup_base_url,
     )
 
 
