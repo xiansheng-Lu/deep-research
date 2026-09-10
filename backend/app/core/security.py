@@ -1,26 +1,37 @@
-"""安全原语：JWT 签发/校验、密码哈希。"""
+"""安全原语：JWT 签发/校验、密码哈希。
+
+密码哈希直接使用 ``bcrypt`` 而非 ``passlib``，避开 passlib 1.7.x 在
+Python 3.12 + bcrypt 4.x 下的 ``detect_wrap_bug`` 探测失败问题。
+"""
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from app.core.config import Settings, get_settings
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt 仅消费前 72 字节；超出部分会被忽略。统一在调用侧截断，
+# 避免静默丢字符（注册与登录使用同一函数，行为对齐）。
+_BCRYPT_MAX_BYTES = 72
+
+
+def _truncate_password(plain: str) -> bytes:
+    """截断密码到 bcrypt 安全上限 72 字节（UTF-8）。"""
+    return plain.encode("utf-8")[:_BCRYPT_MAX_BYTES]
 
 
 def hash_password(plain: str) -> str:
     """对明文密码进行 bcrypt 哈希。"""
-    return _pwd_context.hash(plain)
+    return bcrypt.hashpw(_truncate_password(plain), bcrypt.gensalt()).decode("ascii")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     """校验明文与哈希是否匹配。"""
     try:
-        return _pwd_context.verify(plain, hashed)
-    except ValueError:
+        return bcrypt.checkpw(_truncate_password(plain), hashed.encode("ascii"))
+    except (ValueError, TypeError):
         return False
 
 

@@ -3,14 +3,36 @@
 业务代码统一通过 ``LLMClient`` 调用，不直接持有 Provider 实例。
 """
 
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, field
+from typing import Any, TypeVar
+
+from pydantic import BaseModel
 
 from app.core.exceptions import ProviderUnavailableError
-from app.provider.base import ChatRequest, ChatResponse, LLMProvider
+from app.provider.base import ChatMessage, ChatRequest, ChatResponse, LLMProvider
 from app.provider.circuit_breaker import CircuitBreaker
 from app.provider.registry import default_registry
 from app.provider.usage import UsageTracker
+
+T = TypeVar("T", bound=BaseModel)
+
+
+@dataclass(slots=True)
+class StructuredCompletion:
+    """结构化输出结果包装。
+
+    Attributes:
+        parsed: 解析并校验后的 Pydantic 模型实例。
+        usage: token 用量字典（与 ChatResponse.usage 同源）。
+        model: 实际响应所用模型名。
+        raw: 原始 JSON 内容（仅在解析失败时供诊断使用）。
+    """
+
+    parsed: BaseModel
+    usage: dict[str, int] = field(default_factory=dict)
+    model: str = ""
+    raw: str = ""
 
 
 class LLMClient:
@@ -48,6 +70,59 @@ class LLMClient:
         except ProviderUnavailableError:
             async for chunk in self._backup.stream(request):
                 yield chunk
+
+    async def complete_structured(
+        self,
+        *,
+        messages: Sequence[ChatMessage],
+        schema: type[T],
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        tags: Sequence[str] | None = None,
+    ) -> StructuredCompletion:
+        """结构化输出：按 Pydantic 模型 ``schema`` 约束返回 JSON。
+
+        实现路径：以 ``response_format={"type": "json_schema", ...}`` 引导 LLM 返回严格 JSON，
+        解析后用 ``schema.model_validate`` 校验。任何解析/校验失败都会抛出
+        ``ProviderUnavailableError``（§7.5 统一收敛）。M1 阶段不引入 Pydantic → JSON Schema
+        的二次重写，直接采用 Pydantic v2 生成的 schema（已含 ``additionalProperties: false``）。
+        """
+        schema_dict = schema.model_json_schema()
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema.__name__,
+                "schema": schema_dict,
+                "strict": True,
+            },
+        }
+        request = ChatRequest(
+            messages=list(messages),
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
+        chat_response = await self.chat(request)
+
+        content = chat_response.content.strip()
+        try:
+            import json
+
+            payload = json.loads(content) if content else {}
+            parsed = schema.model_validate(payload)
+        except Exception as exc:  # noqa: BLE001 - 解析/校验统一收敛
+            raise ProviderUnavailableError(
+                f"结构化输出解析失败：{exc!r}（raw={content[:200]!r}）"
+            ) from exc
+
+        return StructuredCompletion(
+            parsed=parsed,
+            usage=chat_response.usage,
+            model=chat_response.model,
+            raw=content,
+        )
 
     def _select_provider(self) -> LLMProvider:
         """根据熔断状态选择 Provider。"""
@@ -89,3 +164,6 @@ def get_default_client() -> LLMClient:
 
 
 _ = Any  # 防止未使用导入告警；M1 阶段使用
+
+
+__all__ = ["LLMClient", "StructuredCompletion"]

@@ -1,0 +1,54 @@
+"""pytest 公共 fixture：settings 隔离、临时 .env、后续模块挂载点。
+
+测试环境约束：
+    - 不依赖真实 Postgres / Redis / 对象存储（CI 无外部依赖）
+    - 通过 monkeypatch + tmp_path 注入最小可用配置，保证 Settings() 可构造
+    - 各业务模块的 fixture（DB session、auth client 等）按 WP 增量补在本目录
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+from app.core.config import Settings, get_settings
+
+
+# 测试环境最小变量集：覆盖 Settings() 强制字段，保证 get_settings() 不抛
+_REQUIRED_ENV: dict[str, str] = {
+    "APP_ENV": "dev",
+    "SECRET_KEY": "pytest-secret-key-do-not-use-in-prod",
+    "DB_ASYNC_URL": "postgresql+asyncpg://test:test@localhost:5432/test",
+    "DB_SYNC_URL": "postgresql://test:test@localhost:5432/test",
+    "REDIS_URL": "redis://localhost:6379/0",
+    "CELERY_BROKER_URL": "redis://localhost:6379/0",
+    "CELERY_RESULT_BACKEND": "redis://localhost:6379/0",
+    "OBJECT_STORAGE_ENDPOINT": "localhost:9000",
+    "OBJECT_STORAGE_ACCESS_KEY": "test",
+    "OBJECT_STORAGE_SECRET_KEY": "test-secret",
+    "OBJECT_STORAGE_BUCKET": "test-bucket",
+}
+
+
+@pytest.fixture(autouse=True)
+def _isolate_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """每个测试自动注入最小配置并清缓存，避免模块间状态泄漏。"""
+    for key, value in _REQUIRED_ENV.items():
+        monkeypatch.setenv(key, value)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def settings() -> Settings:
+    """当前测试可见的 Settings 实例（lru_cache 已清）。"""
+    return get_settings()
+
+
+@pytest.fixture
+def tmp_env_file(tmp_path: Path) -> Path:
+    """提供一个空 .env 路径，便于校验 Settings 读取 .env 的逻辑。"""
+    return tmp_path / ".env"
