@@ -1,14 +1,42 @@
 <script setup lang="ts">
 // 布局壳：顶栏 + 内容区（[前端详细设计 §4.1]）
 // 仅包裹受保护路由；登录/错误页等公共路由不走此壳
-// 完整 TopBar/侧栏/RightDrawer 在 M1 里程碑补齐，本骨架先呈现"已登录壳"结构
+// M1 导航收敛为项目/账户，助手等 M2 入口暂不呈现
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { useSessionStore } from '@/stores/session'
+import UiButton from '@/components/ui/UiButton.vue'
+import UiDropdown, { type DropdownItem } from '@/components/ui/overlay/UiDropdown.vue'
+
+const router = useRouter()
+const session = useSessionStore()
+
+const userMenuItems: DropdownItem[] = [
+  { key: 'account', label: '账户设置' },
+  { key: 'logout', label: '退出登录', danger: true }
+]
+
+const loggingOut = ref(false)
+
+async function onUserMenu(key: string): Promise<void> {
+  if (key === 'account') {
+    router.push('/account')
+    return
+  }
+  if (key === 'logout') {
+    if (loggingOut.value) return
+    loggingOut.value = true
+    await session.logout()
+    router.replace('/auth/login')
+  }
+}
 </script>
 
 <template>
   <div class="app-shell">
     <header class="app-shell__topbar">
       <RouterLink
-        to="/home"
+        to="/projects"
         class="app-shell__logo"
       >
         AI 研究者助手
@@ -18,22 +46,10 @@
         aria-label="主导航"
       >
         <RouterLink
-          to="/home"
-          class="app-shell__nav-link"
-        >
-          首页
-        </RouterLink>
-        <RouterLink
           to="/projects"
           class="app-shell__nav-link"
         >
           项目
-        </RouterLink>
-        <RouterLink
-          to="/assistant"
-          class="app-shell__nav-link"
-        >
-          助手
         </RouterLink>
         <RouterLink
           to="/account"
@@ -42,6 +58,24 @@
           账户
         </RouterLink>
       </nav>
+      <div class="app-shell__actions">
+        <UiButton
+          variant="primary"
+          size="sm"
+          @click="router.push('/wizard')"
+        >
+          + 发起研究
+        </UiButton>
+        <UiDropdown
+          :items="userMenuItems"
+          aria-label="账户菜单"
+          @select="onUserMenu"
+        >
+          <template #trigger>
+            <span class="app-shell__user">{{ session.user?.display_name ?? '账户' }}</span>
+          </template>
+        </UiDropdown>
+      </div>
     </header>
     <main class="app-shell__main">
       <RouterView />
@@ -61,6 +95,7 @@
 .app-shell__topbar {
   display: flex;
   align-items: center;
+  gap: var(--space-6);
   height: 56px;
   padding: 0 var(--space-8);
   background: var(--color-surface);
@@ -76,12 +111,12 @@
   font-weight: 600;
   color: var(--color-text-strong);
   letter-spacing: -0.01em;
+  white-space: nowrap;
 }
 
 .app-shell__nav {
   display: flex;
   gap: var(--space-2);
-  margin-left: var(--space-12);
 }
 
 .app-shell__nav-link {
@@ -102,6 +137,22 @@
 .app-shell__nav-link.router-link-active {
   color: var(--brand-700);
   background: var(--brand-50);
+}
+
+.app-shell__actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.app-shell__user {
+  font-size: var(--font-sm);
+  color: var(--color-text);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .app-shell__main {

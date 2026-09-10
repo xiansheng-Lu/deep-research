@@ -7,7 +7,8 @@ export function getRunReport(runId: string): Promise<ReportResponse> {
   return http<ReportResponse>(`/runs/${encodeURIComponent(runId)}/report`)
 }
 
-// 按报告 ID 获取（M4 分享只读链接的底座，M1 预留）
-export function getReport(reportId: string): Promise<ReportResponse> {
-  return http<ReportResponse>(`/reports/${encodeURIComponent(reportId)}`)
+// 按运行获取报告（契约 GET /reports/{run_id}：M1 路径参数语义同 run_id；
+// 报告未生成时后端返回 422 validation_error。M4 起该参数才作为独立 report id 使用）
+export function getReport(runId: string): Promise<ReportResponse> {
+  return http<ReportResponse>(`/reports/${encodeURIComponent(runId)}`)
 }
