@@ -33,7 +33,10 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 
 def _to_run_response(run: ResearchRun) -> RunResponse:
-    return RunResponse.model_validate(run)
+    """把 ORM 对象转为响应视图，附带 stream_url。"""
+    resp = RunResponse.model_validate(run)
+    resp.stream_url = f"/api/v1/ws/runs/{run.id}/stream"
+    return resp
 
 
 def _to_report_response(report: Report) -> ReportResponse:

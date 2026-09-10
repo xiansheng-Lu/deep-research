@@ -223,6 +223,7 @@ def test_create_run_returns_201(
     assert body["status"] == "pending"
     assert body["token_budget"] == settings.quota_tier_standard_tokens
     assert body["id"]
+    assert body["stream_url"] == f"/api/v1/ws/runs/{body['id']}/stream"
     mock_create_task.assert_called_once()
 
 
