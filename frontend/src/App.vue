@@ -2,6 +2,7 @@
 import { onMounted } from 'vue'
 import { RouterView } from 'vue-router'
 import { useUiStore } from '@/stores/ui'
+import UiToastHost from '@/components/ui/feedback/UiToastHost.vue'
 
 // 在应用挂载后绑定系统主题变化监听；仅在 themeMode === 'system' 时生效
 const ui = useUiStore()
@@ -19,4 +20,5 @@ onMounted(() => {
 
 <template>
   <RouterView />
+  <UiToastHost />
 </template>
