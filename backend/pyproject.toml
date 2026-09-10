@@ -72,6 +72,7 @@ dev = [
 [project.scripts]
 deep-research-api = "app.main:run"
 deep-research-worker = "app.workers.celery_app:run"
+deep-research-seed = "app.db.seed:run"
 
 [build-system]
 requires = ["hatchling"]

@@ -82,6 +82,12 @@ docker compose -f docker-compose.dev.yml up -d
 | MinIO API | `http://localhost:9000` | `minioadmin / minioadmin` |
 | MinIO Console | `http://localhost:9001` | `minioadmin / minioadmin` |
 
+低内存机器（如 16GB 且常驻 IDE/浏览器）可改用精简栈，只起 M1 联调唯一硬依赖 PostgreSQL（容器限额 384MB），并参考 `.wslconfig.example` 将 WSL2 虚拟机限制在 2GB：
+
+```powershell
+docker compose -f docker-compose.min.yml up -d
+```
+
 说明：MinIO 桶不会自动创建，请在 Console 中手动创建名为 `deep-research` 的桶（或使用 `mc mb` 命令）。
 
 ### 2. 配置环境变量
@@ -110,7 +116,17 @@ uv 会自动下载匹配的 Python 解释器、创建虚拟环境并按 `uv.lock
 uv run alembic upgrade head
 ```
 
-### 5. 启动 API 服务
+### 5. 写入联调种子账号
+
+M1 阶段没有注册接口，迁移完成后全新数据库中没有任何用户，需执行种子脚本创建默认团队与首个可登录账号（按邮箱幂等，可重复执行；`APP_ENV=prod` 时拒绝执行）：
+
+```powershell
+uv run deep-research-seed
+```
+
+默认账号：`dev@example.com` / `Dev@123456`（可通过 `SEED_USER_EMAIL`、`SEED_USER_PASSWORD` 等环境变量覆盖，见 `.env.example`）。
+
+### 6. 启动 API 服务
 
 开发模式（带热重载）：
 
@@ -124,13 +140,13 @@ uv run uvicorn app.main:app --reload
 uv run deep-research-api
 ```
 
-### 6. 验证
+### 7. 验证
 
 - 健康检查：<http://localhost:8000/healthz>
 - Swagger 文档：<http://localhost:8000/docs>
 - ReDoc 文档：<http://localhost:8000/redoc>
 
-### 7.（可选）启动 Celery Worker
+### 8.（可选）启动 Celery Worker
 
 M1 阶段研究流程在 API 进程内通过 `asyncio.create_task` 调度执行；Celery Worker 用于异步任务（报告导出、知识库摄入等），M2 起逐步接管：
 
@@ -140,7 +156,7 @@ uv run deep-research-worker
 
 该命令等价于 `celery worker -l info -Q research,report,ingestion`。
 
-### 8.（可选）安装 Playwright 浏览器
+### 9.（可选）安装 Playwright 浏览器
 
 正文抽取节点的浏览器渲染通道依赖 Playwright 内核，首次使用前执行：
 
@@ -164,6 +180,7 @@ backend/
 │   │   ├── base.py              # ORM 基类、ULID 主键
 │   │   ├── session.py           # 异步引擎与会话工厂
 │   │   ├── models/              # SQLAlchemy ORM 模型
+│   │   ├── seed.py              # 联调种子账号脚本（deep-research-seed）
 │   │   └── migrations/          # Alembic 迁移脚本
 │   ├── schemas/                 # Pydantic 入参/出参模型
 │   ├── orchestrator/            # LangGraph 状态图编排

@@ -87,6 +87,14 @@ class Settings(BaseSettings):
     quota_tier_deep_tokens: int = Field(default=400_000, alias="QUOTA_TIER_DEEP_TOKENS")
     quota_tier_extreme_tokens: int = Field(default=1_000_000, alias="QUOTA_TIER_EXTREME_TOKENS")
 
+    # ===== 种子账号（仅 dev/staging 联调，prod 下脚本拒绝执行） =====
+    seed_team_name: str = Field(default="默认团队", alias="SEED_TEAM_NAME")
+    seed_user_email: str = Field(default="dev@example.com", alias="SEED_USER_EMAIL")
+    seed_user_password: SecretStr = Field(
+        default=SecretStr("Dev@123456"), alias="SEED_USER_PASSWORD"
+    )
+    seed_user_display_name: str = Field(default="联调开发者", alias="SEED_USER_DISPLAY_NAME")
+
     # ===== 实时通信 =====
     ws_heartbeat_seconds: int = Field(default=25, alias="WS_HEARTBEAT_SECONDS")
     sse_heartbeat_seconds: int = Field(default=15, alias="SSE_HEARTBEAT_SECONDS")
