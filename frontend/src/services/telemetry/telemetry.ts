@@ -3,7 +3,7 @@
 export function track(event: string, props?: Record<string, unknown>): void {
   // dev 环境走 console，便于验收；生产再补批量上报（§16.1 第二段）
   if (import.meta.env.DEV) {
-    // eslint-disable-next-line no-console
+     
     console.warn('[telemetry]', event, props)
   }
 }

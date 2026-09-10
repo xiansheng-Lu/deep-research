@@ -1,13 +1,54 @@
-// HttpClient 骨架（[前端详细设计 §8.2]）
-// M0 仅提供 fetch 包装与错误归一；鉴权注入、single-flight refresh、幂等键在 M1 起接入
+// HttpClient（[前端详细设计 §8.2]）
+// 职责：相对路径拼接 API 基址、Authorization 注入、RFC 7807 错误归一、
+//       401 时 single-flight 刷新 access token 并重放原请求。
+// 鉴权状态不直接依赖 pinia store（避免循环依赖），由应用启动时注册 AuthProvider。
 import type { ApiError } from './error'
+
+// API 基址：开发环境由 Vite 代理 / mock 网关插件拦截 /api 前缀，
+// 生产环境前后端同源部署，由反向网关转发，故统一使用同源相对路径。
+const API_BASE = '/api/v1'
 
 export interface HttpOptions extends RequestInit {
   /** 用于触发同一请求的重试复用 */
   idempotencyKey?: string
+  /** 跳过鉴权头注入与 401 刷新重放（login / refresh 请求本身使用） */
+  skipAuth?: boolean
+}
+
+// 鉴权提供者：由 session store 在应用启动时注册
+export interface AuthProvider {
+  /** 当前内存中的 access token */
+  getAccessToken: () => string | null
+  /** 用 refresh token 换新 access token；成功返回新 token，失败返回 null */
+  refresh: () => Promise<string | null>
+  /** 刷新彻底失败（refresh token 也过期）时的登出回调 */
+  onAuthExpired?: () => void
+}
+
+let authProvider: AuthProvider | null = null
+
+export function setAuthProvider(provider: AuthProvider | null): void {
+  authProvider = provider
+}
+
+// single-flight 刷新：多个并发请求同时遇 401 时共享同一次刷新
+let refreshing: Promise<string | null> | null = null
+
+function refreshAccessToken(): Promise<string | null> {
+  if (!refreshing) {
+    refreshing = Promise.resolve(authProvider?.refresh() ?? null).finally(() => {
+      refreshing = null
+    })
+  }
+  return refreshing
 }
 
 export async function http<T>(input: string, init: HttpOptions = {}): Promise<T> {
+  return request<T>(input, init, true)
+}
+
+// allowRetry=false 表示该请求已经是刷新后的重放，再次 401 不再重试
+async function request<T>(input: string, init: HttpOptions, allowRetry: boolean): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.idempotencyKey) {
     headers.set('Idempotency-Key', init.idempotencyKey)
@@ -15,10 +56,26 @@ export async function http<T>(input: string, init: HttpOptions = {}): Promise<T>
   if (!headers.has('Accept')) {
     headers.set('Accept', 'application/json')
   }
+  if (init.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
 
-  const response = await fetch(input, { ...init, headers })
+  const token = authProvider?.getAccessToken()
+  if (!init.skipAuth && token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
+  const response = await fetch(`${API_BASE}${input}`, { ...init, headers })
 
   if (!response.ok) {
+    // 401：非鉴权接口自身的失败时，尝试刷新一次并重放原请求
+    if (response.status === 401 && allowRetry && !init.skipAuth && authProvider) {
+      const newToken = await refreshAccessToken()
+      if (newToken) {
+        return request<T>(input, init, false)
+      }
+      authProvider.onAuthExpired?.()
+    }
     throw await toApiError(response)
   }
   if (response.status === 204) {

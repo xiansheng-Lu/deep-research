@@ -39,7 +39,10 @@ function onInput(ev: Event) {
 </script>
 
 <template>
-  <div class="u-slider" :class="{ 'is-disabled': disabled }">
+  <div
+    class="u-slider"
+    :class="{ 'is-disabled': disabled }"
+  >
     <input
       class="u-slider__el"
       type="range"
@@ -49,8 +52,11 @@ function onInput(ev: Event) {
       :step="step"
       :disabled="disabled"
       @input="onInput"
-    />
-    <div v-if="ticks && ticks.length" class="u-slider__ticks">
+    >
+    <div
+      v-if="ticks && ticks.length"
+      class="u-slider__ticks"
+    >
       <span
         v-for="tick in ticks"
         :key="tick.value"

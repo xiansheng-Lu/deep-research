@@ -35,16 +35,25 @@ function pick() {
   <label
     class="u-radio"
     :class="{ 'is-checked': checked, 'is-disabled': disabled }"
-    @click.prevent="pick"
-    @keydown.space.prevent="pick"
     tabindex="0"
     role="radio"
     :aria-checked="checked"
+    @click.prevent="pick"
+    @keydown.space.prevent="pick"
   >
-    <span class="u-radio__dot" aria-hidden="true">
-      <span v-if="checked" class="u-radio__inner" />
+    <span
+      class="u-radio__dot"
+      aria-hidden="true"
+    >
+      <span
+        v-if="checked"
+        class="u-radio__inner"
+      />
     </span>
-    <span v-if="label || $slots.default" class="u-radio__label">
+    <span
+      v-if="label || $slots.default"
+      class="u-radio__label"
+    >
       <slot>{{ label }}</slot>
     </span>
   </label>

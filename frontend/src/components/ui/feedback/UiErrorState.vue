@@ -25,10 +25,26 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="u-error" role="alert">
-    <div class="u-error__icon" aria-hidden="true">
-      <svg viewBox="0 0 48 48" class="u-error__svg">
-        <circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2" fill="none" />
+  <div
+    class="u-error"
+    role="alert"
+  >
+    <div
+      class="u-error__icon"
+      aria-hidden="true"
+    >
+      <svg
+        viewBox="0 0 48 48"
+        class="u-error__svg"
+      >
+        <circle
+          cx="24"
+          cy="24"
+          r="20"
+          stroke="currentColor"
+          stroke-width="2"
+          fill="none"
+        />
         <path
           d="M24 14 V26 M24 32 V33"
           stroke="currentColor"
@@ -37,20 +53,43 @@ const emit = defineEmits<{
         />
       </svg>
     </div>
-    <h3 class="u-error__title">{{ title || error?.title || '出现错误' }}</h3>
-    <p v-if="error?.detail" class="u-error__detail">{{ error.detail }}</p>
-    <p v-else-if="$slots.default" class="u-error__detail">
+    <h3 class="u-error__title">
+      {{ title || error?.title || '出现错误' }}
+    </h3>
+    <p
+      v-if="error?.detail"
+      class="u-error__detail"
+    >
+      {{ error.detail }}
+    </p>
+    <p
+      v-else-if="$slots.default"
+      class="u-error__detail"
+    >
       <slot />
     </p>
-    <p v-if="error?.code || error?.traceId" class="u-error__meta">
+    <p
+      v-if="error?.code || error?.traceId"
+      class="u-error__meta"
+    >
       <span v-if="error?.code">{{ error.code }}</span>
       <span v-if="error?.traceId">· trace: {{ error.traceId }}</span>
     </p>
     <div class="u-error__actions">
-      <button v-if="showBack" type="button" class="u-error__btn" @click="emit('back')">
+      <button
+        v-if="showBack"
+        type="button"
+        class="u-error__btn"
+        @click="emit('back')"
+      >
         返回
       </button>
-      <button v-if="showRetry" type="button" class="u-error__btn u-error__btn--primary" @click="emit('retry')">
+      <button
+        v-if="showRetry"
+        type="button"
+        class="u-error__btn u-error__btn--primary"
+        @click="emit('retry')"
+      >
         重试
       </button>
     </div>

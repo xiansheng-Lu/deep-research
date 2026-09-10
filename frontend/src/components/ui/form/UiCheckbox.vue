@@ -57,17 +57,35 @@ function toggle() {
   <label
     class="u-checkbox"
     :class="{ 'is-checked': checked, 'is-indeterminate': indeterminate, 'is-disabled': disabled }"
-    @click.prevent="toggle"
-    @keydown.space.prevent="toggle"
     tabindex="0"
     role="checkbox"
     :aria-checked="indeterminate ? 'mixed' : checked"
+    @click.prevent="toggle"
+    @keydown.space.prevent="toggle"
   >
-    <span class="u-checkbox__box" aria-hidden="true">
-      <svg v-if="indeterminate" viewBox="0 0 12 12" class="u-checkbox__icon">
-        <rect x="2" y="5.25" width="8" height="1.5" rx="0.75" fill="currentColor" />
+    <span
+      class="u-checkbox__box"
+      aria-hidden="true"
+    >
+      <svg
+        v-if="indeterminate"
+        viewBox="0 0 12 12"
+        class="u-checkbox__icon"
+      >
+        <rect
+          x="2"
+          y="5.25"
+          width="8"
+          height="1.5"
+          rx="0.75"
+          fill="currentColor"
+        />
       </svg>
-      <svg v-else-if="checked" viewBox="0 0 12 12" class="u-checkbox__icon">
+      <svg
+        v-else-if="checked"
+        viewBox="0 0 12 12"
+        class="u-checkbox__icon"
+      >
         <path
           d="M2.5 6.2 L5 8.5 L9.5 3.5"
           stroke="currentColor"
@@ -78,7 +96,10 @@ function toggle() {
         />
       </svg>
     </span>
-    <span v-if="label || $slots.default" class="u-checkbox__label">
+    <span
+      v-if="label || $slots.default"
+      class="u-checkbox__label"
+    >
       <slot>{{ label }}</slot>
     </span>
   </label>

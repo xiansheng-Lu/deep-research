@@ -11,7 +11,7 @@ interface ImportMeta {
 
 declare module '*.vue' {
   import type { DefineComponent } from 'vue'
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const component: DefineComponent<{}, {}, any>
+  // Vue 3.5 的 DefineComponent 泛型均有默认值，无需旧式空对象占位
+  const component: DefineComponent
   export default component
 }

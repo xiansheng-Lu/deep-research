@@ -1,10 +1,14 @@
 // WebSocket 频道管理（[前端M0收尾方案 §4.3]）
-// 基于 ws 包实现 WS 服务端
+// 基于 ws 包实现 WS 服务端；鉴权方式对齐后端：URL query 参数 ?token=<jwt>
 
 import type { WebSocket as WsWebSocket } from 'ws'
 import type { IncomingMessage } from 'node:http'
-import type { RealtimeEnvelope, RealtimePing, RealtimePong } from '../realtime/types'
-import { WS_AUTH_PROTOCOL } from '../realtime/types'
+import {
+  REALTIME_PROTOCOL_VERSION,
+  type RealtimeEnvelope,
+  type RealtimePing,
+  type RealtimePong
+} from '../realtime/types'
 
 // WS 连接池
 const wsConnections = new Map<string, Set<WsWebSocket>>()
@@ -18,10 +22,10 @@ export function handleWsUpgrade(
   req: IncomingMessage,
   runId: string
 ): void {
-  // 验证协议（可选）
-  const protocol = req.headers['sec-websocket-protocol']
-  if (protocol && !protocol.includes(WS_AUTH_PROTOCOL)) {
-    ws.close(1008, 'Invalid protocol')
+  // 鉴权：query 参数必须携带非空 token（与后端 /ws/runs/{id}/stream 一致）
+  const requestUrl = new URL(req.url ?? '/', 'http://localhost')
+  if (!requestUrl.searchParams.get('token')) {
+    ws.close(1008, 'Missing token')
     return
   }
 
@@ -66,7 +70,7 @@ export function handleWsUpgrade(
 function handleWsMessage(ws: WsWebSocket, _runId: string, msg: any): void {
   // 心跳：收到 ping 回复 pong
   if (msg.type === 'ping') {
-    const pong: RealtimePong = { type: 'pong', ts: Date.now() }
+    const pong: RealtimePong = { v: REALTIME_PROTOCOL_VERSION, type: 'pong', ts: Date.now() }
     sendWsMessage(ws, pong as any)
     return
   }

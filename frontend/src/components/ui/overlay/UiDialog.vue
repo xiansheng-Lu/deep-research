@@ -67,7 +67,11 @@ function onMaskClick(): void {
 <template>
   <Teleport to="body">
     <Transition name="u-dialog">
-      <div v-if="modelValue" class="u-dialog-mask" @mousedown.self="onMaskClick">
+      <div
+        v-if="modelValue"
+        class="u-dialog-mask"
+        @mousedown.self="onMaskClick"
+      >
         <div
           ref="panelRef"
           class="u-dialog"
@@ -77,9 +81,14 @@ function onMaskClick(): void {
           :aria-label="ariaLabel ?? title"
           tabindex="-1"
         >
-          <header v-if="title || $slots.header" class="u-dialog__header">
+          <header
+            v-if="title || $slots.header"
+            class="u-dialog__header"
+          >
             <slot name="header">
-              <h3 class="u-dialog__title">{{ title }}</h3>
+              <h3 class="u-dialog__title">
+                {{ title }}
+              </h3>
             </slot>
             <button
               v-if="!persistent"
@@ -88,15 +97,28 @@ function onMaskClick(): void {
               aria-label="关闭对话框"
               @click="close"
             >
-              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                <path d="M3 3 L13 13 M13 3 L3 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              <svg
+                viewBox="0 0 16 16"
+                width="14"
+                height="14"
+                aria-hidden="true"
+              >
+                <path
+                  d="M3 3 L13 13 M13 3 L3 13"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                />
               </svg>
             </button>
           </header>
           <div class="u-dialog__body">
             <slot />
           </div>
-          <footer v-if="$slots.footer" class="u-dialog__footer">
+          <footer
+            v-if="$slots.footer"
+            class="u-dialog__footer"
+          >
             <slot name="footer" />
           </footer>
         </div>

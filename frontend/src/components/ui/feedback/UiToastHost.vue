@@ -16,9 +16,22 @@ function onClose(id: string): void {
 
 <template>
   <Teleport to="body">
-    <div class="u-toast-host" aria-live="polite" aria-relevant="additions">
-      <TransitionGroup name="u-toast-stack" tag="div" class="u-toast-stack">
-        <UiToast v-for="it in items" :key="it.id" :item="it" @close="onClose" />
+    <div
+      class="u-toast-host"
+      aria-live="polite"
+      aria-relevant="additions"
+    >
+      <TransitionGroup
+        name="u-toast-stack"
+        tag="div"
+        class="u-toast-stack"
+      >
+        <UiToast
+          v-for="it in items"
+          :key="it.id"
+          :item="it"
+          @close="onClose"
+        />
       </TransitionGroup>
     </div>
   </Teleport>

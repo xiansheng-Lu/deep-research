@@ -127,7 +127,11 @@ onBeforeUnmount(() => {
         class="u-tooltip"
         role="tooltip"
       >
-        <span ref="arrowRef" class="u-tooltip__arrow" aria-hidden="true" />
+        <span
+          ref="arrowRef"
+          class="u-tooltip__arrow"
+          aria-hidden="true"
+        />
         <span v-if="content">{{ content }}</span>
         <slot v-else />
       </div>

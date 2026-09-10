@@ -35,7 +35,11 @@ defineEmits<{
     :type="nativeType"
     @click="(ev) => $emit('click', ev)"
   >
-    <span v-if="loading" class="u-btn__spinner" aria-hidden="true" />
+    <span
+      v-if="loading"
+      class="u-btn__spinner"
+      aria-hidden="true"
+    />
     <slot name="icon" />
     <slot />
   </button>

@@ -162,8 +162,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <span class="u-popover-wrap" @mouseenter="onTriggerEnter" @mouseleave="onTriggerLeave">
-    <span ref="triggerRef" class="u-popover-trigger" @click="onTriggerClick">
+  <span
+    class="u-popover-wrap"
+    @mouseenter="onTriggerEnter"
+    @mouseleave="onTriggerLeave"
+  >
+    <span
+      ref="triggerRef"
+      class="u-popover-trigger"
+      @click="onTriggerClick"
+    >
       <slot name="trigger" />
     </span>
     <Teleport to="body">
@@ -177,7 +185,12 @@ onBeforeUnmount(() => {
           @mouseenter="onPopoverEnter"
           @mouseleave="onPopoverLeave"
         >
-          <span v-if="arrow" ref="arrowRef" class="u-popover__arrow" aria-hidden="true" />
+          <span
+            v-if="arrow"
+            ref="arrowRef"
+            class="u-popover__arrow"
+            aria-hidden="true"
+          />
           <div class="u-popover__body">
             <slot />
           </div>

@@ -41,8 +41,14 @@ function onInput(ev: Event) {
 </script>
 
 <template>
-  <label class="u-input" :class="[`u-input--${size}`, { 'is-error': !!error, 'is-disabled': disabled }]">
-    <span v-if="label" class="u-input__label">{{ label }}</span>
+  <label
+    class="u-input"
+    :class="[`u-input--${size}`, { 'is-error': !!error, 'is-disabled': disabled }]"
+  >
+    <span
+      v-if="label"
+      class="u-input__label"
+    >{{ label }}</span>
     <span class="u-input__field">
       <input
         class="u-input__el"
@@ -57,10 +63,16 @@ function onInput(ev: Event) {
         @focus="(ev) => $emit('focus', ev)"
         @blur="(ev) => $emit('blur', ev)"
         @keyup.enter="(ev) => $emit('enter', ev)"
-      />
+      >
     </span>
-    <span v-if="error" class="u-input__msg u-input__msg--error">{{ error }}</span>
-    <span v-else-if="hint" class="u-input__msg">{{ hint }}</span>
+    <span
+      v-if="error"
+      class="u-input__msg u-input__msg--error"
+    >{{ error }}</span>
+    <span
+      v-else-if="hint"
+      class="u-input__msg"
+    >{{ hint }}</span>
   </label>
 </template>
 

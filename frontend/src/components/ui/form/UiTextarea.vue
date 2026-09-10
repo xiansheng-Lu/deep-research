@@ -36,8 +36,14 @@ function onInput(ev: Event) {
 </script>
 
 <template>
-  <label class="u-textarea" :class="{ 'is-error': !!error, 'is-disabled': disabled }">
-    <span v-if="label" class="u-textarea__label">{{ label }}</span>
+  <label
+    class="u-textarea"
+    :class="{ 'is-error': !!error, 'is-disabled': disabled }"
+  >
+    <span
+      v-if="label"
+      class="u-textarea__label"
+    >{{ label }}</span>
     <span class="u-textarea__field">
       <textarea
         class="u-textarea__el"
@@ -52,8 +58,14 @@ function onInput(ev: Event) {
         @blur="(ev) => $emit('blur', ev)"
       />
     </span>
-    <span v-if="error" class="u-textarea__msg u-textarea__msg--error">{{ error }}</span>
-    <span v-else-if="hint" class="u-textarea__msg">{{ hint }}</span>
+    <span
+      v-if="error"
+      class="u-textarea__msg u-textarea__msg--error"
+    >{{ error }}</span>
+    <span
+      v-else-if="hint"
+      class="u-textarea__msg"
+    >{{ hint }}</span>
   </label>
 </template>
 

@@ -1,8 +1,10 @@
-// RealtimeClient 最小骨架（[前端详细设计 §8.3 §9 §4.2]）
-// 一个 RealtimeClient 单例按 channelId 持有 WebSocket 连接
-// 当前仅覆盖 WS 心跳/重连；SSE 通道、断线补齐（lastEventId 去重）由上层 useRunStream 接入时补
+// RealtimeClient（[前端详细设计 §8.3 §9]，对齐后端 app/realtime/ws.py）
+// 一个 RealtimeClient 单例按 channelId 持有 WebSocket 连接；
+// 覆盖 WS 心跳、指数退避重连、终态事件识别；断线补齐（lastEventId 去重）由上层 useRunStream 接入时补。
+// 鉴权：token 已由 services/api buildRunStreamUrl 拼入 URL query（?token=<jwt>）。
 import {
-  WS_AUTH_PROTOCOL,
+  REALTIME_PROTOCOL_VERSION,
+  TERMINAL_EVENT_TYPES,
   type ChannelState,
   type RealtimeEnvelope,
   type RealtimePing,
@@ -11,8 +13,8 @@ import {
 
 // 通道配置
 export interface ChannelConfig {
+  // 完整 WS 地址（含 ?token= 查询参数）
   url: string
-  token?: string
   // 心跳：服务端每 30s ping（[§8.3]）；客户端兜底主动 ping 避免反向超时
   heartbeatIntervalMs?: number
   // 重连：指数退避 [§9.3]
@@ -26,7 +28,6 @@ type Handler = (env: RealtimeEnvelope) => void
 export class WsChannel {
   readonly id: string
   private readonly url: string
-  private readonly token: string | undefined
   private readonly heartbeatIntervalMs: number
   private readonly maxBackoffMs: number
 
@@ -39,12 +40,13 @@ export class WsChannel {
   private reconnectTimer: number | null = null
   private heartbeatTimer: number | null = null
   private intentionalClose = false
+  // 已收到终态事件（run.finished/run.failed）：服务端随后关连接，不再重连
+  private terminalReceived = false
   private onStateChange: ((state: ChannelState) => void) | null = null
 
   constructor(id: string, config: ChannelConfig) {
     this.id = id
     this.url = config.url
-    this.token = config.token
     this.heartbeatIntervalMs = config.heartbeatIntervalMs ?? 25000
     this.maxBackoffMs = config.maxBackoffMs ?? 30000
   }
@@ -101,10 +103,11 @@ export class WsChannel {
       return
     }
     this.intentionalClose = false
+    this.terminalReceived = false
     this.setState('connecting')
     try {
-      const protocols = this.token ? [WS_AUTH_PROTOCOL, `${WS_AUTH_PROTOCOL}.${this.token}`] : undefined
-      this.ws = protocols ? new WebSocket(this.url, protocols) : new WebSocket(this.url)
+      // 鉴权 token 已包含在 url query 中，无需 Sec-WebSocket-Protocol
+      this.ws = new WebSocket(this.url)
     } catch {
       this.scheduleReconnect()
       return
@@ -122,7 +125,7 @@ export class WsChannel {
     }
     this.ws.onclose = () => {
       this.stopHeartbeat()
-      if (this.intentionalClose) {
+      if (this.intentionalClose || this.terminalReceived) {
         this.setState('idle')
         return
       }
@@ -170,7 +173,7 @@ export class WsChannel {
     }
     // 心跳：服务端 ping 客户端回 pong（裸 JSON，无 envelope）
     if (msg.type === 'ping') {
-      const pong: RealtimePong = { type: 'pong', ts: Date.now() }
+      const pong: RealtimePong = { v: REALTIME_PROTOCOL_VERSION, type: 'pong', ts: Date.now() }
       this.send(pong as unknown as object)
       return
     }
@@ -180,6 +183,10 @@ export class WsChannel {
     if (msg.event_id) {
       const env = msg as unknown as RealtimeEnvelope
       this.lastEventId = env.event_id
+      // 终态事件：标记后不再重连，服务端会主动关闭连接
+      if (TERMINAL_EVENT_TYPES.has(env.type)) {
+        this.terminalReceived = true
+      }
       const set = this.handlers.get(env.type)
       if (set) for (const h of set) {
         try { h(env) } catch { /* swallow handler error to keep channel alive */ }
@@ -193,7 +200,7 @@ export class WsChannel {
   private startHeartbeat(): void {
     this.stopHeartbeat()
     this.heartbeatTimer = window.setInterval(() => {
-      const ping: RealtimePing = { type: 'ping', ts: Date.now() }
+      const ping: RealtimePing = { v: REALTIME_PROTOCOL_VERSION, type: 'ping', ts: Date.now() }
       this.send(ping as unknown as object)
     }, this.heartbeatIntervalMs)
   }

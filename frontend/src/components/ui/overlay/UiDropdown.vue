@@ -134,7 +134,11 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 function toggle(): void {
-  open.value ? close() : (open.value = true)
+  if (open.value) {
+    close()
+  } else {
+    open.value = true
+  }
 }
 
 function close(): void {
@@ -176,7 +180,13 @@ onBeforeUnmount(() => {
       height="12"
       aria-hidden="true"
     >
-      <path d="M2 4 L6 8 L10 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" />
+      <path
+        d="M2 4 L6 8 L10 4"
+        stroke="currentColor"
+        stroke-width="1.5"
+        fill="none"
+        stroke-linecap="round"
+      />
     </svg>
   </button>
   <Teleport to="body">

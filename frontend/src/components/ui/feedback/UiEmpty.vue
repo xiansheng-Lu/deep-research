@@ -12,20 +12,54 @@ withDefaults(
 </script>
 
 <template>
-  <div class="u-empty" role="status">
-    <div class="u-empty__icon" aria-hidden="true">
+  <div
+    class="u-empty"
+    role="status"
+  >
+    <div
+      class="u-empty__icon"
+      aria-hidden="true"
+    >
       <slot name="icon">
-        <svg viewBox="0 0 64 64" class="u-empty__svg">
-          <circle cx="32" cy="32" r="28" stroke="currentColor" stroke-width="2" fill="none" opacity="0.3" />
-          <path d="M22 32 H42 M32 22 V42" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.5" />
+        <svg
+          viewBox="0 0 64 64"
+          class="u-empty__svg"
+        >
+          <circle
+            cx="32"
+            cy="32"
+            r="28"
+            stroke="currentColor"
+            stroke-width="2"
+            fill="none"
+            opacity="0.3"
+          />
+          <path
+            d="M22 32 H42 M32 22 V42"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            opacity="0.5"
+          />
         </svg>
       </slot>
     </div>
-    <h3 v-if="title" class="u-empty__title">{{ title }}</h3>
-    <p v-if="hint || $slots.default" class="u-empty__hint">
+    <h3
+      v-if="title"
+      class="u-empty__title"
+    >
+      {{ title }}
+    </h3>
+    <p
+      v-if="hint || $slots.default"
+      class="u-empty__hint"
+    >
       <slot>{{ hint }}</slot>
     </p>
-    <div v-if="$slots.action" class="u-empty__action">
+    <div
+      v-if="$slots.action"
+      class="u-empty__action"
+    >
       <slot name="action" />
     </div>
   </div>

@@ -30,16 +30,22 @@ function toggle() {
   <label
     class="u-switch"
     :class="{ 'is-checked': modelValue, 'is-disabled': disabled }"
-    @click.prevent="toggle"
-    @keydown.space.prevent="toggle"
     tabindex="0"
     role="switch"
     :aria-checked="modelValue"
+    @click.prevent="toggle"
+    @keydown.space.prevent="toggle"
   >
-    <span class="u-switch__track" aria-hidden="true">
+    <span
+      class="u-switch__track"
+      aria-hidden="true"
+    >
       <span class="u-switch__thumb" />
     </span>
-    <span v-if="label || $slots.default" class="u-switch__label">
+    <span
+      v-if="label || $slots.default"
+      class="u-switch__label"
+    >
       <slot>{{ label }}</slot>
     </span>
   </label>

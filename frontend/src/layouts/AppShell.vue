@@ -7,12 +7,40 @@
 <template>
   <div class="app-shell">
     <header class="app-shell__topbar">
-      <RouterLink to="/home" class="app-shell__logo">AI 研究者助手</RouterLink>
-      <nav class="app-shell__nav" aria-label="主导航">
-        <RouterLink to="/home" class="app-shell__nav-link">首页</RouterLink>
-        <RouterLink to="/projects" class="app-shell__nav-link">项目</RouterLink>
-        <RouterLink to="/assistant" class="app-shell__nav-link">助手</RouterLink>
-        <RouterLink to="/account" class="app-shell__nav-link">账户</RouterLink>
+      <RouterLink
+        to="/home"
+        class="app-shell__logo"
+      >
+        AI 研究者助手
+      </RouterLink>
+      <nav
+        class="app-shell__nav"
+        aria-label="主导航"
+      >
+        <RouterLink
+          to="/home"
+          class="app-shell__nav-link"
+        >
+          首页
+        </RouterLink>
+        <RouterLink
+          to="/projects"
+          class="app-shell__nav-link"
+        >
+          项目
+        </RouterLink>
+        <RouterLink
+          to="/assistant"
+          class="app-shell__nav-link"
+        >
+          助手
+        </RouterLink>
+        <RouterLink
+          to="/account"
+          class="app-shell__nav-link"
+        >
+          账户
+        </RouterLink>
       </nav>
     </header>
     <main class="app-shell__main">

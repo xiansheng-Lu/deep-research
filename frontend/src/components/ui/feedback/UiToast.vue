@@ -63,10 +63,20 @@ onBeforeUnmount(() => {
     @mouseenter="onEnter"
     @mouseleave="onLeave"
   >
-    <span class="u-toast__dot" aria-hidden="true" />
+    <span
+      class="u-toast__dot"
+      aria-hidden="true"
+    />
     <div class="u-toast__body">
-      <div class="u-toast__msg">{{ item.message }}</div>
-      <div v-if="item.description" class="u-toast__desc">{{ item.description }}</div>
+      <div class="u-toast__msg">
+        {{ item.message }}
+      </div>
+      <div
+        v-if="item.description"
+        class="u-toast__desc"
+      >
+        {{ item.description }}
+      </div>
     </div>
     <button
       v-if="item.closable"
@@ -75,8 +85,18 @@ onBeforeUnmount(() => {
       aria-label="关闭通知"
       @click="close"
     >
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-        <path d="M3 3 L13 13 M13 3 L3 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+      <svg
+        viewBox="0 0 16 16"
+        width="14"
+        height="14"
+        aria-hidden="true"
+      >
+        <path
+          d="M3 3 L13 13 M13 3 L3 13"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        />
       </svg>
     </button>
   </div>

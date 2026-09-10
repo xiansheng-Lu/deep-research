@@ -21,8 +21,16 @@ function devBypass() {
   <div class="login-view">
     <div class="login-card">
       <h1>登录</h1>
-      <p class="hint">M1 接入 /auth/login；当前为开发占位，可点击下方按钮跳过登录。</p>
-      <UiButton variant="primary" size="lg" @click="devBypass">以开发模式进入</UiButton>
+      <p class="hint">
+        M1 接入 /auth/login；当前为开发占位，可点击下方按钮跳过登录。
+      </p>
+      <UiButton
+        variant="primary"
+        size="lg"
+        @click="devBypass"
+      >
+        以开发模式进入
+      </UiButton>
     </div>
   </div>
 </template>

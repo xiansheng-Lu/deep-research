@@ -18,7 +18,10 @@ withDefaults(
 </script>
 
 <template>
-  <span class="u-badge" :class="[`u-badge--${variant}`, `u-badge--${size}`]">
+  <span
+    class="u-badge"
+    :class="[`u-badge--${variant}`, `u-badge--${size}`]"
+  >
     <slot />
   </span>
 </template>

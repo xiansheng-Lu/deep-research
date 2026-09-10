@@ -21,7 +21,10 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <span class="u-tag" :class="[`u-tag--${variant}`]">
+  <span
+    class="u-tag"
+    :class="[`u-tag--${variant}`]"
+  >
     <slot name="icon" />
     <span class="u-tag__label"><slot /></span>
     <button
@@ -31,8 +34,17 @@ const emit = defineEmits<{
       aria-label="关闭标签"
       @click="emit('close')"
     >
-      <svg viewBox="0 0 10 10" class="u-tag__close-icon" aria-hidden="true">
-        <path d="M2 2 L8 8 M8 2 L2 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+      <svg
+        viewBox="0 0 10 10"
+        class="u-tag__close-icon"
+        aria-hidden="true"
+      >
+        <path
+          d="M2 2 L8 8 M8 2 L2 8"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+        />
       </svg>
     </button>
   </span>
