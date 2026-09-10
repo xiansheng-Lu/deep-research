@@ -2,7 +2,6 @@
 name = "deep-research-backend"
 version = "0.1.0"
 description = "AI 研究者助手 - 后端服务（多智能体深度研究平台）"
-readme = "docs/prd/AI研究者助手-软件需求规格说明书.md"
 requires-python = ">=3.11,<3.13"
 license = { text = "Proprietary" }
 authors = [
@@ -26,7 +25,6 @@ dependencies = [
     # 智能体编排（LangChain v1+ 生态；langchain-openai/anthropic 适配器于 M1 引入）
     "langgraph>=1.0,<2.0",
     "langchain-core>=1.0,<2.0",
-    "langchain-community>=1.0,<2.0",
     # 异步任务
     "celery[redis]>=5.4,<6.0",
     "redis[hiredis]>=5.2,<6.0",
@@ -56,6 +54,7 @@ dependencies = [
     "orjson>=3.10,<4.0",
     "python-dateutil>=2.9,<3.0",
     "pyyaml>=6.0,<7.0",
+    "python-ulid>=3.0,<5.0",
 ]
 
 [dependency-groups]
@@ -64,6 +63,8 @@ dev = [
     "mypy>=1.13,<2.0",
     "ipython>=8.29,<9.0",
     "pre-commit>=4.0,<5.0",
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.24,<1.0",
 ]
 
 [project.scripts]
@@ -111,3 +112,15 @@ exclude = ["app/db/migrations/"]
 [[tool.mypy.overrides]]
 module = ["langchain.*", "langgraph.*", "tavily.*", "trafilatura.*"]
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:passlib.*",
+]
+addopts = "-ra --strict-markers"
