@@ -72,3 +72,21 @@ export function stageLabel(stage: string): string {
 export function tierLabel(tier: string): string {
   return labelOf(zhCN.domain.tier, tier)
 }
+
+// run 状态到 UiBadge 语义色的映射（指挥舱/任务列表共用）
+export type BadgeVariant = 'neutral' | 'info' | 'success' | 'warn' | 'danger' | 'brand'
+
+export function runStatusVariant(status: string): BadgeVariant {
+  switch (status) {
+    case 'running':
+      return 'info'
+    case 'succeeded':
+      return 'success'
+    case 'paused':
+      return 'warn'
+    case 'failed':
+      return 'danger'
+    default:
+      return 'neutral'
+  }
+}

@@ -77,6 +77,8 @@ export interface ProjectResponse {
 export interface CreateProjectRequest {
   name: string
   description?: string | null
+  default_tier?: RunTier
+  default_template_id?: string | null
 }
 
 // ─── 研究运行 ───
