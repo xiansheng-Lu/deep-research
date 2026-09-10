@@ -6,5 +6,5 @@ from app.orchestrator.state import ResearchState
 
 
 async def run(state: ResearchState) -> dict[str, Any]:
-    """占位：M1 阶段根据 ``failure_reason`` 决定重试 / 降级 / 终态。"""
-    return {"failure_reason": state.get("failure_reason")}
+    """失败恢复占位：M1 阶段根据 ``failure_reason`` 决定重试 / 降级 / 终态（§6.5.1）。"""
+    return {"current_stage": "clarify"}

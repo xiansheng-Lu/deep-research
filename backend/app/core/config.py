@@ -35,13 +35,15 @@ class Settings(BaseSettings):
         default="INFO", alias="LOG_LEVEL"
     )
     log_json: bool = Field(default=True, alias="LOG_JSON")
+    log_collector_endpoint: str = Field(default="", alias="LOG_COLLECTOR_ENDPOINT")
 
     # ===== 安全 =====
     secret_key: SecretStr = Field(alias="SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
-    jwt_access_ttl_minutes: int = Field(default=60, alias="JWT_ACCESS_TTL_MINUTES")
-    jwt_refresh_ttl_days: int = Field(default=14, alias="JWT_REFRESH_TTL_DAYS")
+    jwt_access_ttl_minutes: int = Field(default=30, alias="JWT_ACCESS_TTL_MINUTES")
+    jwt_refresh_ttl_days: int = Field(default=7, alias="JWT_REFRESH_TTL_DAYS")
     cookie_secure: bool = Field(default=False, alias="COOKIE_SECURE")
+    encryption_key: SecretStr = Field(default=SecretStr(""), alias="ENCRYPTION_KEY")
 
     # ===== 数据库 =====
     db_async_url: str = Field(alias="DB_ASYNC_URL")
@@ -90,8 +92,11 @@ class Settings(BaseSettings):
     sse_heartbeat_seconds: int = Field(default=15, alias="SSE_HEARTBEAT_SECONDS")
 
     # ===== 追踪 =====
+    otel_enabled: bool = Field(default=True, alias="OTEL_ENABLED")
     otel_exporter_otlp_endpoint: str = Field(default="", alias="OTEL_EXPORTER_OTLP_ENDPOINT")
     otel_service_name: str = Field(default="deep-research-api", alias="OTEL_SERVICE_NAME")
+    llm_trace_enabled: bool = Field(default=True, alias="LLM_TRACE_ENABLED")
+    llm_trace_sample_rate: float = Field(default=0.01, alias="LLM_TRACE_SAMPLE_RATE")
 
     # ===== 派生属性 =====
     @property

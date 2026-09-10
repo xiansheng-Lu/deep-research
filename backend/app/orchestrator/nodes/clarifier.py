@@ -8,5 +8,5 @@ from app.orchestrator.state import ResearchStage, ResearchState
 
 @instrument(ResearchStage.CLARIFY)
 async def run(state: ResearchState) -> dict[str, Any]:
-    """澄清占位：M1 阶段由 clarifier 智能体注入问题列表。"""
-    return {"clarified_query": state.get("raw_query", "")}
+    """澄清占位：M1 阶段由 clarifier 智能体写入 ``needs_clarification`` / ``clarification``（§6.5.2）。"""
+    return {}

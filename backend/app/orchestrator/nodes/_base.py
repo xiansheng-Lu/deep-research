@@ -13,11 +13,11 @@ log = get_logger("orchestrator.node")
 
 
 def stage_update(stage: ResearchStage) -> dict[str, Any]:
-    """生成当前阶段切换的状态增量。"""
+    """生成当前阶段切换的状态增量（updated_at 为 UTC ISO 8601，对齐 §6.2）。"""
     now = datetime.now(tz=timezone.utc)
     return {
         "current_stage": stage,
-        "updated_at": now,
+        "updated_at": now.isoformat(),
     }
 
 

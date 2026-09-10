@@ -8,5 +8,5 @@ from app.orchestrator.state import ResearchStage, ResearchState
 
 @instrument(ResearchStage.REPORT)
 async def run(state: ResearchState) -> dict[str, Any]:
-    """报告占位：M1 阶段由 reporter 智能体流式产出 report_markdown。"""
-    return {"report_markdown": state.get("report_markdown") or ""}
+    """报告占位：M1 阶段由 reporter 智能体流式产出 report_draft。"""
+    return {"report_draft": state.get("report_draft") or ""}

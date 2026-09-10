@@ -8,5 +8,5 @@ from app.orchestrator.state import ResearchStage, ResearchState
 
 @instrument(ResearchStage.STANDARDIZE)
 async def run(state: ResearchState) -> dict[str, Any]:
-    """标准化占位：M1 阶段由 standardizer 智能体产出 standardized_claims。"""
-    return {"standardized_claims": state.get("standardized_claims") or []}
+    """标准化占位：M1 阶段由 standardizer 智能体产出 standardized_evidence。"""
+    return {"standardized_evidence": state.get("standardized_evidence") or []}
