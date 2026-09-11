@@ -9,7 +9,6 @@ import { mockGatewayPlugin } from './src/services/mock/gateway'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const apiBase = env.VITE_API_BASE ?? 'http://localhost:8000'
-  const wsBase = apiBase.replace(/^http/, 'ws')
   const mockEnabled = env.VITE_MOCK === 'gateway' && mode === 'development'
 
   // Mock 网关插件（仅 development 模式且 VITE_MOCK=gateway 时启用）
@@ -42,8 +41,8 @@ export default defineConfig(({ mode }) => {
       proxy: mockEnabled
         ? undefined
         : {
-            '/api': { target: apiBase, changeOrigin: true },
-            '/ws': { target: wsBase, ws: true, changeOrigin: true }
+            // WS 实时通道地址为 /api/v1/ws/...，与 REST 同前缀，必须在 /api 规则上开启 ws 升级转发
+            '/api': { target: apiBase, changeOrigin: true, ws: true }
           }
     },
     build: {

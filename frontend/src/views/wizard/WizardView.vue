@@ -11,7 +11,7 @@ import { createRun } from '@/services/api/runs'
 import type { ApiError } from '@/services/http/error'
 import type { ProjectResponse, RunTier } from '@/services/api/types'
 import { TIER_METAS } from '@/services/domain/tiers'
-import { tierLabel } from '@/services/i18n/zh-CN'
+import { tierLabel, templateLabel } from '@/services/i18n/zh-CN'
 import { formatNumber } from '@/utils/format'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiCard from '@/components/ui/UiCard.vue'
@@ -299,8 +299,11 @@ async function launch(): Promise<void> {
               <p class="select-card__desc">
                 澄清界定 → 问题分解 → 证据检索 → 标准化 → 交叉审校 → 报告撰写
               </p>
-              <UiBadge variant="brand">
-                generic
+              <UiBadge
+                variant="brand"
+                :title="`模板标识：${GENERIC_TEMPLATE_ID}`"
+              >
+                {{ templateLabel(GENERIC_TEMPLATE_ID) }}
               </UiBadge>
             </UiCard>
           </div>

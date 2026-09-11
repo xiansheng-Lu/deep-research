@@ -21,7 +21,7 @@ export function getRun(runId: string): Promise<RunResponse> {
 }
 
 // 派生运行实时流 WS 地址：后端统一 query 参数鉴权（/api/v1/ws/runs/{id}/stream?token=）
-// 同源页面下将 http(s) 基址替换为 ws(s)；dev 环境由 Vite 代理 /ws 前缀
+// 同源页面下将 http(s) 基址替换为 ws(s)；dev 环境走 /api 前缀，Vite 代理已开启 ws 转发
 export function buildRunStreamUrl(runId: string, token: string): string {
   const path = `/api/v1/ws/runs/${encodeURIComponent(runId)}/stream?token=${encodeURIComponent(token)}`
   const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'

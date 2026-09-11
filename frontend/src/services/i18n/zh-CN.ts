@@ -42,6 +42,10 @@ export const zhCN = {
       standard: '标准档',
       deep: '深度档',
       extreme: '极致档'
+    },
+    // 研究模板展示名；技术 key 仅用于副标题/title 提示，不进入卡片主视觉
+    template: {
+      generic: '通用研究'
     }
   }
 } as const
@@ -71,6 +75,10 @@ export function stageLabel(stage: string): string {
 
 export function tierLabel(tier: string): string {
   return labelOf(zhCN.domain.tier, tier)
+}
+
+export function templateLabel(templateId: string): string {
+  return labelOf(zhCN.domain.template, templateId)
 }
 
 // run 状态到 UiBadge 语义色的映射（指挥舱/任务列表共用）

@@ -129,11 +129,19 @@ function openReport(): void {
         </header>
 
         <p
-          v-if="state.channelState === 'retrying'"
+          v-if="state.channelState === 'connecting'"
+          class="cockpit-view__notice cockpit-view__notice--connecting"
+          role="status"
+        >
+          实时连接建立中，阶段状态通过同步接口持续跟踪…
+        </p>
+
+        <p
+          v-else-if="state.channelState === 'retrying'"
           class="cockpit-view__notice"
           role="status"
         >
-          实时连接中断，正在重连…
+          实时连接中断，正在自动重连…
         </p>
 
         <div
@@ -155,6 +163,19 @@ function openReport(): void {
             class="cockpit-error__message"
           >
             {{ run.error_message }}
+          </p>
+        </div>
+
+        <div
+          v-if="run.status === 'paused'"
+          class="cockpit-paused"
+          role="status"
+        >
+          <p class="cockpit-paused__title">
+            研究已暂停：等待澄清确认
+          </p>
+          <p class="cockpit-paused__message">
+            系统在「{{ run.current_stage ? stageLabel(run.current_stage) : '澄清界定' }}」阶段需要补充信息后才能继续。M1 暂未提供页面恢复入口，可重新发起研究并把问题描述得更明确。
           </p>
         </div>
 
@@ -272,6 +293,11 @@ function openReport(): void {
   font-size: var(--font-sm);
 }
 
+.cockpit-view__notice--connecting {
+  background: var(--brand-50);
+  color: var(--brand-700);
+}
+
 .cockpit-error {
   margin-bottom: var(--space-6);
   padding: var(--space-4);
@@ -295,6 +321,26 @@ function openReport(): void {
 }
 
 .cockpit-error__message {
+  font-size: var(--font-sm);
+  color: var(--color-text);
+}
+
+.cockpit-paused {
+  margin-bottom: var(--space-6);
+  padding: var(--space-4);
+  border: 1px solid var(--warning-500);
+  border-radius: var(--radius-md);
+  background: var(--warning-50);
+}
+
+.cockpit-paused__title {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--warning-500);
+  margin-bottom: var(--space-2);
+}
+
+.cockpit-paused__message {
   font-size: var(--font-sm);
   color: var(--color-text);
 }

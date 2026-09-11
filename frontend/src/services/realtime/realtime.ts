@@ -19,6 +19,9 @@ export interface ChannelConfig {
   heartbeatIntervalMs?: number
   // 重连：指数退避 [§9.3]
   maxBackoffMs?: number
+  // 握手超时：超时未收到 onopen 则主动关闭并转入退避重连
+  // （代理异常时浏览器可能既不 open 也不 close，必须由客户端打破静默）
+  connectTimeoutMs?: number
 }
 
 // 事件订阅（type -> 处理器集合）
@@ -30,6 +33,7 @@ export class WsChannel {
   private readonly url: string
   private readonly heartbeatIntervalMs: number
   private readonly maxBackoffMs: number
+  private readonly connectTimeoutMs: number
 
   private ws: WebSocket | null = null
   private state: ChannelState = 'idle'
@@ -39,6 +43,7 @@ export class WsChannel {
   private backoffMs = 1000
   private reconnectTimer: number | null = null
   private heartbeatTimer: number | null = null
+  private connectTimer: number | null = null
   private intentionalClose = false
   // 已收到终态事件（run.finished/run.failed）：服务端随后关连接，不再重连
   private terminalReceived = false
@@ -49,6 +54,7 @@ export class WsChannel {
     this.url = config.url
     this.heartbeatIntervalMs = config.heartbeatIntervalMs ?? 25000
     this.maxBackoffMs = config.maxBackoffMs ?? 30000
+    this.connectTimeoutMs = config.connectTimeoutMs ?? 10000
   }
 
   getState(): ChannelState {
@@ -112,7 +118,9 @@ export class WsChannel {
       this.scheduleReconnect()
       return
     }
+    this.startConnectTimeout()
     this.ws.onopen = () => {
+      this.stopConnectTimeout()
       this.backoffMs = 1000
       this.setState('live')
       this.startHeartbeat()
@@ -124,6 +132,7 @@ export class WsChannel {
       // error 紧跟 close；不直接重连，由 close 统一处理
     }
     this.ws.onclose = () => {
+      this.stopConnectTimeout()
       this.stopHeartbeat()
       if (this.intentionalClose || this.terminalReceived) {
         this.setState('idle')
@@ -140,6 +149,7 @@ export class WsChannel {
       window.clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    this.stopConnectTimeout()
     this.stopHeartbeat()
     if (this.ws) {
       try {
@@ -209,6 +219,35 @@ export class WsChannel {
     if (this.heartbeatTimer !== null) {
       window.clearInterval(this.heartbeatTimer)
       this.heartbeatTimer = null
+    }
+  }
+
+  private startConnectTimeout(): void {
+    this.stopConnectTimeout()
+    this.connectTimer = window.setTimeout(() => {
+      this.connectTimer = null
+      const ws = this.ws
+      if (!ws) return
+      // 握手超时：摘除回调避免主动 close 触发 onclose 重复调度重连
+      this.ws = null
+      ws.onopen = null
+      ws.onmessage = null
+      ws.onerror = null
+      ws.onclose = null
+      try {
+        ws.close()
+      } catch {
+        /* noop */
+      }
+      this.stopHeartbeat()
+      this.scheduleReconnect()
+    }, this.connectTimeoutMs)
+  }
+
+  private stopConnectTimeout(): void {
+    if (this.connectTimer !== null) {
+      window.clearTimeout(this.connectTimer)
+      this.connectTimer = null
     }
   }
 

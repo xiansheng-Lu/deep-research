@@ -112,8 +112,10 @@ Mock 模式的登录账号由 [src/services/mock/seed.ts](src/services/mock/seed
 
 | 前端路径 | 转发目标 |
 | --- | --- |
-| `/api` | `VITE_API_BASE`（HTTP） |
-| `/ws` | 由 `VITE_API_BASE` 派生的 `ws://` 地址（WebSocket upgrade） |
+| `/api`（HTTP） | `VITE_API_BASE` |
+| `/api/v1/ws`（WebSocket 升级） | 同一条 `/api` 规则以 `ws: true` 转发至 `VITE_API_BASE` |
+
+实时通道地址为 `/api/v1/ws/runs/{run_id}/stream`，与 REST 同属 `/api` 前缀，因此 WS 升级转发配置在 `/api` 规则上，不存在独立的 `/ws` 前缀规则。
 
 ### M1 契约与客户端生成
 
