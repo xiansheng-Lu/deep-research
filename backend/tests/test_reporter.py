@@ -151,6 +151,16 @@ class TestRenderBackground:
         assert "## 研究背景" in out
         assert "研究目标" not in out
 
+    def test_trailing_period_not_doubled(self) -> None:
+        """用户问题自带句末标点时，报告不再追加句号且无双句号。"""
+        section = {"id": "background", "title": "研究背景", "type": "background"}
+        out = render_section(section, _state(question="什么是 RAG？"), [], [])
+        assert "。。" not in out
+        assert "**什么是 RAG？**\n" in out
+        # 无句末标点时统一补一个中文句号
+        out_plain = render_section(section, _state(question="什么是 RAG"), [], [])
+        assert "**什么是 RAG**。" in out_plain
+
 
 # ---------------------------------------------------------------------------
 # render_section：findings
@@ -171,9 +181,10 @@ class TestRenderFindings:
         ]
         out = render_section(section, _state(claims=claims), [], [])
         assert "1. 增长 30%" in out
-        assert "confidence: single_source" in out
+        assert "（置信度：单一来源）" in out
         assert "2. 突破 200GW" in out
-        assert "confidence: cross_verified" in out
+        assert "（置信度：多源印证）" in out
+        assert "confidence:" not in out
         assert "[1] [A](https://x.com/a)" in out
         assert "**引用：**" in out
 

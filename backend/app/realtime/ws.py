@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import time
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 from jose import JWTError
@@ -55,7 +56,9 @@ def _make_envelope(run_id: str, event: dict[str, Any]) -> dict[str, Any]:
     event_type = str(event.get("type", "unknown"))
     return {
         "v": "1.0",
-        "event_id": f"evt_{event_type}_{int(time.time() * 1000)}",
+        # 同毫秒可能连发多个阶段事件，时间戳后缀会重复，追加随机段保证
+        # event_id 全局唯一（客户端 lastEventId 去重的前置契约）
+        "event_id": f"evt_{event_type}_{int(time.time() * 1000)}_{uuid4().hex[:8]}",
         "ts": int(time.time() * 1000),
         "run_id": run_id,
         "stage": event.get("stage") or event.get("current_stage"),

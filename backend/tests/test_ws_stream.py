@@ -140,3 +140,10 @@ def test_make_envelope_structure() -> None:
     assert env["event_id"]
     assert env["ts"] > 0
     assert env["payload"] == {"attempt": 1}
+
+
+def test_event_id_unique_within_same_millisecond() -> None:
+    """同毫秒连发多个事件，event_id 必须互不相同（lastEventId 去重契约）。"""
+    event = {"type": "stage.started", "stage": "retrieve"}
+    ids = {_make_envelope(_FAKE_RUN_ID, event)["event_id"] for _ in range(20)}
+    assert len(ids) == 20

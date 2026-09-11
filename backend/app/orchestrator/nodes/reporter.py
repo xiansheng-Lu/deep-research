@@ -52,6 +52,13 @@ _DEFAULT_OUTLINE: list[dict[str, str]] = [
     {"id": "conclusion", "title": "结论", "type": OUTLINE_TYPE_CONCLUSION},
 ]
 
+# 内部置信度枚举 -> 报告面向用户的中文标签（ReportClaim.confidence 三值）
+_CONFIDENCE_LABELS: dict[str, str] = {
+    "single_source": "单一来源",
+    "cross_verified": "多源印证",
+    "inferred": "推断",
+}
+
 
 def default_outline(template_id: str | None) -> list[dict[str, str]]:
     """按模板 ID 返回分段大纲。M1 阶段所有模板共用通用骨架。"""
@@ -73,13 +80,15 @@ def _format_citation(idx: int, citation: dict[str, Any]) -> str:
 
 def _render_background(section: dict[str, str], state: ResearchState) -> str:
     """背景段：仅以研究问题 + 澄清目标开篇。"""
-    question = state.get("question") or ""
+    # 用户问题常自带句末标点：已以句读符号结尾则不补句号，避免出现“。。”
+    question = (state.get("question") or "").strip()
+    question_ending = "" if question.endswith(("。", "！", "？", ".", "!", "?")) else "。"
     clarification = state.get("clarification") or {}
     goal = clarification.get("goal") if isinstance(clarification, dict) else None
     lines = [
         f"## {section['title']}",
         "",
-        f"本研究围绕以下问题展开：**{question}**。",
+        f"本研究围绕以下问题展开：**{question}**{question_ending}",
     ]
     if goal:
         lines.append("")
@@ -99,8 +108,9 @@ def _render_findings(section: dict[str, str], state: ResearchState) -> str:
         return "\n".join(lines) + "\n"
     for i, c in enumerate(claims, start=1):
         text = (c.get("text") or "").strip()
-        conf = c.get("confidence") or "single_source"
-        lines.append(f"{i}. {text}（confidence: {conf}）")
+        conf_raw = c.get("confidence") or "single_source"
+        conf_label = _CONFIDENCE_LABELS.get(conf_raw, conf_raw)
+        lines.append(f"{i}. {text}（置信度：{conf_label}）")
     # 引用汇总
     lines.append("")
     lines.append("**引用：**")
