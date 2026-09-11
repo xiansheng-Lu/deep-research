@@ -1,24 +1,32 @@
 # WSL2 全局资源限额模板（低内存联调机专用）
 #
+# 适用方案：不安装 Docker Desktop，直接在 WSL2 Ubuntu 内安装 Docker Engine，
+#           PostgreSQL / Redis / MinIO 等中间件以容器方式运行在 WSL 中，
+#           前后端开发进程运行在 Windows 宿主侧，经 localhost 端口转发联调。
+#
 # 安装位置：复制到当前用户目录，即 C:\Users\<用户名>\.wslconfig
 # PowerShell 一键复制：
 #   Copy-Item .\.wslconfig.example "$env:USERPROFILE\.wslconfig"
 #
-# 生效方式（会重启所有 WSL 发行版与 Docker 引擎，不影响磁盘数据）：
+# 生效方式（会重启所有 WSL 发行版与 Docker 引擎，已配置 restart 策略的容器会自动恢复，不影响磁盘数据）：
 #   wsl --shutdown
-# 然后重新启动 Docker Desktop。
 #
-# Docker Desktop 使用 WSL2 后端时，其虚拟机内存受本文件约束。
+# 以下取值在 15.7GB 内存开发机上实测：三个中间件容器稳态合计约 134MiB，
+# WSL 整体占用约 940MiB，Swap 零使用，5GB 配额余量充足。
 
 [wsl2]
 # WSL2 虚拟机（含 Docker 引擎与全部容器）内存硬上限
-memory=2GB
-# 分配 4 个逻辑核，其余留给 IDE、前端 Node 与宿主机
+memory=5GB
+# 分配 4 个逻辑核，其余留给 IDE、前端 Node 与 Windows
 processors=4
-# 换页空间 2GB，交换文件放到空间充足的 D 盘
-swap=2GB
-swapFile=D:\\WSL\\swap.vhdx
-# 容器空闲后及时把内存回收给 Windows
-pageReporting=true
-# 联调不需要 WSLg 图形界面，关闭可降低虚拟机基础占用
-guiApplications=false
+# 换页空间 1GB，作为数据库迁移等尖峰场景的安全垫，稳态不会实际使用
+swap=1GB
+# 如 C 盘空间紧张，可将交换文件显式放到其他盘（默认位于 WSL 虚拟磁盘旁）：
+# swapFile=D:\\WSL\\swap.vhdx
+# 联调不需要 WSLg 图形界面，关闭可降低虚拟机基础占用（按需启用）：
+# guiApplications=false
+
+[experimental]
+# 容器空闲后回收 Linux 页缓存并把内存归还 Windows
+# 注意：WSL 2.7.x 实测该键仍需放在本段，移到 [wsl2] 会报“未知键”警告
+autoMemoryReclaim=dropcache
