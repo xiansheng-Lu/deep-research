@@ -74,18 +74,25 @@ def _build_graph_with_deps(deps: NodeDeps) -> Any:
 
     该函数是 executor 内部接线，与 ``graph.compile_research_graph`` 共享图结构，
     仅在节点 callable 上注入运行时依赖，避免污染生产入口。
+
+    注意：只有签名含 ``deps`` 关键字的节点（clarifier / sub_questioner /
+    researcher_fan_out / standardizer / critic / reporter）才闭包绑定；
+    failure_recovery / await_human / cost_checkpoint / user_intervention
+    为纯 state 节点，``run(state)`` 不接受 deps，直接注册。
     """
     graph = StateGraph(ResearchState)
-    graph.add_node("failure_recovery", _bind(failure_recovery.run, deps))
+    # 纯 state 节点：run(state)，不注入 deps
+    graph.add_node("failure_recovery", failure_recovery.run)
+    graph.add_node("await_human", await_human.run)
+    graph.add_node("cost_checkpoint", cost_checkpoint.run)
+    graph.add_node("user_intervention", user_intervention.run)
+    # 依赖节点：run(state, deps=...)，闭包注入运行时依赖
     graph.add_node("clarify", _bind(clarifier.run, deps))
     graph.add_node("decompose", _bind(sub_questioner.run, deps))
     graph.add_node("retrieve", _bind(researcher_fan_out.run, deps))
     graph.add_node("standardize", _bind(standardizer.run, deps))
     graph.add_node("critique", _bind(critic.run, deps))
     graph.add_node("report", _bind(reporter.run, deps))
-    graph.add_node("cost_checkpoint", _bind(cost_checkpoint.run, deps))
-    graph.add_node("user_intervention", _bind(user_intervention.run, deps))
-    graph.add_node("await_human", _bind(await_human.run, deps))
 
     graph.add_edge(START, "failure_recovery")
     graph.add_edge("failure_recovery", "clarify")

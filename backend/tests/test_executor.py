@@ -24,6 +24,8 @@ from app.orchestrator.executor import (
 )
 from app.orchestrator.state import ResearchStage
 from app.realtime.hub import RealtimeHub
+from app.retrieval.base import RetrievalHit, RetrievalRequest, RetrievalSource
+from app.retrieval.client import RetrievalClient
 
 
 def test_build_initial_state_has_required_fields() -> None:
@@ -59,6 +61,63 @@ def test_compile_for_deps_produces_callable_graph() -> None:
     graph = _compile_for_deps(deps)
     assert graph is not None
     assert hasattr(graph, "ainvoke")
+
+
+class _OfflineRetrievalClient(RetrievalClient):
+    """返回固定命中的离线检索客户端，避免测试依赖真实网络。"""
+
+    def __init__(self) -> None:
+        # 跳过父类 __init__：不要求 primary/backup provider
+        pass
+
+    async def search(self, request: RetrievalRequest) -> list[RetrievalHit]:  # noqa: ARG002
+        return [
+            RetrievalHit(
+                source=RetrievalSource.WEB,
+                title="测试信源标题",
+                url="https://example.com/test",
+                snippet="测试检索摘要内容",
+                score=0.9,
+            )
+        ]
+
+    async def extract(self, hits: list[RetrievalHit]) -> list[RetrievalHit]:
+        return list(hits)
+
+
+@pytest.mark.asyncio
+async def test_compiled_graph_runs_all_nodes_without_signature_error() -> None:
+    """真实编译图可一路执行到 report（回归：纯 state 节点不得被注入 deps）。
+
+    修复前 executor 给 failure_recovery 等纯 state 节点也闭包注入 deps，
+    首个节点即抛 ``TypeError: run() got an unexpected keyword argument 'deps'``。
+    """
+    deps = NodeDeps(
+        run_id="test-run-graph",
+        team_id="test-team-001",
+        trace_id="trace-001",
+        llm=None,  # 走各节点降级路径，无 LLM 网络调用
+        retrieval_client=_OfflineRetrievalClient(),
+        db_session=None,
+    )
+    graph = _compile_for_deps(deps)
+    initial_state = _build_initial_state(
+        run_id="test-run-graph",
+        project_id="proj-001",
+        question="2026 年中国光伏装机量趋势如何？",
+        template_id="generic",
+        tier="standard",
+        token_budget=100_000,
+        clarification=None,
+        trace_id="trace-001",
+    )
+
+    final_state = await graph.ainvoke(
+        initial_state, config={"configurable": {"thread_id": "test-run-graph"}}
+    )
+
+    assert final_state["current_stage"] == ResearchStage.REPORT
+    assert (final_state.get("report_draft") or "").strip()
 
 
 @pytest.mark.asyncio
