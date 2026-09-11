@@ -161,6 +161,33 @@ class TestRenderBackground:
         out_plain = render_section(section, _state(question="什么是 RAG"), [], [])
         assert "**什么是 RAG**。" in out_plain
 
+    def test_dict_scope_rendered_as_chinese_text(self) -> None:
+        """LLM 把 scope 返回成 include/exclude 字典时，不得向报告泄漏 Python 字典原文。"""
+        section = {"id": "background", "title": "研究背景", "type": "background"}
+        state = _state(
+            question="对比两类数据库",
+            clarification={
+                "goal": "数据库选型对比",
+                "scope": {
+                    "include": ["JSON 索引机制", "查询性能"],
+                    "exclude": ["非 JSON 场景"],
+                },
+            },
+        )
+        out = render_section(section, state, [], [])
+        assert "研究范围：包含JSON 索引机制、查询性能；不包含非 JSON 场景" in out
+        assert "{" not in out and "}" not in out and "'" not in out
+
+    def test_list_and_scalar_scope_normalized(self) -> None:
+        section = {"id": "background", "title": "研究背景", "type": "background"}
+        out_list = render_section(
+            section,
+            _state(question="q", clarification={"scope": ["中国", "近一年"]}),
+            [],
+            [],
+        )
+        assert "研究范围：中国、近一年" in out_list
+
 
 # ---------------------------------------------------------------------------
 # render_section：findings

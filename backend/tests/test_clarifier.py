@@ -352,6 +352,47 @@ class TestClarifierTokenAccounting:
 
 
 # ---------------------------------------------------------------------------
+# 判定口径与调用参数（2026-09-12 联调校准后的 M1 契约）
+# ---------------------------------------------------------------------------
+
+
+class TestClarifierPromptCalibration:
+    def test_prompt_defaults_to_pass_with_hard_gate(self) -> None:
+        """提示词必须保持"默认放行、仅硬歧义追问"口径，防止回退为过严判定。"""
+        prompt = clarifier._SYSTEM_PROMPT_ZH
+        assert "默认放行" in prompt
+        assert "不得因此追问" in prompt
+        # 开放式研究问法被显式列为放行示例
+        assert "技术趋势" in prompt
+
+    @pytest.mark.asyncio
+    async def test_call_llm_uses_zero_temperature(self) -> None:
+        """澄清判定必须以 temperature=0 调用，保证同问同判。"""
+        captured: dict[str, Any] = {}
+
+        class _CapturingClient(LLMClient):
+            async def complete_structured(self, **kwargs: Any) -> Any:  # type: ignore[override]
+                captured.update(kwargs)
+                from app.provider.client import StructuredCompletion
+
+                return StructuredCompletion(
+                    parsed=ClarificationSchema(
+                        requires_user_input=False,
+                        questions=[],
+                        defaults={},
+                        structured_question={"goal": "g", "scope": "s"},
+                    ),
+                    usage={"total_tokens": 1},
+                    model="fake",
+                    raw="",
+                )
+
+        deps = NodeDeps(run_id="r9", team_id="t9", trace_id="tr9", llm=_CapturingClient())
+        await clarifier._call_llm(deps=deps, question="任意研究问题")
+        assert captured["temperature"] == clarifier._CLARIFY_TEMPERATURE == 0.0
+
+
+# ---------------------------------------------------------------------------
 # 协议兼容
 # ---------------------------------------------------------------------------
 

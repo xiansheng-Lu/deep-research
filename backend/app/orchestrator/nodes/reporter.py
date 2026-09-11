@@ -78,13 +78,43 @@ def _format_citation(idx: int, citation: dict[str, Any]) -> str:
     return f"[{idx}] [{title}]({url})"
 
 
+def _as_text(value: Any) -> str:
+    """把 LLM 结构化输出中的自由形态值归一为人类可读文本。
+
+    DeepSeek 等模型可能把 scope/goal 返回成 dict 或 list（如
+    ``{"include": [...], "exclude": [...]}``），直接插值会把 Python
+    字典原文写进报告；此处统一转成中文短句。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, (list, tuple, set)):
+        return "、".join(_as_text(item) for item in value if _as_text(item))
+    if isinstance(value, dict):
+        parts: list[str] = []
+        include = value.get("include") or value.get("包含") or value.get("in_scope")
+        exclude = value.get("exclude") or value.get("不包含") or value.get("out_of_scope")
+        if include:
+            parts.append(f"包含{_as_text(include)}")
+        if exclude:
+            parts.append(f"不包含{_as_text(exclude)}")
+        if not parts:
+            # 其它键形态：键值对中文拼接
+            parts = [f"{_as_text(k)}：{_as_text(v)}" for k, v in value.items() if _as_text(v)]
+        return "；".join(parts)
+    return str(value)
+
+
 def _render_background(section: dict[str, str], state: ResearchState) -> str:
     """背景段：仅以研究问题 + 澄清目标开篇。"""
     # 用户问题常自带句末标点：已以句读符号结尾则不补句号，避免出现“。。”
     question = (state.get("question") or "").strip()
     question_ending = "" if question.endswith(("。", "！", "？", ".", "!", "?")) else "。"
     clarification = state.get("clarification") or {}
-    goal = clarification.get("goal") if isinstance(clarification, dict) else None
+    goal = _as_text(clarification.get("goal")) if isinstance(clarification, dict) else ""
     lines = [
         f"## {section['title']}",
         "",
@@ -93,7 +123,7 @@ def _render_background(section: dict[str, str], state: ResearchState) -> str:
     if goal:
         lines.append("")
         lines.append(f"- 研究目标：{goal}")
-    scope = clarification.get("scope") if isinstance(clarification, dict) else None
+    scope = _as_text(clarification.get("scope")) if isinstance(clarification, dict) else ""
     if scope:
         lines.append(f"- 研究范围：{scope}")
     return "\n".join(lines) + "\n"
