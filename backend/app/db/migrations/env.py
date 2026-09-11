@@ -7,6 +7,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import get_settings
 from app.db.base import Base
+from app.db import models  # noqa: F401  触发模型注册到 Base.metadata
 
 # 由 alembic.ini 通过 prepend_sys_path 注入 apps/api
 config = context.config

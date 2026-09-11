@@ -16,6 +16,15 @@
 # 设计类文档 (架构/前后端详细设计/交互/契约/智能体规格)
 /docs/design/ @xiansheng-Lu
 
+# 接口契约 (OpenAPI, 开发公共)
+/docs/contract/ @xiansheng-Lu
+
+# 联调缺陷反馈单 (提出方与修复方)
+/docs/feedback/ @xiansheng-Lu
+
+# 本地开发环境与运维手册 (开发公共)
+/docs/ops/ @xiansheng-Lu
+
 # 工程协作与版本管理 (Git 规范等)
 /docs/AI研究者助手-Git协作与代码版本管理规范.md @xiansheng-Lu
 

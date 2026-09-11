@@ -2,14 +2,15 @@
 
 所有业务模型继承自 Base；多租户字段（team_id / created_at / updated_at）
 统一在此声明，避免各模型重复实现。
+
+主键约定遵循 LLD §5.1：CHAR(26) ULID，由应用层生成（``python-ulid``）。
 """
 
 from datetime import datetime, timezone
-from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, MetaData
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import DateTime, MetaData, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from ulid import ULID
 
 # 命名约定便于 Alembic 生成可读的迁移
 NAMING_CONVENTION: dict[str, str] = {
@@ -25,6 +26,11 @@ def _utcnow() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
+def new_ulid() -> str:
+    """生成主键：26 字符 ULID（时间序）。"""
+    return str(ULID())
+
+
 class Base(DeclarativeBase):
     """所有 ORM 模型的声明基类。"""
 
@@ -32,11 +38,9 @@ class Base(DeclarativeBase):
 
 
 class IdMixin:
-    """主键列：UUID，全局唯一。"""
+    """主键列：ULID ``CHAR(26)``，全局唯一、时间序。"""
 
-    id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), primary_key=True, default=uuid4
-    )
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=new_ulid)
 
 
 class TimestampMixin:

@@ -35,13 +35,15 @@ class Settings(BaseSettings):
         default="INFO", alias="LOG_LEVEL"
     )
     log_json: bool = Field(default=True, alias="LOG_JSON")
+    log_collector_endpoint: str = Field(default="", alias="LOG_COLLECTOR_ENDPOINT")
 
     # ===== 安全 =====
     secret_key: SecretStr = Field(alias="SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
-    jwt_access_ttl_minutes: int = Field(default=60, alias="JWT_ACCESS_TTL_MINUTES")
-    jwt_refresh_ttl_days: int = Field(default=14, alias="JWT_REFRESH_TTL_DAYS")
+    jwt_access_ttl_minutes: int = Field(default=30, alias="JWT_ACCESS_TTL_MINUTES")
+    jwt_refresh_ttl_days: int = Field(default=7, alias="JWT_REFRESH_TTL_DAYS")
     cookie_secure: bool = Field(default=False, alias="COOKIE_SECURE")
+    encryption_key: SecretStr = Field(default=SecretStr(""), alias="ENCRYPTION_KEY")
 
     # ===== 数据库 =====
     db_async_url: str = Field(alias="DB_ASYNC_URL")
@@ -74,7 +76,14 @@ class Settings(BaseSettings):
     llm_circuit_reset_seconds: int = Field(default=60, alias="LLM_CIRCUIT_RESET_SECONDS")
 
     # ===== 检索 =====
+    # 公域检索供应方选择：bocha（国内）/ tavily（海外）
+    web_search_provider: Literal["bocha", "tavily"] = Field(
+        default="bocha", alias="WEB_SEARCH_PROVIDER"
+    )
     tavily_api_key: SecretStr = Field(default=SecretStr(""), alias="TAVILY_API_KEY")
+    bocha_api_key: SecretStr = Field(default=SecretStr(""), alias="BOCHA_API_KEY")
+    bocha_base_url: str = Field(default="https://api.bochaai.com/v1", alias="BOCHA_BASE_URL")
+    bocha_timeout_seconds: float = Field(default=30.0, alias="BOCHA_TIMEOUT_SECONDS")
 
     # ===== 成本治理 =====
     quota_default_tier: Literal["quick", "standard", "deep", "extreme"] = Field(
@@ -85,13 +94,24 @@ class Settings(BaseSettings):
     quota_tier_deep_tokens: int = Field(default=400_000, alias="QUOTA_TIER_DEEP_TOKENS")
     quota_tier_extreme_tokens: int = Field(default=1_000_000, alias="QUOTA_TIER_EXTREME_TOKENS")
 
+    # ===== 种子账号（仅 dev/staging 联调，prod 下脚本拒绝执行） =====
+    seed_team_name: str = Field(default="默认团队", alias="SEED_TEAM_NAME")
+    seed_user_email: str = Field(default="dev@example.com", alias="SEED_USER_EMAIL")
+    seed_user_password: SecretStr = Field(
+        default=SecretStr("Dev@123456"), alias="SEED_USER_PASSWORD"
+    )
+    seed_user_display_name: str = Field(default="联调开发者", alias="SEED_USER_DISPLAY_NAME")
+
     # ===== 实时通信 =====
     ws_heartbeat_seconds: int = Field(default=25, alias="WS_HEARTBEAT_SECONDS")
     sse_heartbeat_seconds: int = Field(default=15, alias="SSE_HEARTBEAT_SECONDS")
 
     # ===== 追踪 =====
+    otel_enabled: bool = Field(default=True, alias="OTEL_ENABLED")
     otel_exporter_otlp_endpoint: str = Field(default="", alias="OTEL_EXPORTER_OTLP_ENDPOINT")
     otel_service_name: str = Field(default="deep-research-api", alias="OTEL_SERVICE_NAME")
+    llm_trace_enabled: bool = Field(default=True, alias="LLM_TRACE_ENABLED")
+    llm_trace_sample_rate: float = Field(default=0.01, alias="LLM_TRACE_SAMPLE_RATE")
 
     # ===== 派生属性 =====
     @property

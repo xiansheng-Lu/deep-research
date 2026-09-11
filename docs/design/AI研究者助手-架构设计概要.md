@@ -462,7 +462,7 @@ class Connector(Protocol):
 | 并发检索压垮上游 | 服务降级 | 任务队列限流 + 退避重试 + 熔断 |
 | 向量检索召回差 | 知识库可用性低 | 混合检索（向量 + 全文 + 元数据） + 人工反馈闭环 |
 | **LLM Provider 单点故障** | 流水线瘫痪 | Provider Adapter 抽象层 + 主备 provider 池 + 故障自动转移（OpenAI 主 / Anthropic 备）+ 熔断降级到轻量模型 |
-| **LangGraph 版本稳定性** | API 不兼容 | 锁定主版本（`<1.x`）+ 自研适配层（`graph_wrapper.py`）隔离升级影响 + CI 中跑升级演练 |
+| **LangGraph 版本稳定性** | API 不兼容 | 锁定主版本（`1.x`）+ 自研适配层（`graph_wrapper.py`）隔离升级影响 + CI 中跑升级演练 |
 | **私域连接器 SLA 差异** | 数据陈旧 / 拉取失败 | 异步隔离 + 健康检查（5min 一次）+ 失败时降级到本地缓存 + 用户可见"同步失败"提示 |
 
 ---

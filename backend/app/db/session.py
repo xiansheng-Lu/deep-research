@@ -55,11 +55,20 @@ def get_engine() -> AsyncEngine:
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """FastAPI 依赖：每次请求提供一个会话，结束时自动关闭。"""
+    """FastAPI 依赖：每次请求提供一个会话。
+
+    统一承载请求级事务边界：路由内只做 ``flush``，请求正常结束时由本依赖
+    统一提交；路由抛出任何异常（含业务 AppError）时回滚，避免脏写落库。
+    """
     if _session_factory is None:  # pragma: no cover - 应用未启动
         raise RuntimeError("会话工厂尚未初始化，请先调用 init_engine()")
     async with _session_factory.maker()() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 @asynccontextmanager

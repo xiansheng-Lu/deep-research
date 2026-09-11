@@ -1,7 +1,9 @@
 # AI 研究者助手 · 后端详细设计
 
-> 版本: v1.0 · 起草日期: 2026-09-09 · 适用范围: M1-M2
-> 状态: 设计评审中 · P1 问题 ×4 已修复待复核 · P2/P3 见评审留档
+> 版本: v2.0 · 起草日期: 2026-09-09 · 适用范围: M1-M2 · 定稿日期: 2026-09-10
+> 状态: 已定稿
+> 定稿说明: 编排契约（§6.2 ResearchState / §6.3 状态图 / §6.5 节点）为权威实现基线；M0 编排层代码（state/graph/edges/nodes）已按本契约对齐
+> 进度: M0 后端脚手架已落地（commit d9e0531 / 1d706d7），§3 已按实际代码结构同步
 > 上游文档: [PRD](./AI研究者助手-软件需求规格说明书.md) · [HLD·智能体协作规格](./AI研究者助手-智能体协作规格说明.md) · [架构设计概要](./AI研究者助手-架构设计概要.md) · [SDP](./AI研究者助手-软件开发计划.md)
 > 平级文档: 前端详细设计 · 数据模型详细设计 · 部署运维手册
 > 读者: 后端工程师 · 平台架构师 · 数据工程师
@@ -72,7 +74,7 @@
 | 运行时 | Python | 3.11 | LTS · 与 LangGraph、FastAPI 一致 |
 | Web 框架 | FastAPI | 0.111+ | 异步原生 · OpenAPI 自动生成 |
 | ASGI | Uvicorn | 0.30+ | 标准 ASGI 服务器 |
-| Agent 编排 | LangGraph | `<1.x` | 状态图 + 原生 interrupt |
+| Agent 编排 | LangGraph | 1.x | 状态图 + 原生 interrupt |
 | ORM | SQLAlchemy | 2.0+ (async) | 异步 API + 类型提示 |
 | 迁移 | Alembic | 1.13+ | 与 SQLAlchemy 同源 |
 | 任务队列 | Celery | 5.3+ | Redis broker · 阶段任务 |
@@ -99,7 +101,7 @@
 
 #### 2.2.1 目录约定
 
-所有路径基于项目根目录 `apps/api/`（后端 monorepo 单包）。
+所有路径基于项目根目录 `backend/`（M0 已落地：`app/` 单包 + 工程配置文件）。
 
 #### 2.2.2 代码风格
 
@@ -129,32 +131,42 @@ FastAPI 全局异常处理器将异常转为 RFC 7807 `application/problem+json`
 
 #### 2.2.4 配置加载
 
-`pydantic-settings` 读取 `.env` 与环境变量，强类型校验，启动失败立即报错。
+`pydantic-settings` 读取 `.env` 与环境变量，强类型校验，启动失败立即报错。环境变量采用扁平命名（`APP_*` / `DB_*` / `LLM_*` 等），字段名语义化，经 `alias` 绑定。全量字段以 `backend/app/core/config.py` 与 `.env.example` 为准（M0 已落地）。
 
 ```python
-# apps/api/app/config.py
+# backend/app/core/config.py
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_nested_delimiter="__", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False
+    )
 
-    app_name: str = "research-assistant-api"
-    environment: Literal["dev", "staging", "prod"] = "dev"
-    database_url: PostgresDsn
-    redis_url: RedisDsn
-    s3_endpoint: str
-    s3_bucket: str
-    jwt_secret: SecretStr
-    encryption_key: SecretStr          # Fernet key · M1-M2
-    provider_openai_api_key: SecretStr | None = None
-    provider_anthropic_api_key: SecretStr | None = None
+    # ===== 运行环境 =====
+    app_env: Literal["dev", "staging", "prod"] = Field(default="dev", alias="APP_ENV")
+    app_name: str = Field(default="deep-research-api", alias="APP_NAME")
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO", alias="LOG_LEVEL")
 
-    # —— 统一日志 / 可观测性（§12.1）——
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"  # 全局基线；environment=prod 默认提级见 §12.1.6
-    log_collector_endpoint: str | None = None   # Vector/Loki 采集端（stdout 旁路），留空则仅 stdout
-    otel_enabled: bool = True                   # OpenTelemetry 追踪总开关
-    llm_trace_enabled: bool = True              # LLM 留痕总开关：元数据始终记录；本开关控制失败现场与采样内容落盘
-    llm_trace_sample_rate: float = 0.01         # 成功调用明文采样率 0~0.10，按 team 可热调覆盖（§12.1.5）
+    # ===== 安全 =====
+    secret_key: SecretStr = Field(alias="SECRET_KEY")
+    encryption_key: SecretStr = Field(default=SecretStr(""), alias="ENCRYPTION_KEY")  # Fernet key · M1-M2
+
+    # ===== 数据访问 =====
+    db_async_url: str = Field(alias="DB_ASYNC_URL")   # async 引擎（应用运行时）
+    db_sync_url: str = Field(alias="DB_SYNC_URL")     # sync 引擎（Alembic 迁移）
+    redis_url: str = Field(alias="REDIS_URL")
+
+    # ===== LLM 主备（Provider 适配层，§7） =====
+    llm_primary_base_url: str = Field(default="", alias="LLM_PRIMARY_BASE_URL")
+    llm_primary_api_key: SecretStr = Field(default=SecretStr(""), alias="LLM_PRIMARY_API_KEY")
+    llm_backup_api_key: SecretStr = Field(default=SecretStr(""), alias="LLM_BACKUP_API_KEY")
+
+    # ===== 统一日志 / 可观测性（§12.1） =====
+    log_collector_endpoint: str = Field(default="", alias="LOG_COLLECTOR_ENDPOINT")  # Vector/Loki 采集端，留空仅 stdout
+    otel_enabled: bool = Field(default=True, alias="OTEL_ENABLED")                    # OpenTelemetry 追踪总开关
+    llm_trace_enabled: bool = Field(default=True, alias="LLM_TRACE_ENABLED")          # LLM 留痕总开关：元数据始终记录；本开关控制失败现场与采样内容落盘
+    llm_trace_sample_rate: float = Field(default=0.01, alias="LLM_TRACE_SAMPLE_RATE")  # 成功调用明文采样率 0~0.10，按 team 可热调覆盖（§12.1.5）
 
 settings = Settings()  # type: ignore[call-arg]
 ```
@@ -165,175 +177,149 @@ settings = Settings()  # type: ignore[call-arg]
 
 ### 3.1 顶层目录
 
+基线：`backend/`（仓库内独立后端工程）。M0 已落地全部模块骨架与公共接口，M1 起逐模块填充实现。
+
 ```
-apps/api/
-├── pyproject.toml              # 项目元数据与依赖（uv/poetry）
-├── uv.lock                     # 锁定依赖
-├── alembic.ini                 # 迁移配置
-├── Dockerfile                  # 多阶段构建
+backend/
+├── pyproject.toml              # 项目元数据、依赖、ruff/mypy 配置
+├── alembic.ini                 # Alembic 迁移配置
+├── Dockerfile                  # 多阶段构建镜像
+├── docker-compose.dev.yml      # 本地开发依赖（pgvector / redis / minio）
 ├── .env.example                # 配置样例（不含敏感值）
-├── app/
-│   ├── main.py                 # FastAPI 应用工厂
-│   ├── config.py               # 配置
-│   ├── deps.py                 # 依赖注入（鉴权、DB 会话）
-│   ├── errors.py               # 异常体系与全局处理器
-│   ├── api/
-│   │   └── v1/
-│   │       ├── auth.py
-│   │       ├── users.py
-│   │       ├── teams.py
-│   │       ├── projects.py
-│   │       ├── runs.py
-│   │       ├── conflicts.py
-│   │       ├── reports.py
-│   │       ├── knowledge.py
-│   │       ├── connectors.py
-│   │       ├── templates.py
-│   │       └── audit.py
-│   ├── core/
-│   │   ├── security.py         # JWT / 密码哈希
-│   │   ├── crypto.py           # 凭证加密（Fernet → AES-GCM）
-│   │   ├── pagination.py
-│   │   ├── problem.py          # RFC 7807
-│   │   └── i18n.py
-│   ├── db/
-│   │   ├── base.py             # DeclarativeBase
-│   │   ├── session.py          # async engine / sessionmaker
-│   │   └── models/
-│   │       ├── user.py
-│   │       ├── team.py
-│   │       ├── project.py
-│   │       ├── run.py
-│   │       ├── evidence.py
-│   │       ├── conflict.py
-│   │       ├── report.py
-│   │       ├── knowledge.py
-│   │       ├── connector.py
-│   │       ├── audit.py
-│   │       └── ...
-│   ├── schemas/                # Pydantic 请求/响应模型（与 ORM 解耦）
-│   │   ├── auth.py
-│   │   ├── run.py
-│   │   ├── ...
-│   ├── orchestrator/
-│   │   ├── state.py            # ResearchState TypedDict
-│   │   ├── graph.py            # LangGraph 状态图构建
-│   │   ├── checkpoint.py       # PostgreSQL checkpoint
-│   │   ├── interrupt.py        # Human-in-the-Loop 包装
-│   │   └── nodes/
-│   │       ├── intent_router.py
-│   │       ├── clarifier.py
-│   │       ├── planner.py
-│   │       ├── sub_questioner.py
-│   │       ├── researcher.py
-│   │       ├── standardizer.py
-│   │       ├── critic.py
-│   │       ├── reporter.py
-│   │       ├── cost_checkpoint.py
-│   │       ├── user_intervention.py
-│   │       └── failure_recovery.py
-│   ├── agents/                 # Agent 业务实现（与 LangGraph 节点解耦）
-│   │   ├── base.py             # Agent 抽象
-│   │   ├── prompts/            # Prompt 模板（受控版本）
-│   │   └── ...
-│   ├── provider/
-│   │   ├── base.py             # LLM Provider 协议
-│   │   ├── openai.py
-│   │   ├── anthropic.py
-│   │   ├── local.py            # 国产模型 / 内部模型
-│   │   ├── fallback.py         # 主备 + 熔断
-│   │   └── token_counter.py
-│   ├── retrieval/              # 公域检索
-│   │   ├── search.py           # 多搜索引擎适配
-│   │   ├── fetcher.py          # 网页抓取
-│   │   ├── extractor.py        # 正文抽取
-│   │   └── ranker.py
-│   ├── knowledge/
-│   │   ├── store.py            # pgvector 读写
-│   │   ├── embedder.py         # 嵌入生成
-│   │   └── hybrid_search.py    # 向量 + 全文
-│   ├── connectors/
-│   │   ├── base.py
-│   │   ├── notion.py
-│   │   ├── confluence.py
-│   │   ├── crm.py
-│   │   └── internal_sales.py
-│   ├── workers/
-│   │   ├── celery_app.py
-│   │   ├── tasks_retrieval.py
-│   │   ├── tasks_normalize.py
-│   │   ├── tasks_report.py
-│   │   └── tasks_sync.py
-│   ├── realtime/
-│   │   ├── ws_hub.py           # WebSocket Hub
-│   │   ├── sse.py
-│   │   ├── envelope.py         # 统一事件外壳
-│   │   └── router.py
-│   ├── quota/
-│   │   ├── policy.py
-│   │   ├── tracker.py
-│   │   └── gate.py
-│   ├── audit/
-│   │   ├── logger.py
-│   │   ├── schemas.py
-│   │   └── query.py
-│   ├── notifications/
-│   │   ├── dispatcher.py
-│   │   ├── email.py
-│   │   └── webhook.py
-│   └── templates/
-│       ├── engine.py
-│       └── renderer.py
-├── alembic/
-│   ├── env.py
-│   ├── script.py.mako
-│   └── versions/
-│       ├── 0001_initial.py
-│       └── ...
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── e2e/
-└── deploy/
-    ├── docker-compose.yml      # M1 本地
-    ├── nginx/
-    └── grafana/
+└── app/                        # Python 包根 · 入口 uvicorn app.main:app
+    ├── __init__.py             # 包元信息（__version__）
+    ├── py.typed                # PEP 561 类型标记
+    ├── main.py                 # FastAPI 应用工厂 create_app()（§3.4）
+    ├── api/                    # HTTP 路由层
+    │   ├── deps.py             # 公共依赖注入（DB 会话、鉴权等）
+    │   └── v1/                 # /api/v1 聚合路由（每域一个文件）
+    │       ├── _placeholder.py # 占位路由工厂 build_router()
+    │       ├── auth.py / users.py / teams.py / projects.py
+    │       ├── runs.py / conflicts.py / reports.py
+    │       ├── knowledge.py / connectors.py / templates.py / audit.py
+    ├── core/                   # 横切基础设施
+    │   ├── config.py           # Settings（pydantic-settings）
+    │   ├── security.py         # JWT / 密码哈希
+    │   ├── exceptions.py       # AppError 业务异常体系
+    │   ├── context.py          # 请求上下文（ContextVar）
+    │   ├── logging.py          # structlog 配置
+    │   ├── lifespan.py         # 应用生命周期
+    │   └── tracing.py          # OpenTelemetry 配置
+    ├── db/                     # 数据访问层
+    │   ├── base.py             # DeclarativeBase + IdMixin/TimestampMixin
+    │   ├── session.py          # async engine / SessionFactory
+    │   └── migrations/         # Alembic（env.py / script.py.mako）
+    ├── schemas/                # Pydantic 请求/响应模型（与 ORM 解耦）
+    ├── orchestrator/           # 研究编排层（LangGraph）
+    │   ├── state.py            # ResearchState TypedDict / ResearchStage
+    │   ├── graph.py            # build_research_graph() / compile_research_graph()
+    │   ├── edges.py            # 条件边路由函数
+    │   └── nodes/              # 11 个节点（_base.py 提供 instrument 装饰器）
+    ├── agents/                 # Agent 业务实现（与编排节点解耦）
+    │   ├── base.py             # AgentContext / AgentResult 契约
+    │   ├── intent_router.py / clarifier.py / planner.py / sub_questioner.py
+    │   └── researcher.py / standardizer.py / critic.py / reporter.py
+    ├── provider/               # LLM 适配层
+    │   ├── base.py             # LLMProvider 协议 / ChatMessage 等
+    │   ├── client.py           # LLMClient 门面（主备路由 + 熔断 + 用量）
+    │   ├── circuit_breaker.py  # 熔断器
+    │   ├── registry.py         # Provider 注册表
+    │   └── usage.py            # UsageTracker 用量跟踪
+    ├── retrieval/              # 公域检索
+    │   ├── base.py             # RetrievalRequest / RetrievalHit
+    │   ├── web_search.py       # 搜索引擎适配
+    │   ├── extractor.py        # 正文抽取
+    │   └── ranker.py           # 相关性排序
+    ├── knowledge/              # 私域知识库
+    │   ├── base.py             # KnowledgeItem 等
+    │   ├── store.py            # 向量存储读写
+    │   ├── embeddings.py       # 嵌入生成
+    │   └── chunker.py          # 文档分块
+    ├── connectors/             # 私域连接器
+    │   ├── base.py             # Connector 抽象基类
+    │   ├── http.py             # 通用 HTTP 客户端
+    │   └── oauth.py            # OAuth 授权辅助
+    ├── workers/                # Celery 异步任务
+    │   ├── celery_app.py       # Celery 实例与运行入口
+    │   └── tasks/
+    │       ├── research.py     # 研究执行
+    │       ├── report.py       # 报告导出
+    │       └── ingestion.py    # 知识摄取
+    ├── realtime/               # 实时推送
+    │   ├── hub.py              # RealtimeHub 事件总线
+    │   ├── ws.py               # WebSocket 端点
+    │   └── sse.py              # SSE 流
+    ├── quota/                  # 成本治理
+    │   ├── tiers.py            # Tier 档位与预算
+    │   └── budget.py           # 预算预留
+    ├── audit/                  # 审计日志
+    │   ├── base.py             # AuditAction / AuditEntry
+    │   └── logger.py           # AuditLogger
+    ├── notifications/          # 通知
+    │   ├── base.py             # Notification / NotificationChannel
+    │   └── dispatcher.py       # 分发器
+    └── templates/              # 项目/报告模板
+        ├── base.py             # ProjectTemplate / ReportTemplate
+        └── registry.py         # 模板注册表
 ```
 
-### 3.2 模块依赖约束
+> 与设计阶段的差异说明：M0 落地时将原规划的 `apps/api/app/` 三层扁平化为 `backend/app/` 单包（commit 1d706d7），
+> Alembic 迁移目录内聚到 `app/db/migrations/`；`tests/` 与 `deploy/` 目录按 SDP 在 M1 引入。
+
+### 3.2 模块实现状态（M0 快照）
+
+| 模块 | M0 已落地 | M1 规划填充 |
+|---|---|---|
+| core | Settings、AppError 异常体系、structlog、trace_id 中间件 | 分页、i18n、RFC 7807 problem 响应完整化 |
+| db | Base + IdMixin/TimestampMixin、SessionFactory、Alembic 骨架 | ORM 模型（user/team/project/run/...）、首版迁移 |
+| api/v1 | 占位路由（build_router 工厂，GET 占位） | 各端点真实实现与鉴权接线 |
+| orchestrator | StateGraph 骨架、11 节点占位、4 条件边 | 节点业务实现、checkpoint、interrupt 包装 |
+| agents | 8 个 Agent 占位（AgentContext/AgentResult 契约） | prompt 模板、LLM 调用注入 |
+| provider | LLMClient 门面、CircuitBreaker、UsageTracker、Registry | OpenAI / Anthropic 适配器 |
+| retrieval | 接口占位 | Tavily 接入、网页抓取、正文抽取 |
+| knowledge | 内存占位实现 | pgvector 读写、混合检索 |
+| workers | Celery 实例 + 3 任务占位 | 任务与 orchestrator 接线 |
+| realtime | 内存 Hub 占位 | Redis Pub/Sub 扇出、心跳 |
+| quota / audit / notifications / templates | 契约与占位 | 按 SDP M1-M2 填充 |
+
+### 3.3 模块依赖约束
 
 - `app/orchestrator/` 可依赖 `app/agents/`、`app/provider/`、`app/retrieval/`、`app/knowledge/`，但反向不可
-- `app/api/v1/` 只依赖 `app/schemas/`、`app/services/`（业务编排），不直接操作 ORM
+- `app/api/v1/` 只依赖 `app/schemas/` 与 `app/api/deps.py` 注入的依赖（DB 会话等）；业务编排委托 `app/orchestrator/`（M1 若引入 `app/services/` 编排层，编排逻辑落于此），不直接操作 ORM
 - `app/db/` 与 `app/agents/`、`app/orchestrator/` 解耦（避免循环）
 - `app/workers/` 复用 `app/agents/` 与 `app/orchestrator/`，但不得引用 `app/api/`
 
-### 3.3 应用工厂
+### 3.4 应用工厂
 
 ```python
-# apps/api/app/main.py
+# backend/app/main.py
 from fastapi import FastAPI
-from app.config import settings
-from app.errors import register_exception_handlers
-from app.api.v1 import api_router
-from app.realtime.router import ws_router
+from app.api.v1 import api_v1_router
+from app.core.config import Settings, get_settings
+from app.core.exceptions import AppError
+from app.core.lifespan import lifespan as default_lifespan
 
-def create_app() -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:
+    """工厂函数：便于测试时构造独立实例。"""
+    cfg = settings or get_settings()
     app = FastAPI(
-        title="AI 研究者助手 API",
-        version="1.0.0",
-        openapi_url="/api/v1/openapi.json",
-        docs_url="/api/v1/docs",
+        title=cfg.app_name,
+        version=__version__,
+        default_response_class=ORJSONResponse,
+        lifespan=_lifespan,
     )
-    app.include_router(api_router, prefix="/api/v1")
-    app.include_router(ws_router, prefix="/api/v1/ws")
-    register_exception_handlers(app)
-    register_middlewares(app)
+    app.state.settings = cfg
+    app.add_middleware(CORSMiddleware, ...)   # 开发态全放开（§13 生产收敛）
+    app.middleware("http")                    # x-trace-id 注入请求上下文
+    app.exception_handler(AppError)           # 统一业务异常响应
+    app.get("/healthz")                       # 健康探针
+    app.include_router(api_v1_router)         # 内部已挂载 /api/v1
     return app
 
 app = create_app()
 ```
 
-中间件挂载顺序（外→内）：CORS → TraceId → AccessLog → 鉴权（路由级）。
+中间件挂载顺序（外→内）：CORS → TraceId → 业务异常处理（路由级鉴权随端点实现）。
 
 ---
 
@@ -942,7 +928,7 @@ FastAPI 自动生成 OpenAPI 3.1 规范。前端通过 `openapi-generator-cli ge
 ### 5.1 SQLAlchemy 异步配置
 
 ```python
-# apps/api/app/db/session.py
+# backend/app/db/session.py
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from app.config import settings
 
@@ -961,7 +947,7 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSe
 ### 5.2 Base 与约定
 
 ```python
-# apps/api/app/db/base.py
+# backend/app/db/base.py
 from sqlalchemy.orm import DeclarativeBase, MappedAsDataclass
 from datetime import datetime
 from sqlalchemy import func, text
@@ -1227,7 +1213,7 @@ class Connector(Base, TimestampMixin):
 #### 5.4.1 配置
 
 ```python
-# apps/api/alembic/env.py（关键片段）
+# backend/app/db/migrations/env.py（关键片段）
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
@@ -1351,7 +1337,7 @@ async def list_evidence(session: AsyncSession, run_id: str, sub_question_id: str
 ### 6.2 ResearchState 定义
 
 ```python
-# apps/api/app/orchestrator/state.py
+# backend/app/orchestrator/state.py
 from typing import Literal, TypedDict, NotRequired
 from datetime import datetime
 
@@ -1429,12 +1415,16 @@ class ResearchState(TypedDict, total=False):
     token_budget: int
     started_at: str
     finished_at: str | None
+
+    trace_id: str                       # 链路追踪 ID（§12.1.2），由 API 层写入
+    failure_reason: str | None          # 节点异常兜底记录（§6.5.1 / nodes._base.instrument）
+    updated_at: str                     # 最近一次状态更新时间（UTC ISO 8601）
 ```
 
 ### 6.3 状态图构建
 
 ```python
-# apps/api/app/orchestrator/graph.py
+# backend/app/orchestrator/graph.py
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.orchestrator.state import ResearchState
@@ -1491,6 +1481,8 @@ async def build_graph(checkpointer: AsyncPostgresSaver):
     return g.compile(checkpointer=checkpointer, interrupt_before=["await_human", "user_intervention"])
 ```
 
+> **对齐说明（§4.2.8 / HLD §7.1）**：`intent_router` **不作为图节点**。意图路由能力属 API 层独立接口（§4.2.8 `/intent/classify`，M2 接线），仅当判别结果为"研究"时才创建 ResearchRun 并启动本图。M0 占位实现单元在 `nodes/planner.py`（`intent_router` 函数，不入编排图）；M2 落地时独立为 `nodes/intent_router.py` 供 `/intent/classify` 复用。
+
 ### 6.4 节点实现规范
 
 每个节点函数遵循统一签名：
@@ -1499,6 +1491,8 @@ async def build_graph(checkpointer: AsyncPostgresSaver):
 async def <node_name>(state: ResearchState, *, deps: NodeDeps) -> dict[str, Any]:
     """节点入口。返回对 state 的部分更新（merge 到全局 state）。"""
 ```
+
+> **M0 占位签名**：M0 阶段节点为 `async def run(state: ResearchState) -> dict[str, Any]`（不注入 `deps`，无真实 LLM 调用），由 `_base.instrument` 统一包装；M1 按本节签名升级为 `async def <node>(state, *, deps: NodeDeps) -> dict` 并接通 §7.5 `LLMClient`。
 
 `NodeDeps` 通过 `RunnableConfig` 的 `config["configurable"]` 注入：
 
@@ -1870,7 +1864,7 @@ async def user_intervention(state: ResearchState, *, deps: NodeDeps) -> dict:
 
 `await_human` 是**研究主链上的用户介入挂起点**，经 `interrupt_before` 触发，依据 `interrupt_reason` 分流：`clarify` 时合并用户澄清答案；`critique` 时合并裁决（verdicts）。随后图按 §6.3 条件回流。
 
-> 与 [§6.5.9 `user_intervention`](file:///d:/trae/product/pm/AI研究者助手-后端详细设计.md#L1614-L1645) 的分工：`await_human` 响应**流程自身判定**的挂起（澄清追问、分歧裁决）；`user_intervention` 响应**用户主动介入**（追问/剔除证据/打回重审，经 `intervene` 或成本超限触发）。两者读同一 `state.human_input`，由 `resume` 注入。
+> 与 [§6.5.9 `user_intervention`](#659-user_intervention) 的分工：`await_human` 响应**流程自身判定**的挂起（澄清追问、分歧裁决）；`user_intervention` 响应**用户主动介入**（追问/剔除证据/打回重审，经 `intervene` 或成本超限触发）。两者读同一 `state.human_input`，由 `resume` 注入。
 
 ```python
 async def await_human_node(state: ResearchState, *, deps: NodeDeps) -> dict:
@@ -1897,7 +1891,7 @@ async def await_human_node(state: ResearchState, *, deps: NodeDeps) -> dict:
 ### 6.6 Orchestrator 服务入口
 
 ```python
-# apps/api/app/orchestrator/runner.py
+# backend/app/orchestrator/runner.py
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 from app.orchestrator.graph import build_graph
@@ -1938,7 +1932,7 @@ class OrchestratorService:
 ### 6.7 编排层生命周期
 
 ```python
-# apps/api/app/main.py
+# backend/app/main.py
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -1968,7 +1962,7 @@ async def lifespan(app: FastAPI):
 ### 7.1 协议抽象
 
 ```python
-# apps/api/app/provider/base.py
+# backend/app/provider/base.py
 from typing import Protocol, AsyncIterator, runtime_checkable, Any
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.runnables import Runnable
@@ -2017,7 +2011,7 @@ class LLMProvider(Protocol):
 ### 7.2 OpenAI 适配器（基于 LangChain v1）
 
 ```python
-# apps/api/app/provider/openai.py
+# backend/app/provider/openai.py
 import time
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import convert_to_messages
@@ -2082,7 +2076,7 @@ class OpenAIProvider:
 ### 7.3 Anthropic 适配器
 
 ```python
-# apps/api/app/provider/anthropic.py
+# backend/app/provider/anthropic.py
 from langchain_anthropic import ChatAnthropic
 
 class AnthropicProvider:
@@ -2102,7 +2096,7 @@ class AnthropicProvider:
 ### 7.4 主备切换、熔断与用量归集
 
 ```python
-# apps/api/app/provider/factory.py
+# backend/app/provider/factory.py
 from langchain_core.runnables import Runnable, RunnableConfig
 from app.observability.usage import UsageTracker
 from app.observability.cb import CircuitBreaker
@@ -2155,7 +2149,7 @@ class ProviderFactory:
 **背景**：§7.7 约束业务层不得直接 import `langchain_core`。为此 Orchestrator 节点不直接持有 Runnable，而是统一通过 `LLMClient` 门面调用。节点代码中的 `deps.llm` 即此类型（见 §6.4 NodeDeps）。
 
 ```python
-# apps/api/app/provider/client.py
+# backend/app/provider/client.py
 from typing import Any, AsyncIterator, Awaitable, Callable
 from langchain_core.messages import convert_to_messages
 from langchain_core.runnables import Runnable, RunnableConfig
@@ -2244,7 +2238,7 @@ class LLMClient:
 ### 7.6 与 LangGraph 节点的协作（经 LLMClient）
 
 ```python
-# apps/api/app/orchestrator/nodes/report_helpers.py
+# backend/app/orchestrator/nodes/report_helpers.py
 from app.provider.client import LLMClient
 
 async def stream_report_section(state: ResearchState, *, deps: NodeDeps, section: dict) -> str:
@@ -2268,7 +2262,7 @@ async def stream_report_section(state: ResearchState, *, deps: NodeDeps, section
 结构化节点调用示例：
 
 ```python
-# apps/api/app/orchestrator/nodes/_helpers.py
+# backend/app/orchestrator/nodes/_helpers.py
 async def llm_structured(deps: NodeDeps, *, schema, messages, tags=None):
     return await deps.llm.complete_structured(
         model="gpt-4o-mini", messages=messages, schema=schema,
@@ -2279,7 +2273,7 @@ async def llm_structured(deps: NodeDeps, *, schema, messages, tags=None):
 ### 7.7 Token 计量与可观测
 
 ```python
-# apps/api/app/observability/usage.py
+# backend/app/observability/usage.py
 from langchain_core.callbacks import BaseCallbackHandler
 from prometheus_client import Counter
 
@@ -2319,7 +2313,7 @@ class UsageTracker:
 | `langchain_core.runnables.with_fallbacks` | `langchain.retrievers.*`（M3 再评估） |
 | `langchain_core.runnables.with_structured_output` | `langchain_community.tools.*`（M5 再评估） |
 
-业务层（Orchestrator / Agent 节点 / Repository / API Handler）**不直接 import langchain_core**；唯一允许 import 的位置是 `apps/api/app/provider/` 目录内部。
+业务层（Orchestrator / Agent 节点 / Repository / API Handler）**不直接 import langchain_core**；唯一允许 import 的位置是 `backend/app/provider/` 目录内部。
 
 ---
 
@@ -2348,7 +2342,7 @@ class UsageTracker:
 ### 8.2 Envelope
 
 ```python
-# apps/api/app/realtime/envelope.py
+# backend/app/realtime/envelope.py
 class EventEnvelope(BaseModel):
     v: Literal["1.0"] = "1.0"
     event_id: str
@@ -2362,7 +2356,7 @@ class EventEnvelope(BaseModel):
 ### 8.3 WebSocket Hub
 
 ```python
-# apps/api/app/realtime/ws_hub.py
+# backend/app/realtime/ws_hub.py
 class WSHub:
     def __init__(self):
         self._connections: dict[str, set[WebSocket]] = {}  # run_id -> sockets
@@ -2399,7 +2393,7 @@ API 节点启动时订阅 Redis 频道 `ra:run:*`，收到消息后查找本地�
 ### 8.4 SSE 推送
 
 ```python
-# apps/api/app/realtime/sse.py
+# backend/app/realtime/sse.py
 from sse_starlette.sse import EventSourceResponse
 
 async def report_stream(request: Request, run_id: str):
@@ -2425,7 +2419,7 @@ async def report_stream(request: Request, run_id: str):
 ### 9.1 鉴权（JWT + 刷新令牌）
 
 ```python
-# apps/api/app/core/security.py
+# backend/app/core/security.py
 from datetime import datetime, timedelta, timezone
 import jwt
 
@@ -2462,7 +2456,7 @@ Refresh token 撤销：维护 Redis 黑名单 `revoked_refresh:{jti}`，TTL = to
 ### 9.2 配额与限流
 
 ```python
-# apps/api/app/quota/tracker.py
+# backend/app/quota/tracker.py
 class QuotaTracker:
     """按租户 + 时间窗 + 档位追踪 token 消耗；超阈值阻断研究。"""
 
@@ -2484,7 +2478,7 @@ class QuotaTracker:
 ### 9.3 审计日志
 
 ```python
-# apps/api/app/audit/logger.py
+# backend/app/audit/logger.py
 class AuditLogger:
     async def log(self, action: str, *, target_type: str, target_id: str,
                   user_id: str | None = None, team_id: str | None = None,
@@ -2523,7 +2517,7 @@ class AuditLogger:
 通知渠道：站内（WebSocket 推送到用户所有打开的页面）、邮件（SendGrid/邮件推送）、Webhook。
 
 ```python
-# apps/api/app/notifications/dispatcher.py
+# backend/app/notifications/dispatcher.py
 class NotificationDispatcher:
     async def notify(self, *, user_id: str, channel: Literal["in_app", "email", "webhook"],
                      template: str, context: dict):
@@ -2552,7 +2546,7 @@ class NotificationDispatcher:
 ### 10.1 抽象协议
 
 ```python
-# apps/api/app/connectors/base.py
+# backend/app/connectors/base.py
 class Connector(Protocol):
     type: str
     async def authorize(self, config: dict) -> dict: ...   # 返回授权 URL 或凭证
@@ -2564,7 +2558,7 @@ class Connector(Protocol):
 ### 10.2 凭证加密
 
 ```python
-# apps/api/app/core/crypto.py（M1-M2）
+# backend/app/core/crypto.py（M1-M2）
 from cryptography.fernet import Fernet
 
 def encrypt_credential(plain: str) -> bytes:
@@ -2591,7 +2585,7 @@ M3+ 切到 KMS（见 HLD §9.2.1）：`CryptoAdapter` 接口保留，注入实�
 ### 11.1 异常体系
 
 ```python
-# apps/api/app/errors.py
+# backend/app/errors.py
 class AppError(Exception):
     code: str
     status: int
@@ -2646,7 +2640,7 @@ class ProviderUnavailableError(AppError):
 全项目（API 进程、Celery worker、脚本）统一使用 structlog，单行 JSON 输出到 stdout，由采集侧收集；**禁止** `print` 与裸 `logging` 直接散落使用。
 
 ```python
-# apps/api/app/core/logging.py
+# backend/app/core/logging.py
 import structlog
 
 def redact_processor(logger, name, event_dict):
@@ -2681,7 +2675,7 @@ def get_logger(name: str = "research"):
 上下文字段经 `contextvars.ContextVar` 承载，structlog 的 `merge_contextvars` 自动附加到每行日志。**绑定与清理必须成对出现**，用上下文管理器保证异步任务间不串号。
 
 ```python
-# apps/api/app/core/context.py
+# backend/app/core/context.py
 import contextlib
 from contextvars import ContextVar
 
@@ -2725,7 +2719,7 @@ async def log_context(**kwargs):
 2. **Celery 任务基类**（worker 进程，无 HTTP 上下文）：发布任务时把 `traceparent` 与业务上下文写入消息头，worker 执行前取出并 bind，保证检索任务日志携带同一 `run_id/trace_id`。
 
    ```python
-   # apps/api/app/workers/task.py（worker 复用 app 包，见 §3.1 目录约定）
+   # backend/app/workers/task.py（worker 复用 app 包，见 §3.1 目录约定）
    class TracedTask(Task):
        def apply_async(self, args=None, kwargs=None, **options):
            headers = options.setdefault("headers", {})
@@ -2915,7 +2909,7 @@ services:
   api:
     build:
       context: ..
-      dockerfile: apps/api/Dockerfile
+      dockerfile: backend/Dockerfile
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes: [".:/app"]
     ports: ["8000:8000"]
@@ -3019,9 +3013,9 @@ K8s 探针：`livenessProbe` 走 `/healthz`，`readinessProbe` 走 `/readyz`，�
 
 | 指标 | 目标 | 测量方式 |
 |---|---|---|
-| 代码量 | `apps/api/app/provider/` 总行数 ≤ 400 行 | `cloc apps/api/app/provider/` |
-| 业务层 langchain 引用 | 业务代码 grep `import langchain` 命中数 = 0（仅 provider/ 内允许） | `rg "import langchain" apps/api/app/orchestrator apps/api/app/api apps/api/app/repo` |
-| 测试覆盖 | `apps/api/app/provider/` 单测覆盖率 ≥ 90% | `pytest --cov` |
+| 代码量 | `backend/app/provider/` 总行数 ≤ 400 行 | `cloc backend/app/provider/` |
+| 业务层 langchain 引用 | 业务代码 grep `import langchain` 命中数 = 0（仅 provider/ 内允许） | `rg "import langchain" backend/app/orchestrator backend/app/api backend/app/repo` |
+| 测试覆盖 | `backend/app/provider/` 单测覆盖率 ≥ 90% | `pytest --cov` |
 | 迭代速度 | M1-5a + M1-5b 合计实际工时 ≤ 6 人日（M1-5a ≤ 4，M1-5b ≤ 2） | 工时登记表 |
 | 适配次数 | M1 阶段 openai / anthropic SDK 主版本升级适配次数 ≤ 1 | 升级记录 |
 | 熔断触发 | 主备切换在演练中可见、产生 `audit_log` 事件 | 故障注入测试 |

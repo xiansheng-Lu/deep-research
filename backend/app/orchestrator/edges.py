@@ -1,38 +1,37 @@
-"""条件边：根据当前状态决定下一跳节点。"""
+"""条件边：根据当前状态决定下一跳节点（语义对齐《后端详细设计》§6.3）。"""
 
 from typing import Literal
 
 from app.orchestrator.state import ResearchState
 
 
-def route_intent(state: ResearchState) -> Literal["clarify", "decompose", "report"]:
-    """入口意图分流：根据 raw_query 清晰度决定是否进入澄清环节。"""
-    if state.get("clarification_questions"):
-        return "clarify"
-    if state.get("sub_questions"):
-        return "decompose"
+def decide_after_clarify(state: ResearchState) -> Literal["await_human", "decompose"]:
+    """澄清完成后：若 clarifier 判定需用户追问则挂起到 await_human，否则进入子问题拆解。"""
+    if state.get("needs_clarification"):
+        return "await_human"
     return "decompose"
 
 
-def decide_after_decompose(state: ResearchState) -> Literal["retrieve", "await_human"]:
-    """子问题拆分后：若有子问题则进入检索，否则等待用户确认。"""
-    sub_questions = state.get("sub_questions") or []
-    return "retrieve" if sub_questions else "await_human"
-
-
-def decide_after_standardize(state: ResearchState) -> Literal["critique", "report"]:
-    """标准化完成后：若存在证据进入审视，否则直接报告。"""
-    claims = state.get("standardized_claims") or []
-    return "critique" if claims else "report"
-
-
-def decide_after_critique(
-    state: ResearchState,
-) -> Literal["retrieve", "report", "user_intervention"]:
-    """审视完成后：需要补检索 / 直接出报告 / 触发用户介入。"""
-    if state.get("interrupt_requested"):
-        return "user_intervention"
+def decide_after_critique(state: ResearchState) -> Literal["await_human", "cost_checkpoint"]:
+    """审视完成后：存在未裁决分歧则挂起 await_human，否则进入成本闸门。"""
     conflicts = state.get("conflicts") or []
-    if conflicts and (state.get("cost_used_tokens", 0) < state.get("cost_budget_tokens", 0)):
-        return "retrieve"
+    verdicts = state.get("verdicts") or []
+    if conflicts and not verdicts:
+        return "await_human"
+    return "cost_checkpoint"
+
+
+def decide_after_await_human(state: ResearchState) -> Literal["clarify", "critique"]:
+    """await_human 恢复后：按 interrupt_reason 回流（clarify → 澄清合并；critique → 裁决收敛）。"""
+    if state.get("interrupt_reason") == "clarify":
+        return "clarify"
+    return "critique"
+
+
+def decide_after_cost_checkpoint(state: ResearchState) -> Literal["user_intervention", "report"]:
+    """成本闸门：token 用量超预算 90% 触发用户介入，否则进入报告生成。"""
+    used = state.get("token_used", 0)
+    budget = state.get("token_budget", 0)
+    if used > budget * 0.9:
+        return "user_intervention"
     return "report"

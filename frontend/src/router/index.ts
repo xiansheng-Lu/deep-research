@@ -7,7 +7,7 @@ import { installGuards } from './guards'
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
-    redirect: () => ({ path: '/home' })
+    redirect: () => ({ path: '/projects' })
   },
   {
     path: '/auth/login',

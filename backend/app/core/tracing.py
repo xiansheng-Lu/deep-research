@@ -9,7 +9,9 @@ from app.core.config import Settings
 
 
 def configure_tracing(settings: Settings) -> None:
-    """初始化全局 TracerProvider；OTLP 端点未配置时退化为 NoOp。"""
+    """初始化全局 TracerProvider；追踪总开关关闭或 OTLP 端点未配置时退化为 NoOp。"""
+    if not settings.otel_enabled:
+        return
     resource = Resource.create({"service.name": settings.otel_service_name})
     provider = TracerProvider(resource=resource)
 

@@ -6,7 +6,9 @@ import UiCard from '@/components/ui/UiCard.vue'
 <template>
   <section class="home-view">
     <UiCard size="lg">
-      <h1 class="home-view__title">首页</h1>
+      <h1 class="home-view__title">
+        首页
+      </h1>
       <p class="home-view__placeholder">
         意图路由单入口 + 进行中研究状态总览，将在 M2 里程碑实装。
       </p>

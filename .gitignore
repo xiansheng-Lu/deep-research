@@ -5,6 +5,7 @@ Thumbs.db
 # 编辑器
 .vscode/
 .idea/
+.trae/
 *.swp
 
 # 前端 (Vue3 + Vite + pnpm)
@@ -31,6 +32,7 @@ backend/dist/
 # 非敏感的环境默认配置随仓库共享，白名单放行
 !.env.development
 !.env.production
+!**/.env.example
 
 # 日志与临时文件
 *.log

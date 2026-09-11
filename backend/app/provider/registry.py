@@ -1,7 +1,7 @@
 """Provider 注册表：集中管理主备 Provider 实例。
 
-具体实现（OpenAI / Anthropic / 自建网关）由 ``concrete/`` 子包提供，
-本模块只负责构造主备配对供 ``LLMClient`` 使用。
+M1 阶段：通过 ``build_pair`` 从 Settings 配置构造 OpenAI 主备配对。
+后续 M2+：可扩展为多 Provider 注册 + 按 alias 选择。
 """
 
 from typing import Any
@@ -9,11 +9,9 @@ from typing import Any
 from app.core.config import get_settings
 from app.provider.base import LLMProvider
 
-default_registry: "_ProviderRegistry" = _ProviderRegistry()
-
 
 class _ProviderRegistry:
-    """简单的 Provider 注册表占位。"""
+    """Provider 注册表：持有已注册实例，支持按 alias 构造主备配对。"""
 
     def __init__(self) -> None:
         self._providers: dict[str, LLMProvider] = {}
@@ -27,11 +25,33 @@ class _ProviderRegistry:
     def build_pair(self, alias: str) -> tuple[LLMProvider | None, LLMProvider | None]:
         """根据别名构造 (主, 备) Provider 配对。
 
-        占位实现：M1 阶段按 ``LLM_PRIMARY_*`` 与 ``LLM_BACKUP_*`` 构造；
-        当前返回空 tuple，让上层根据空状态抛 ProviderUnavailableError。
+        M1 阶段：按 ``LLM_PRIMARY_*`` / ``LLM_BACKUP_*`` 配置构造 OpenAI Provider；
+        若已注册则优先使用已注册实例。
         """
-        _ = alias, get_settings()  # 保留引用，M1 阶段实现
-        return (self._providers.get("primary"), self._providers.get("backup"))
+        _ = alias  # M2 扩展 alias 路由时使用
 
+        # 优先使用已注册实例
+        primary = self._providers.get("primary")
+        backup = self._providers.get("backup")
+
+        # 若未注册，从 Settings 动态构造
+        if primary is None:
+            try:
+                from app.provider.openai import build_openai_provider
+                primary = build_openai_provider()
+            except Exception:
+                pass  # 配置缺失时不构造，上层会抛 ProviderUnavailableError
+
+        if backup is None:
+            try:
+                from app.provider.openai import build_openai_backup_provider
+                backup = build_openai_backup_provider()
+            except Exception:
+                pass
+
+        return (primary, backup)
+
+
+default_registry = _ProviderRegistry()
 
 _ = Any  # 防止未使用导入告警

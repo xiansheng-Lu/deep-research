@@ -8,7 +8,12 @@ const router = useRouter()
   <div class="not-found-view">
     <h1>404</h1>
     <p>资源不存在或无权访问。</p>
-    <button class="link" @click="router.replace('/home')">返回首页</button>
+    <button
+      class="link"
+      @click="router.replace('/home')"
+    >
+      返回首页
+    </button>
   </div>
 </template>
 
