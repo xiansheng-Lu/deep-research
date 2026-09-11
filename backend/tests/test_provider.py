@@ -12,6 +12,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from app.core.exceptions import ProviderUnavailableError
+from app.orchestrator.schemas import SubQuestionListSchema
 from app.provider.base import ChatMessage, ChatRequest, ChatResponse, LLMProvider
 from app.provider.circuit_breaker import CircuitBreaker
 from app.provider.client import LLMClient
@@ -271,3 +272,91 @@ class TestOpenAIProviderProtocol:
         """OpenAIProvider 应满足 LLMProvider Protocol。"""
         provider = OpenAIProvider(model="gpt-4o", api_key="fake")
         assert isinstance(provider, LLMProvider)
+
+
+# ====== complete_structured：json_object 模式（DeepSeek 兼容） ======
+
+
+class TestCompleteStructured:
+    def _make_client(self, content: str) -> tuple[LLMClient, MagicMock]:
+        primary = MagicMock(spec=LLMProvider)
+        primary.name = "primary"
+        primary.chat = AsyncMock(
+            return_value=ChatResponse(
+                content=content,
+                model="deepseek-v4-flash",
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            )
+        )
+        return LLMClient(primary=primary), primary
+
+    async def test_json_object_mode_and_schema_injection(self) -> None:
+        parsed_json = '{"sub_questions": [{"question": "子问题1", "depends_on": [], "rationale": ""}]}'
+        client, primary = self._make_client(parsed_json)
+
+        completion = await client.complete_structured(
+            messages=[
+                ChatMessage(role="system", content="你是拆解助手"),
+                ChatMessage(role="user", content="拆解：AI 趋势"),
+            ],
+            schema=SubQuestionListSchema,
+        )
+
+        # 响应模型解析正确，usage 透传
+        assert isinstance(completion.parsed, SubQuestionListSchema)
+        assert completion.parsed.sub_questions[0].question == "子问题1"
+        assert completion.usage["total_tokens"] == 15
+        assert completion.model == "deepseek-v4-flash"
+
+        sent_request: ChatRequest = primary.chat.call_args[0][0]
+        # DeepSeek 兼容路径：json_object 而非 strict json_schema
+        assert sent_request.response_format == {"type": "json_object"}
+        # JSON Schema 契约注入到最后一条 user 消息
+        last_user = [m for m in sent_request.messages if m.role == "user"][-1]
+        assert "JSON Schema" in last_user.content
+        assert "拆解：AI 趋势" in last_user.content
+
+    async def test_extra_fields_echoed_by_model_are_ignored(self) -> None:
+        """DeepSeek 在 json_object 模式下会回显 {"type": "json_object"}，
+        入站 Schema 必须忽略多余字段而非整体校验失败。"""
+        from app.orchestrator.schemas import ClarificationSchema
+
+        parsed_json = (
+            '{"type": "json_object", "requires_user_input": false, '
+            '"questions": [], "defaults": {}, "structured_question": {"goal": "g"}}'
+        )
+        client, _ = self._make_client(parsed_json)
+        completion = await client.complete_structured(
+            messages=[ChatMessage(role="user", content="x")],
+            schema=ClarificationSchema,
+        )
+        assert completion.parsed.requires_user_input is False
+        assert completion.parsed.structured_question == {"goal": "g"}
+
+    async def test_invalid_json_raises_provider_error(self) -> None:
+        client, _ = self._make_client("这不是 JSON")
+        with pytest.raises(ProviderUnavailableError, match="结构化输出解析失败"):
+            await client.complete_structured(
+                messages=[ChatMessage(role="user", content="x")],
+                schema=SubQuestionListSchema,
+            )
+
+    async def test_schema_validation_failure_raises(self) -> None:
+        # 缺必填 question 字段
+        client, _ = self._make_client('{"sub_questions": [{"depends_on": []}]}')
+        with pytest.raises(ProviderUnavailableError):
+            await client.complete_structured(
+                messages=[ChatMessage(role="user", content="x")],
+                schema=SubQuestionListSchema,
+            )
+
+    async def test_instruction_injected_when_no_user_message(self) -> None:
+        """无 user 消息时新建一条承载 schema 指令（满足 json_object 提示要求）。"""
+        parsed_json = '{"sub_questions": []}'
+        client, primary = self._make_client(parsed_json)
+        await client.complete_structured(
+            messages=[ChatMessage(role="system", content="sys")],
+            schema=SubQuestionListSchema,
+        )
+        sent_request: ChatRequest = primary.chat.call_args[0][0]
+        assert any(m.role == "user" and "JSON Schema" in m.content for m in sent_request.messages)

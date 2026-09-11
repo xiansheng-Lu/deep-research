@@ -221,3 +221,40 @@ class TestSubQuestionerStateContract:
         assert sub["status"] in ("pending", "queued", "running", "succeeded", "failed", "evidence_short")
         assert isinstance(sub["depends_on"], list)
         assert isinstance(sub["evidence_ids"], list)
+
+
+# ---------------------------------------------------------------------------
+# token 用量累加（成本闸门准则）
+# ---------------------------------------------------------------------------
+
+
+class TestSubQuestionerTokenAccounting:
+    @pytest.mark.asyncio
+    async def test_llm_hit_accumulates_token_used(self) -> None:
+        """LLM 命中路径：本次 usage.total（15）累加进 state 原有 token_used（200）。"""
+        parsed = SubQuestionListSchema(
+            sub_questions=[SubQuestionItem(question="子问题甲"), SubQuestionItem(question="子问题乙")]
+        )
+        deps = NodeDeps(run_id="r7", team_id="t7", trace_id="tr7", llm=_FakeStructuredLLMClient(parsed))
+        state: dict[str, Any] = {
+            "question": "Q",
+            "clarification": {"goal": "G"},
+            "tier": "standard",
+            "token_used": 200,
+        }
+        result = await sub_questioner.run(state, deps=deps)
+        assert result["token_used"] == 215
+        assert len(result["sub_questions"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_fallback_path_does_not_inflate_token_used(self) -> None:
+        """降级路径未产生真实调用，不得凭空增加 token_used。"""
+        state: dict[str, Any] = {
+            "question": "Q",
+            "clarification": {"goal": "G"},
+            "tier": "standard",
+            "token_used": 80,
+        }
+        result = await sub_questioner.run(state, deps=None)
+        assert "token_used" not in result
+        assert state["token_used"] == 80

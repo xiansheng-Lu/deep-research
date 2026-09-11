@@ -81,12 +81,17 @@ class OpenAIProvider:
         try:
             msgs = [_to_langchain_message(m) for m in request.messages]
             started = time.monotonic()
+            # 运行时参数通过 langchain 官方 bind 机制透传给底层 OpenAI 兼容网关
+            # （DeepSeek 等第三方网关同样遵循该参数约定）
             invoke_kwargs: dict[str, Any] = {}
+            if request.temperature is not None:
+                invoke_kwargs["temperature"] = float(request.temperature)
             if request.max_tokens is not None:
                 invoke_kwargs["max_tokens"] = int(request.max_tokens)
             if request.response_format is not None:
                 invoke_kwargs["response_format"] = request.response_format
-            result = await self._chat.ainvoke(msgs, **invoke_kwargs) if invoke_kwargs else await self._chat.ainvoke(msgs)
+            runnable = self._chat.bind(**invoke_kwargs) if invoke_kwargs else self._chat
+            result = await runnable.ainvoke(msgs)
             latency_ms = int((time.monotonic() - started) * 1000)
 
             if not isinstance(result, AIMessage):
@@ -102,7 +107,7 @@ class OpenAIProvider:
 
             return ChatResponse(
                 content=content,
-                model=self._model,
+                model=request.model or self._model,
                 usage=usage,
                 tool_calls=tool_calls,
                 raw={"latency_ms": latency_ms, "finish_reason": "stop"},

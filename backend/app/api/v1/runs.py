@@ -108,6 +108,12 @@ async def create_run(
     )
     session.add(run)
     await session.flush()
+    # 响应视图在提交前构造，避免 expire_on_commit 后的属性刷新
+    response = _to_run_response(run)
+
+    # 后台任务使用独立会话，必须先提交使 run 行对外可见；
+    # 否则在请求依赖的统一提交发生前任务即被调度，会读不到本行（RUN_NOT_FOUND 竞态）
+    await session.commit()
 
     # 后台调度 executor（不阻塞响应）
     factory = _get_session_factory(request)
@@ -134,7 +140,7 @@ async def create_run(
         )
     )
 
-    return _to_run_response(run)
+    return response
 
 
 @router.get(

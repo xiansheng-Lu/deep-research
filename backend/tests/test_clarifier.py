@@ -309,6 +309,41 @@ class TestClarificationToStatePayload:
         assert clarifier.clarification_to_state_payload(None) == {}
         assert clarifier.clarification_to_state_payload({}) == {}
 
+
+# ---------------------------------------------------------------------------
+# token 用量累加（成本闸门准则：真实 LLM 调用必须回写 state.token_used）
+# ---------------------------------------------------------------------------
+
+
+class TestClarifierTokenAccounting:
+    @pytest.mark.asyncio
+    async def test_llm_hit_accumulates_token_used(self) -> None:
+        """LLM 命中路径：本次 usage.total 累加进 state 原有 token_used。"""
+        schema = ClarificationSchema(
+            requires_user_input=False,
+            questions=[],
+            defaults={},
+            structured_question={"goal": "目标", "scope": "范围"},
+        )
+        client = _FakeStructuredLLMClient(schema)  # total_tokens=12
+        deps = NodeDeps(run_id="r8", team_id="t8", trace_id="tr8", llm=client)
+        state: dict[str, Any] = {
+            "question": "请研究 2026 年国产大模型的商业化进展",
+            "token_used": 100,
+        }
+
+        result = await clarifier.run(state, deps=deps)
+
+        assert result["token_used"] == 112
+
+    @pytest.mark.asyncio
+    async def test_fallback_path_does_not_inflate_token_used(self) -> None:
+        """降级路径未产生真实调用，不得凭空增加 token_used。"""
+        state: dict[str, Any] = {"question": "请研究 AI 行业趋势", "token_used": 50}
+        result = await clarifier.run(state, deps=None)
+        assert "token_used" not in result
+        assert state["token_used"] == 50
+
     def test_missing_answers_key(self) -> None:
         assert clarifier.clarification_to_state_payload({"other": 1}) == {}
 

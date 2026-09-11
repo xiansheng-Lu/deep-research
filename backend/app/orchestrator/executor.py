@@ -185,6 +185,64 @@ async def _load_run(session: AsyncSession, run_id: str) -> ResearchRun | None:
     return await session.scalar(select(ResearchRun).where(ResearchRun.id == run_id))
 
 
+async def _astream_and_publish(
+    graph: Any,
+    initial_state: ResearchState,
+    thread_config: dict[str, Any],
+    *,
+    run: ResearchRun,
+    session: AsyncSession,
+    hub: RealtimeHub,
+    run_id: str,
+) -> ResearchState | None:
+    """流式执行图：逐 super-step 推送 ``stage.started`` 并同步 DB 阶段字段。
+
+    - 使用 LangGraph ``astream``（values 模式）：每个 super-step 产出一份完整
+      state 快照；仅当 ``current_stage`` 切换时推送一次阶段事件。
+    - 同步把 ``ResearchRun.current_stage`` 落库并 flush，保证 WS 事件、DB
+      轮询（GET /runs/{id}）与重连后的 GET 初帧三处阶段状态一致。
+
+    Returns:
+        最终（或挂起前最后一份）state 快照；图执行异常时向上抛出。
+    """
+    final_state: ResearchState | None = None
+    last_stage: str | None = None
+    # 必须显式指定 stream_mode="values"：当前 LangGraph 版本 astream 默认
+    # "updates"（chunk 形如 {节点名: 增量patch}），取不到扁平 state 字段；
+    # values 模式下每个 super-step 产出一份完整 state 快照。
+    async for snapshot in graph.astream(
+        initial_state,
+        config=thread_config,
+        stream_mode="values",
+    ):
+        final_state = snapshot
+        # state 中 current_stage 可能是 ResearchStage(StrEnum) 或裸字符串，
+        # 统一归一化为字符串，保证去重比对与 WS 载荷均为纯字符串契约。
+        raw_stage = snapshot.get("current_stage")
+        stage = raw_stage.value if isinstance(raw_stage, ResearchStage) else raw_stage
+        if not isinstance(stage, str) or stage == last_stage:
+            continue
+        last_stage = stage
+        run.current_stage = stage
+        await session.flush()
+        attempts = snapshot.get("stage_attempts") or {}
+        await _publish_event(
+            hub,
+            run_id,
+            {
+                "type": "stage.started",
+                "stage": stage,
+                "current_stage": stage,
+                "payload": {
+                    "stage": stage,
+                    "attempt": int(attempts.get(stage) or 1),
+                    "token_used": int(snapshot.get("token_used") or 0),
+                },
+            },
+        )
+    return final_state
+
+
 async def _mark_succeeded(
     session: AsyncSession,
     run: ResearchRun,
@@ -319,9 +377,17 @@ async def run_research_async(
         error_code = "INTERNAL_ERROR"
         error_message = ""
         try:
-            final_state = await graph.ainvoke(initial_state, config=thread_config)
+            final_state = await _astream_and_publish(
+                graph,
+                initial_state,
+                thread_config,
+                run=run,
+                session=session,
+                hub=hub,
+                run_id=run_id,
+            )
         except Exception as exc:  # noqa: BLE001
-            log.exception("graph.ainvoke 失败", extra={"run_id": run_id})
+            log.exception("graph.astream 执行失败", extra={"run_id": run_id})
             error_code = exc.__class__.__name__
             error_message = repr(exc)
             await _mark_failed(
@@ -344,6 +410,9 @@ async def run_research_async(
             else:
                 # 无产出（如仍挂起在 HITL）→ 标记 paused
                 run.status = "paused"
+                # 挂起同样回写真实 token 用量：成本闸门触发时前端/轮询需看到
+                # 已消耗量，否则预算治理在 paused 态失去可观测性
+                run.token_used = int(final_state.get("token_used") or 0)
                 cur_stage = final_state.get("current_stage")
                 if isinstance(cur_stage, str):
                     run.current_stage = cur_stage

@@ -3,6 +3,7 @@
 业务代码统一通过 ``LLMClient`` 调用，不直接持有 Provider 实例。
 """
 
+import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
@@ -33,6 +34,41 @@ class StructuredCompletion:
     usage: dict[str, int] = field(default_factory=dict)
     model: str = ""
     raw: str = ""
+
+
+def _build_schema_instruction(schema: type[BaseModel]) -> str:
+    """根据 Pydantic 模型生成 JSON 输出契约文本（随用户消息注入）。"""
+    schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
+    return (
+        "\n\n输出要求：你必须仅返回一个符合以下 JSON Schema 的 JSON 对象，"
+        "字段名严格一致，使用 UTF-8 中文文本作为字段值；"
+        "不要输出 markdown 代码块、注释或任何 JSON 以外的文字。\n"
+        f"JSON Schema：\n{schema_json}"
+    )
+
+
+def _inject_schema_instruction(
+    messages: list[ChatMessage],
+    schema: type[BaseModel],
+) -> list[ChatMessage]:
+    """把 JSON Schema 输出契约追加到最后一条用户消息。
+
+    调用方消息恒含 user 消息（澄清问题 / 拆解载荷）；若无 user 消息则新建一条，
+    保证 DeepSeek json_object 模式"消息内含 JSON 指令"的要求得到满足。
+    """
+    instruction = _build_schema_instruction(schema)
+    for idx in range(len(messages) - 1, -1, -1):
+        if messages[idx].role == "user":
+            anchored = list(messages)
+            original = anchored[idx]
+            anchored[idx] = ChatMessage(
+                role="user",
+                content=f"{original.content}{instruction}",
+                name=original.name,
+            )
+            return anchored
+    messages.append(ChatMessage(role="user", content=instruction.lstrip("\n")))
+    return messages
 
 
 class LLMClient:
@@ -83,33 +119,29 @@ class LLMClient:
     ) -> StructuredCompletion:
         """结构化输出：按 Pydantic 模型 ``schema`` 约束返回 JSON。
 
-        实现路径：以 ``response_format={"type": "json_schema", ...}`` 引导 LLM 返回严格 JSON，
-        解析后用 ``schema.model_validate`` 校验。任何解析/校验失败都会抛出
-        ``ProviderUnavailableError``（§7.5 统一收敛）。M1 阶段不引入 Pydantic → JSON Schema
-        的二次重写，直接采用 Pydantic v2 生成的 schema（已含 ``additionalProperties: false``）。
+        实现路径（兼容 OpenAI / DeepSeek 的 json_object 模式）：
+        1. 把 Pydantic 生成的 JSON Schema 作为输出契约追加到用户消息，
+           明确要求只输出一个 JSON 对象、不得包裹 markdown 代码块；
+        2. 以 ``response_format={"type": "json_object"}`` 强制 JSON 输出
+           （DeepSeek 不支持 OpenAI 的 strict json_schema，json_object 是双方
+           共有能力，故统一走该模式）；
+        3. ``json.loads`` 后用 ``schema.model_validate`` 校验。
+
+        任何解析/校验失败都抛 ``ProviderUnavailableError``（§7.5 统一收敛）。
         """
-        schema_dict = schema.model_json_schema()
-        response_format = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": schema.__name__,
-                "schema": schema_dict,
-                "strict": True,
-            },
-        }
+        del tags  # M1 预留：链路标签暂不参与调用
+        guided_messages = _inject_schema_instruction(list(messages), schema)
         request = ChatRequest(
-            messages=list(messages),
+            messages=guided_messages,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
-            response_format=response_format,
+            response_format={"type": "json_object"},
         )
         chat_response = await self.chat(request)
 
         content = chat_response.content.strip()
         try:
-            import json
-
             payload = json.loads(content) if content else {}
             parsed = schema.model_validate(payload)
         except Exception as exc:  # noqa: BLE001 - 解析/校验统一收敛

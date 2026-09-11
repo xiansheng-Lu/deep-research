@@ -57,13 +57,17 @@ async def _call_llm(
     deps: NodeDeps | None,
     question: str,
     max_tokens: int = 800,
-) -> ClarificationSchema | None:
-    """调用 LLM 完成结构化判定。返回 None 表示 LLM 不可用或调用失败。"""
+) -> tuple[ClarificationSchema | None, int]:
+    """调用 LLM 完成结构化判定。
+
+    返回 ``(结构化结果, 本次调用消耗总 token)``；LLM 不可用或调用失败时
+    返回 ``(None, 0)``，由调用方走降级路径。
+    """
     if deps is None:
-        return None
+        return None, 0
     llm = getattr(deps, "llm", None)
     if llm is None:
-        return None
+        return None, 0
     try:
         completion = await llm.complete_structured(
             messages=[
@@ -71,7 +75,6 @@ async def _call_llm(
                 ChatMessage(role="user", content=question),
             ],
             schema=ClarificationSchema,
-            model="gpt-4o-mini",
             max_tokens=max_tokens,
             tags=["clarify"],
         )
@@ -80,14 +83,14 @@ async def _call_llm(
             "clarifier LLM 调用失败，降级处理",
             extra={"run_id": getattr(deps, "run_id", None), "error": repr(exc)},
         )
-        return None
+        return None, 0
     if not isinstance(completion.parsed, ClarificationSchema):
         log.warning(
             "clarifier LLM 返回非预期类型",
             extra={"got": type(completion.parsed).__name__},
         )
-        return None
-    return completion.parsed
+        return None, 0
+    return completion.parsed, int(completion.usage.get("total_tokens", 0))
 
 
 def _build_interrupt_payload(result: ClarificationSchema) -> dict[str, Any]:
@@ -127,7 +130,10 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
         }
 
     # 2) 走 LLM 判定
-    result = await _call_llm(deps=deps, question=question)
+    result, consumed_tokens = await _call_llm(deps=deps, question=question)
+
+    # 真实调用产生的 token 用量累加回写 state（成本闸门依据）
+    token_patch = {"token_used": int(state.get("token_used") or 0) + consumed_tokens}
 
     # 3) 降级路径
     if result is None:
@@ -163,13 +169,18 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
             "needs_clarification": True,
             "interrupt_reason": "clarify",
             "interrupt_payload": interrupt_payload,
+            **token_patch,
         }
 
     # 5) LLM 判定无需追问 → 落 structured_question + defaults
     structured = dict(result.structured_question)
     defaults = dict(result.defaults)
     clarification = {**defaults, **structured, "_source": "clarifier.llm"}
-    return {"clarification": clarification, "needs_clarification": False}
+    return {
+        "clarification": clarification,
+        "needs_clarification": False,
+        **token_patch,
+    }
 
 
 # ---------------------------------------------------------------------------

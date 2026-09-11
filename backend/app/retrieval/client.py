@@ -9,10 +9,10 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import ExternalServiceError, ProviderUnavailableError
 from app.provider.circuit_breaker import CircuitBreaker
 from app.retrieval.base import RetrievalHit, RetrievalRequest
+from app.retrieval.bocha import build_bocha_provider
 from app.retrieval.dedup import dedupe
 from app.retrieval.web_search import (
     WebSearchProvider,
-    build_tavily_backup_provider,
     build_tavily_provider,
 )
 
@@ -94,24 +94,44 @@ class RetrievalClient:
                 log.warning("Provider aclose 异常: %s", exc)
 
     @classmethod
-    def from_settings(cls, settings: Settings | None = None) -> RetrievalClient:
+    def from_settings(cls, settings: Settings | None = None) -> RetrievalClient | None:
+        """按 ``WEB_SEARCH_PROVIDER`` 构造主检索客户端。
+
+        - ``bocha``（默认）：构造 BochaProvider；
+        - ``tavily``：构造 TavilyProvider。
+
+        对应供应方未配置密钥时返回 ``None``，由调用方（lifespan / 节点）
+        明确走"检索不可用"路径，不构造 search 时才报错的空壳客户端。
+        """
         cfg = settings or get_settings()
-        primary = build_tavily_provider(cfg)
-        backup = build_tavily_backup_provider(cfg)
-        if primary is None and backup is None:
-            # 没有可用 provider 时返回 None-safe 客户端；search 时再抛错
-            return cls(primary=None, backup=None)
-        return cls(primary=primary, backup=backup)
+        provider_name = (cfg.web_search_provider or "bocha").lower()
+        if provider_name == "bocha":
+            primary = build_bocha_provider(cfg)
+        elif provider_name == "tavily":
+            primary = build_tavily_provider(cfg)
+        else:
+            log.warning("未知 WEB_SEARCH_PROVIDER=%s，未构造检索客户端", provider_name)
+            primary = None
+        if primary is None:
+            log.warning(
+                "公域检索 Provider %s 未配置有效密钥，检索节点将走失败路径",
+                provider_name,
+            )
+            return None
+        return cls(primary=primary)
 
 
 _default_client: RetrievalClient | None = None
 
 
 def get_default_client() -> RetrievalClient:
-    """惰性构造默认客户端。"""
+    """惰性构造默认客户端；无可用 Provider 时抛 ``ProviderUnavailableError``。"""
     global _default_client
     if _default_client is None:
-        _default_client = RetrievalClient.from_settings()
+        client = RetrievalClient.from_settings()
+        if client is None:
+            raise ProviderUnavailableError("未配置任何可用的 Web 检索 Provider")
+        _default_client = client
     return _default_client
 
 

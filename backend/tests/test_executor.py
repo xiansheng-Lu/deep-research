@@ -22,7 +22,9 @@ from app.orchestrator.executor import (
     _compile_for_deps,
     run_research_async,
 )
+from app.orchestrator.schemas import ClarificationSchema, SubQuestionListSchema
 from app.orchestrator.state import ResearchStage
+from app.provider.client import LLMClient, StructuredCompletion
 from app.realtime.hub import RealtimeHub
 from app.retrieval.base import RetrievalHit, RetrievalRequest, RetrievalSource
 from app.retrieval.client import RetrievalClient
@@ -168,21 +170,64 @@ async def test_run_research_async_run_not_found_publishes_failed() -> None:
     assert events[0]["error_code"] == "RUN_NOT_FOUND"
 
 
+class _FakeAsyncGraphStream:
+    """模拟 LangGraph 编译图的 ``astream``（values 模式：逐 super-step 产出完整 state）。"""
+
+    def __init__(self, snapshots: list[dict[str, Any]]) -> None:
+        self._snapshots = snapshots
+
+    def astream(self, initial_state: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ARG002
+        # 生产侧固定以 stream_mode="values" 调用，mock 仅校验契约不消费该参数
+        assert kwargs.get("stream_mode") == "values"
+        snapshots = self._snapshots
+
+        class _Iterator:
+            def __init__(self) -> None:
+                self._idx = 0
+
+            def __aiter__(self) -> _Iterator:
+                return self
+
+            async def __anext__(self) -> dict[str, Any]:
+                if self._idx >= len(snapshots):
+                    raise StopAsyncIteration
+                snap = snapshots[self._idx]
+                self._idx += 1
+                return snap
+
+        return _Iterator()
+
+
 @pytest.mark.asyncio
 async def test_run_research_async_success_marks_succeeded() -> None:
-    """成功路径：graph 返回带 report_draft 的 state → run 标记 succeeded + 新建 Report。"""
-    fake_final_state: dict[str, Any] = {
-        "run_id": "test-run-success",
-        "current_stage": ResearchStage.REPORT,
-        "token_used": 500,
-        "report_draft": "## 研究背景\n\n测试报告。",
-        "report_claims": [],
-        "conflicts": [],
-        "report_outline": [],
-    }
+    """成功路径：astream 产出终态 report_draft → succeeded + 新建 Report + 阶段事件。"""
+    # 模拟六个 super-step 后的 state 快照（values 模式）
+    stage_sequence = [
+        ResearchStage.CLARIFY,
+        ResearchStage.DECOMPOSE,
+        ResearchStage.RETRIEVE,
+        ResearchStage.STANDARDIZE,
+        ResearchStage.CRITIQUE,
+        ResearchStage.REPORT,
+    ]
+    snapshots: list[dict[str, Any]] = []
+    for idx, stage in enumerate(stage_sequence, start=1):
+        snapshots.append(
+            {
+                "run_id": "test-run-success",
+                "current_stage": stage,
+                "token_used": 100 * idx,
+                "stage_attempts": {},
+                "report_draft": "",
+                "report_claims": [],
+                "conflicts": [],
+                "report_outline": [],
+            }
+        )
+    snapshots[-1]["report_draft"] = "## 研究背景\n\n测试报告。"
+    snapshots[-1]["token_used"] = 500
 
-    fake_graph = AsyncMock()
-    fake_graph.ainvoke = AsyncMock(return_value=fake_final_state)
+    fake_graph = _FakeAsyncGraphStream(snapshots)
 
     run = ResearchRun(
         id="test-run-success",
@@ -207,6 +252,17 @@ async def test_run_research_async_success_marks_succeeded() -> None:
 
     hub = RealtimeHub()
 
+    # 订阅事件：收集到终态 run.finished 为止
+    events: list[dict[str, Any]] = []
+
+    async def _collect() -> None:
+        async for event in hub.subscribe("runs:test-run-success"):
+            events.append(event)
+            if event.get("type") == "run.finished":
+                break
+
+    collect_task = asyncio.create_task(_collect())
+
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(
             "app.orchestrator.executor._compile_for_deps",
@@ -229,6 +285,9 @@ async def test_run_research_async_success_marks_succeeded() -> None:
             hub=hub,
         )
 
+    await asyncio.sleep(0.05)
+    collect_task.cancel()
+
     assert run.status == "succeeded"
     assert run.finished_at is not None
     assert run.token_used == 500
@@ -236,3 +295,238 @@ async def test_run_research_async_success_marks_succeeded() -> None:
     added_obj = mock_session.add.call_args[0][0]
     assert "## 研究背景" in added_obj.content_md
     assert mock_session.commit.called
+
+    # 六个阶段切换各推一条 stage.started，末尾一条 run.finished
+    stage_events = [e for e in events if e["type"] == "stage.started"]
+    assert [e["stage"] for e in stage_events] == [s.value for s in stage_sequence]
+    assert stage_events[0]["payload"]["stage"] == "clarify"
+    assert stage_events[-1]["payload"]["token_used"] == 500
+    finished_events = [e for e in events if e["type"] == "run.finished"]
+    assert len(finished_events) == 1
+    assert finished_events[0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_run_research_async_real_graph_values_stream() -> None:
+    """真实编译图（不 mock graph）端到端回归。
+
+    锁定两个真实链路契约：
+    1. astream 必须显式 stream_mode="values"（默认 updates 会导致取不到
+       current_stage / report_draft，终态被误判 paused）；
+    2. values 快照中 current_stage 以 ResearchStage(StrEnum) 形式存在，
+       事件载荷必须归一化为纯字符串并按 6 阶段顺序各推一条。
+    """
+    run = ResearchRun(
+        id="test-run-real-graph",
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="quick",
+        question="2026 年中国光伏装机量趋势如何？请给出有证据的分析。",
+        status="pending",
+        token_budget=50_000,
+    )
+
+    mock_session = AsyncMock()
+    mock_session.scalar.return_value = run
+    mock_session.add = MagicMock()
+    mock_session.flush = AsyncMock()
+    mock_session.commit = AsyncMock()
+
+    mock_factory = MagicMock()
+    mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    hub = RealtimeHub()
+    events: list[dict[str, Any]] = []
+
+    async def _collect() -> None:
+        async for event in hub.subscribe("runs:test-run-real-graph"):
+            events.append(event)
+            if event.get("type") == "run.finished":
+                break
+
+    collect_task = asyncio.create_task(_collect())
+
+    await run_research_async(
+        run_id="test-run-real-graph",
+        project_id="proj-001",
+        template_id="generic",
+        tier="quick",
+        question="2026 年中国光伏装机量趋势如何？请给出有证据的分析。",
+        token_budget=50_000,
+        clarification=None,
+        team_id="team-001",
+        creator_id="user-001",
+        trace_id="trace-001",
+        session_factory=mock_factory,
+        llm=None,
+        retrieval_client=_OfflineRetrievalClient(),
+        hub=hub,
+    )
+
+    await asyncio.sleep(0.05)
+    collect_task.cancel()
+
+    assert run.status == "succeeded"
+    assert run.current_stage == "report"
+    added_report = mock_session.add.call_args[0][0]
+    assert len(added_report.content_md) > 200
+
+    stage_events = [e for e in events if e["type"] == "stage.started"]
+    assert [e["stage"] for e in stage_events] == [
+        "clarify",
+        "decompose",
+        "retrieve",
+        "standardize",
+        "critique",
+        "report",
+    ]
+    # StrEnum 不得泄漏到对外载荷
+    assert all(isinstance(e["stage"], str) and type(e["stage"]) is str for e in stage_events)
+    finished_events = [e for e in events if e["type"] == "run.finished"]
+    assert len(finished_events) == 1
+    assert finished_events[0]["status"] == "succeeded"
+
+
+class _BudgetedStructuredLLM(LLMClient):
+    """按 schema 返回有效结构化结果，并为每次调用上报固定 token 用量。
+
+    跳过父类 ``__init__`` 避免熔断器/注册表副作用；仅服务于预算闸门测试。
+    """
+
+    def __init__(self, tokens_per_call: int = 60) -> None:
+        self.tokens_per_call = tokens_per_call
+        self.call_tags: list[str] = []
+
+    async def complete_structured(  # type: ignore[override]
+        self,
+        *,
+        messages: list[Any],
+        schema: type,
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        tags: list[str] | None = None,
+    ) -> StructuredCompletion:
+        self.call_tags.append(",".join(tags or []))
+        usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": self.tokens_per_call,
+        }
+        if schema is ClarificationSchema:
+            return StructuredCompletion(
+                parsed=ClarificationSchema(
+                    requires_user_input=False,
+                    questions=[],
+                    defaults={},
+                    structured_question={
+                        "goal": "预算闸门验证目标",
+                        "scope": "测试范围",
+                        "key_concepts": [],
+                    },
+                ),
+                usage=usage,
+                model="stub-budget-llm",
+                raw="",
+            )
+        return StructuredCompletion(
+            parsed=SubQuestionListSchema(
+                sub_questions=[
+                    {
+                        "question": "预算闸门验证子问题",
+                        "depends_on": [],
+                        "rationale": "预算闸门测试",
+                    }
+                ]
+            ),
+            usage=usage,
+            model="stub-budget-llm",
+            raw="",
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_research_async_budget_exceeded_pauses_before_report() -> None:
+    """SDP M1 验收准则 4：token 超预算 90% 时自动停止，不超支。
+
+    clarify/decompose 各上报 60 token（累计 120 > 100×90%=90），
+    cost_checkpoint 条件边路由 user_intervention，图在 interrupt_before
+    挂起点停止。断言：run 标 paused、不新建 Report、阶段事件止于审视、
+    终态事件为 paused 且 token 用量如实回写。
+    """
+    run = ResearchRun(
+        id="test-run-budget",
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="quick",
+        question="预算闸门自动停止验证问题",
+        status="pending",
+        token_budget=100,
+    )
+
+    mock_session = AsyncMock()
+    mock_session.scalar.return_value = run
+    mock_session.add = MagicMock()
+    mock_session.flush = AsyncMock()
+    mock_session.commit = AsyncMock()
+
+    mock_factory = MagicMock()
+    mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    hub = RealtimeHub()
+    events: list[dict[str, Any]] = []
+
+    async def _collect() -> None:
+        async for event in hub.subscribe("runs:test-run-budget"):
+            events.append(event)
+            if event.get("type") == "run.finished":
+                break
+
+    collect_task = asyncio.create_task(_collect())
+
+    await run_research_async(
+        run_id="test-run-budget",
+        project_id="proj-001",
+        template_id="generic",
+        tier="quick",
+        question="预算闸门自动停止验证问题",
+        token_budget=100,
+        clarification=None,
+        team_id="team-001",
+        creator_id="user-001",
+        trace_id="trace-001",
+        session_factory=mock_factory,
+        llm=_BudgetedStructuredLLM(tokens_per_call=60),
+        retrieval_client=_OfflineRetrievalClient(),
+        hub=hub,
+    )
+
+    await asyncio.sleep(0.05)
+    collect_task.cancel()
+
+    # 挂起而非成功/失败：等待用户介入，finished_at 不得写入
+    assert run.status == "paused"
+    assert run.finished_at is None
+    # 两次结构化调用的真实 token 用量如实回写（120），但执行在报告前已停止
+    assert run.token_used == 120
+    # 不超支的直接证据：没有任何 Report 产出
+    assert not mock_session.add.called
+    assert mock_session.commit.called
+
+    # 阶段事件止于审视：成本闸门不产生新阶段，report 绝不执行
+    stage_events = [e for e in events if e["type"] == "stage.started"]
+    assert [e["stage"] for e in stage_events] == [
+        "clarify",
+        "decompose",
+        "retrieve",
+        "standardize",
+        "critique",
+    ]
+    finished_events = [e for e in events if e["type"] == "run.finished"]
+    assert len(finished_events) == 1
+    assert finished_events[0]["status"] == "paused"
+    assert finished_events[0]["token_used"] == 120

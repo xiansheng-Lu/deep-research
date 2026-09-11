@@ -52,7 +52,8 @@ _SYSTEM_PROMPT_ZH = (
     "你是 AI 研究助手的研究规划助手。"
     "请把用户的研究目标拆解为 3-12 条独立的子问题，按依赖关系排序；"
     "每条子问题必须是可独立检索的，不与其它子问题重叠。"
-    "若子问题需要前置结果（如同一定义的延伸），请在 depends_on 中引用对应子问题的序号。"
+    "depends_on 只能填写前置子问题的数字序号字符串（例如 “1”、“2”），"
+    "序号从 1 开始计数，且只能引用排在当前子问题之前的条目；无依赖时填空数组 []。"
     "严格按 JSON 输出，不要包含任何额外文字。"
 )
 
@@ -62,13 +63,16 @@ async def _call_llm(
     deps: NodeDeps | None,
     payload: dict[str, Any],
     max_tokens: int = 1500,
-) -> SubQuestionListSchema | None:
-    """调用 LLM 完成结构化拆解。失败/不可用返回 None。"""
+) -> tuple[SubQuestionListSchema | None, int]:
+    """调用 LLM 完成结构化拆解。
+
+    返回 ``(结构化结果, 本次调用消耗总 token)``；失败/不可用返回 ``(None, 0)``。
+    """
     if deps is None:
-        return None
+        return None, 0
     llm = getattr(deps, "llm", None)
     if llm is None:
-        return None
+        return None, 0
     try:
         completion = await llm.complete_structured(
             messages=[
@@ -76,7 +80,6 @@ async def _call_llm(
                 ChatMessage(role="user", content=json.dumps(payload, ensure_ascii=False)),
             ],
             schema=SubQuestionListSchema,
-            model="gpt-4o",
             max_tokens=max_tokens,
             tags=["decompose"],
         )
@@ -85,10 +88,10 @@ async def _call_llm(
             "sub_questioner LLM 调用失败，降级处理",
             extra={"run_id": getattr(deps, "run_id", None), "error": repr(exc)},
         )
-        return None
+        return None, 0
     if not isinstance(completion.parsed, SubQuestionListSchema):
-        return None
-    return completion.parsed
+        return None, 0
+    return completion.parsed, int(completion.usage.get("total_tokens", 0))
 
 
 def _assign_ids(items: list[SubQuestionItem], max_count: int) -> list[SubQuestionDict]:
@@ -173,11 +176,16 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
     }
 
     # 1) LLM 命中
-    parsed = await _call_llm(deps=deps, payload=payload)
+    parsed, consumed_tokens = await _call_llm(deps=deps, payload=payload)
+    # 真实调用产生的 token 用量累加回写 state（成本闸门依据）
+    token_patch = {"token_used": int(state.get("token_used") or 0) + consumed_tokens}
     if parsed is not None:
         items = list(parsed.sub_questions)
         if items:
-            return {"sub_questions": _assign_ids(items, max_count=max_count)}
+            return {
+                "sub_questions": _assign_ids(items, max_count=max_count),
+                **token_patch,
+            }
 
     # 2) 降级：单子问题直通
     return {

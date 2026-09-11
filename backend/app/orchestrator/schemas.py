@@ -10,6 +10,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# 入站结构化输出统一采用 extra="ignore"：
+# DeepSeek 等兼容 OpenAI 接口的模型在 json_object 模式下只保证输出合法 JSON，
+# 不保证字段闭合（实测会回显 {"type": "json_object"} 等多余字段）；
+# 这些模型仅用于解析外部 LLM 输出，忽略多余字段即可，缺失必填字段仍会校验失败。
+_LLM_OUTPUT_CONFIG = ConfigDict(extra="ignore")
+
 
 class ClarificationQuestion(BaseModel):
     """单条澄清问题（§6.5.2）。
@@ -21,7 +27,7 @@ class ClarificationQuestion(BaseModel):
         recommended: 推荐选项在 ``options`` 中的索引；None 表示无偏好。
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _LLM_OUTPUT_CONFIG
 
     key: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=500)
@@ -39,7 +45,7 @@ class ClarificationSchema(BaseModel):
         structured_question: 当 ``requires_user_input`` 为 False 时的目标/范围/关键概念等结构化查询。
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _LLM_OUTPUT_CONFIG
 
     requires_user_input: bool
     questions: list[ClarificationQuestion] = Field(default_factory=list)
@@ -56,7 +62,7 @@ class SubQuestionItem(BaseModel):
         rationale: 拆解理由（仅用于审计，前端不展示）。
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _LLM_OUTPUT_CONFIG
 
     question: str = Field(min_length=1, max_length=500)
     depends_on: list[str] = Field(default_factory=list)
@@ -66,7 +72,7 @@ class SubQuestionItem(BaseModel):
 class SubQuestionListSchema(BaseModel):
     """子问题列表（§6.5.3）。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _LLM_OUTPUT_CONFIG
 
     sub_questions: list[SubQuestionItem] = Field(default_factory=list)
 

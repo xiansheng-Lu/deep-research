@@ -76,7 +76,14 @@ class Settings(BaseSettings):
     llm_circuit_reset_seconds: int = Field(default=60, alias="LLM_CIRCUIT_RESET_SECONDS")
 
     # ===== 检索 =====
+    # 公域检索供应方选择：bocha（国内）/ tavily（海外）
+    web_search_provider: Literal["bocha", "tavily"] = Field(
+        default="bocha", alias="WEB_SEARCH_PROVIDER"
+    )
     tavily_api_key: SecretStr = Field(default=SecretStr(""), alias="TAVILY_API_KEY")
+    bocha_api_key: SecretStr = Field(default=SecretStr(""), alias="BOCHA_API_KEY")
+    bocha_base_url: str = Field(default="https://api.bochaai.com/v1", alias="BOCHA_BASE_URL")
+    bocha_timeout_seconds: float = Field(default=30.0, alias="BOCHA_TIMEOUT_SECONDS")
 
     # ===== 成本治理 =====
     quota_default_tier: Literal["quick", "standard", "deep", "extreme"] = Field(
