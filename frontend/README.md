@@ -2,9 +2,9 @@
 
 基于 Vue 3 + TypeScript + Vite 的单页应用，为 AI 研究者助手提供登录、研究发起、任务指挥舱、报告与分歧工作台等界面。
 
-一次"研究运行（run）"在前端对应六个阶段的实时推进：意图分析 → 证据收集 → 证据评估 → 综合 → 报告起草 → 报告复核。运行过程中的状态通过 WebSocket / SSE 实时推送到指挥舱，产生证据冲突时进入分歧工作台由用户裁决。
+一次"研究运行（run）"在前端对应六个阶段的实时推进：意图分析 → 证据收集 → 证据评估 → 综合 → 报告起草 → 报告复核。运行过程中的状态通过 WebSocket 实时推送到指挥舱；证据冲突的分歧工作台为 M4 预留，当前仅占位。
 
-当前处于 M0/M1 阶段：页面骨架、基础组件库与实时通道客户端已就绪，并内置一套完整的 Mock 网关，可在后端缺失时独立完成全链路页面联调；M1 HTTP 契约已冻结，可随时切换为真实后端联调。
+当前处于 M1 联调阶段：M0 基础组件库、应用骨架与实时通道客户端已就绪，M1 的认证、项目、发起向导、指挥舱、报告页面已实装；内置 Mock 网关严格对齐 M1 冻结契约，可在后端缺失时独立完成页面联调，通过环境变量即可切换为真实后端。
 
 ## 技术栈
 
@@ -45,7 +45,7 @@ pnpm dev
 
 ## 内置 Mock 网关
 
-Mock 网关以 Vite dev 插件形式内嵌（入口 [src/services/mock/gateway.ts](src/services/mock/gateway.ts)），仅在 development 模式且 `VITE_MOCK=gateway` 时启用。启用后 dev server 不再配置代理，`/api`、`/ws`、`/sse` 请求全部由插件在 Node 侧拦截处理。
+Mock 网关以 Vite dev 插件形式内嵌（入口 [src/services/mock/gateway.ts](src/services/mock/gateway.ts)），仅在 development 模式且 `VITE_MOCK=gateway` 时启用。启用后 dev server 不再配置代理，`/api/v1` REST 请求、`/healthz` 与 `/api/v1/ws` WebSocket 升级全部由插件在 Node 侧拦截处理。
 
 ### 启用方式
 
@@ -56,35 +56,28 @@ VITE_API_BASE=http://localhost:8000
 VITE_MOCK=gateway
 ```
 
-重新执行 `pnpm dev`，首次启动时会输出 `[mock-gateway] 种子数据已加载`。种子数据由 [src/services/mock/seed.ts](src/services/mock/seed.ts) 注入到内存存储 [src/services/mock/store.ts](src/services/mock/store.ts)，重启 dev server 后数据重置。
+重新执行 `pnpm dev` 即生效。种子数据由 [src/services/mock/seed.ts](src/services/mock/seed.ts) 注入到内存存储 [src/services/mock/store.ts](src/services/mock/store.ts)，重启 dev server 后数据重置。
 
 ### 覆盖的通道与端点
 
-- **REST**：由 [src/services/mock/router.ts](src/services/mock/router.ts) 分发，共 20 个端点，覆盖健康检查、登录/刷新/当前用户、项目列表与创建、任务列表、run 创建/查询/暂停/恢复/取消、子问题规划、冲突列表与裁决、报告获取、模板列表与详情、团队、遥测上报。
-- **WebSocket**：`/ws` 升级请求由 [src/services/mock/realtime.ts](src/services/mock/realtime.ts) 处理，run 产生的事件实时广播到对应频道。
-- **SSE**：`GET /api/v1/runs/{run_id}/report/stream` 由 [src/services/mock/sse.ts](src/services/mock/sse.ts) 处理，推送报告流式生成事件。
+- **REST**：由 [src/services/mock/router.ts](src/services/mock/router.ts) 分发，共 11 个端点，严格对齐 [openapi-m1.json](../docs/contract/openapi-m1.json) 冻结契约：`GET /healthz`、鉴权四端点（login/refresh/logout/me）、项目列表与创建、run 创建与详情、报告获取（`/runs/{run_id}/report` 与 `/reports/{run_id}` 两个等价路径）。
+- **WebSocket**：`/api/v1/ws/runs/{run_id}/stream` 升级请求由 [src/services/mock/realtime.ts](src/services/mock/realtime.ts) 处理，握手前按 query 参数 `token` 鉴权（与后端一致，缺失或无效直接返回 403），run 产生的事件实时广播到对应频道，终态事件推送后关闭连接。
 
-REST 与实时事件在 run 执行期间联动：每次脚本发出事件时，同步更新内存中的 run 状态，并向 WS 与 SSE 两个通道广播。
+REST 与实时事件在 run 执行期间联动：每次脚本发出事件时，同步更新内存中的 run 状态并向 WS 通道广播；run 成功结束时在内存中落一份报告，供报告接口读取。
 
 ### 剧本（fixture）机制
 
-run 的事件流不是随机生成的，而是由可编排的"剧本"驱动。创建 run 时（`POST /api/v1/projects/{project_id}/runs`）通过请求体的 `fixture` 字段选择：
+run 的事件流不是随机生成的，而是由可编排的"剧本"驱动。M1 仅提供一个剧本 [fixtures/happy_path.ts](src/services/mock/fixtures/happy_path.ts)：六个阶段依次推进，无人工干预直至完成；`POST /api/v1/runs` 成功创建后自动执行该剧本，请求体不含 fixture 选择字段（冻结契约字段为 `project_id`、`question`、`tier`、`template_id`）。
 
-| fixture 值 | 构建函数 | 场景 |
-| --- | --- | --- |
-| `happy_path`（默认） | [fixtures/happy_path.ts](src/services/mock/fixtures/happy_path.ts) | 顺利路径：六个阶段依次推进，无人工干预直至完成 |
-| `demo_full` | [fixtures/demo_full.ts](src/services/mock/fixtures/demo_full.ts) | 完整演示：包含澄清提问、证据冲突等人机交互节点 |
-
-剧本是一棵 `ScriptNode` 树，由 [src/services/mock/script/runner.ts](src/services/mock/script/runner.ts) 解释执行，支持的节点类型：
+剧本是一棵 `ScriptNode` 树，由 [src/services/mock/script/runner.ts](src/services/mock/script/runner.ts) 解释执行，M1 节点类型仅三种（见 [script/types.ts](src/services/mock/script/types.ts)）：
 
 - `sequence`：顺序执行子节点；
-- `parallel`：并行执行子节点；
 - `emit`：延迟可选毫秒后发出一个实时事件；
-- `wait`：等待固定时长；
-- `interrupt`：触发 `clarification`（澄清）或 `conflict`（冲突）中断，等待用户响应后继续；
-- `complete` / `fail`：正常结束 / 以指定错误码失败。
+- `wait`：等待固定时长。
 
-需要新增联调场景时，按现有两个 fixture 的写法构建新剧本并在 run 创建路由中登记分支即可，不要修改执行器。
+需要新增联调场景时，按 happy_path 的写法构建新剧本，并在 run 创建路由中替换或登记即可，不要修改执行器；并行、人工中断、失败注入等节点类型随 M2+ 剧本扩展再加入 DSL。
+
+Mock 模式的登录账号由 [src/services/mock/seed.ts](src/services/mock/seed.ts) 写入：邮箱 `demo@example.com`，接受任意非空密码。
 
 ## 环境变量
 
@@ -92,10 +85,10 @@ run 的事件流不是随机生成的，而是由可编排的"剧本"驱动。�
 
 | 变量 | 开发默认值 | 生产默认值 | 说明 |
 | --- | --- | --- | --- |
-| `VITE_API_BASE` | `http://localhost:8000` | 空 | 后端 API 基址。非 Mock 模式下，dev server 据此代理 `/api` 与 `/sse`，并将 `http` 替换为 `ws` 派生 WebSocket 地址代理 `/ws` |
+| `VITE_API_BASE` | `http://localhost:8000` | 空 | 后端 API 基址。非 Mock 模式下，dev server 据此代理 `/api`，并将 `http` 替换为 `ws` 派生 WebSocket 地址代理 `/ws` |
 | `VITE_MOCK` | `off` | 不使用 | 设为 `gateway` 启用内置 Mock 网关，仅 development 模式有效 |
 
-生产构建默认 `VITE_API_BASE` 为空，即前端与后端同源部署，由反向网关统一转发 `/api`、`/ws`、`/sse`。
+生产构建默认 `VITE_API_BASE` 为空，即前端与后端同源部署，由反向网关统一转发 `/api`、`/ws`。
 
 ## 常用脚本
 
@@ -120,7 +113,6 @@ run 的事件流不是随机生成的，而是由可编排的"剧本"驱动。�
 | 前端路径 | 转发目标 |
 | --- | --- |
 | `/api` | `VITE_API_BASE`（HTTP） |
-| `/sse` | `VITE_API_BASE`（HTTP） |
 | `/ws` | 由 `VITE_API_BASE` 派生的 `ws://` 地址（WebSocket upgrade） |
 
 ### M1 契约与客户端生成
@@ -136,9 +128,9 @@ pnpm dlx @openapitools/openapi-generator-cli generate `
   -o src/services/generated
 ```
 
-生成产物建议放在 `src/services/generated/` 并在 `.gitignore` 中忽略，作为再生成资源维护；后端契约变更后重新执行该命令即可。当前 M0/M1 手写的接口类型集中在各 store 与 [src/services/realtime/types.ts](src/services/realtime/types.ts)，接入生成客户端时逐页面替换。
+生成产物建议放在 `src/services/generated/` 并在 `.gitignore` 中忽略，作为再生成资源维护；后端契约变更后重新执行该命令即可。当前 M1 手写的 REST 接口类型集中在 [src/services/api/types.ts](src/services/api/types.ts)，实时事件类型在 [src/services/realtime/types.ts](src/services/realtime/types.ts)，接入生成客户端时逐页面替换。
 
-所有 HTTP 调用统一经 [src/services/http/http.ts](src/services/http/http.ts) 发起：它是 fetch 的薄封装，负责 `Accept` 与幂等键（`Idempotency-Key`）注入，并把错误响应按 RFC 7807（`application/problem+json`）归一为 `ApiError`（含 `status` / `code` / `title` / `detail` / `traceId`），错误处理分支统一按 `code` 判断。
+所有 HTTP 调用统一经 [src/services/http/http.ts](src/services/http/http.ts) 发起：它是 fetch 的薄封装，负责 `Accept` 与幂等键（`Idempotency-Key`）注入，并把两类后端错误响应归一为 `ApiError`（含 `status` / `code` / `title` / `detail` / `traceId`）：业务异常体 `{code, message, details}` 与 FastAPI 请求体校验错误体 `{detail: [...]}`，错误处理分支统一按 `code` 判断；401 时还会以 single-flight 方式刷新 access token 并重放原请求一次。
 
 ## 目录结构
 
@@ -165,16 +157,15 @@ frontend/
 │   ├── stores/              # Pinia 状态（见下文"状态管理"）
 │   ├── router/              # 路由表（index.ts）与登录守卫（guards.ts）
 │   ├── services/            # 基础设施层
-│   │   ├── http/            # fetch 封装与 RFC 7807 错误归一
+│   │   ├── http/            # fetch 封装与错误体归一（ApiError）
 │   │   ├── realtime/        # WebSocket 客户端（心跳、指数退避重连）
-│   │   ├── mock/            # 内置 Mock 网关
+│   │   ├── mock/            # 内置 Mock 网关（对齐 M1 冻结契约）
 │   │   │   ├── gateway.ts   #   Vite 插件入口
-│   │   │   ├── router.ts    #   REST 路由分发（20 个端点）
-│   │   │   ├── realtime.ts  #   WS 升级与广播
-│   │   │   ├── sse.ts       #   SSE 连接与广播
+│   │   │   ├── router.ts    #   REST 路由分发（11 个端点）
+│   │   │   ├── realtime.ts  #   WS 升级与广播（query token 鉴权）
 │   │   │   ├── store.ts seed.ts   # 内存存储与种子数据
-│   │   │   ├── fixtures/    #   happy_path / demo_full 剧本
-│   │   │   └── script/      #   剧本节点类型与解释执行器
+│   │   │   ├── fixtures/    #   happy_path 剧本
+│   │   │   └── script/      #   剧本节点 DSL 与解释执行器
 │   │   ├── telemetry/       # 遥测事件采集与批量上报
 │   │   ├── toast/           # 全局通知服务（配合 UiToastHost）
 │   │   └── i18n/            # 简体中文文案
@@ -222,14 +213,12 @@ Pinia store 位于 [src/stores/](src/stores/)，均采用 Composition 风格（s
 
 ## 实时通道
 
-[src/services/realtime/realtime.ts](src/services/realtime/realtime.ts) 提供单例式 `RealtimeClient`，按 channelId 持有各自的 `WsChannel`：
+M1 实时通道统一为 WebSocket（SSE 已在 M1 契约对齐时移除，M2+ 如恢复再扩展）。[src/services/realtime/realtime.ts](src/services/realtime/realtime.ts) 提供单例式 `RealtimeClient`，按 channelId 持有各自的 `WsChannel`：
 
-- **鉴权**：通过 WebSocket 子协议携带 JWT（`WS_AUTH_PROTOCOL`）；
+- **鉴权**：JWT 由 URL query 参数携带（`/api/v1/ws/runs/{run_id}/stream?token=<jwt>`），地址由 [src/services/api/runs.ts](src/services/api/runs.ts) 的 `buildRunStreamUrl` 构造，与后端 `ws.py` 口径一致；
 - **心跳**：服务端每 30s 发送 ping，客户端兜底每 25s 主动 ping 防止反向超时；
-- **重连**：非主动关闭时指数退避重连，初始 1s、上限 30s；
-- **续传**：通道记录 `lastEventId`，供上层实现断线补齐与事件去重（M1 后续接入）。
-
-SSE 通道与 `useRunStream` 组合式封装按上层页面需要接入，当前仓库保留最小骨架。
+- **重连**：非主动关闭时指数退避重连，初始 1s、上限 30s；收到终态事件（`run.finished` / `run.failed`）后不再重连；
+- **事件编排**：通道记录 `lastEventId`；[src/composables/useRunStream.ts](src/composables/useRunStream.ts) 已实装 M1 编排——进入页面先 `GET /runs/{run_id}` 取初帧并映射六阶段，非终态建立 WS 订阅 `stage.started` / `run.finished` / `run.failed`，每次连接 live（含重连）后补一次 REST，对齐订阅空窗漏帧。
 
 ## 主题与样式
 
