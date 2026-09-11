@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Literal
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, IdMixin, TimestampMixin
@@ -32,7 +32,9 @@ class KnowledgeItem(Base, IdMixin, TimestampMixin):
     visibility: Mapped[Literal["private", "team", "project"]] = mapped_column(
         String(16), nullable=False, default="project"
     )
-    deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class KnowledgeEmbedding(Base, IdMixin):
@@ -59,5 +61,7 @@ class KnowledgeEmbedding(Base, IdMixin):
             "embedding",
             postgresql_using="hnsw",
             postgresql_with={"m": 16, "ef_construction": 64},
+            # 与迁移脚本保持一致：语义检索采用余弦距离操作符类
+            postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
     )

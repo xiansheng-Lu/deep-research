@@ -27,7 +27,8 @@ depends_on = None
 def upgrade() -> None:
     # 启用扩展
     op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-    op.execute("CREATE EXTENSION IF NOT EXISTS pgvector;")
+    # pgvector 镜像中扩展注册名为 vector（非 pgvector），此处必须与 pg_available_extensions.name 对齐
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
     # ===== teams =====
     op.create_table(
@@ -395,12 +396,14 @@ def upgrade() -> None:
         sa.Column("chunk_text", sa.Text(), nullable=False),
         sa.Column("embedding", Vector(1536), nullable=True),
     )
+    # pgvector 的 HNSW 索引必须显式指定向量操作符类；embedding 用于语义检索，采用余弦距离
     op.create_index(
         "ix_embedding_hnsw",
         "knowledge_embeddings",
         ["embedding"],
         postgresql_using="hnsw",
         postgresql_with={"m": 16, "ef_construction": 64},
+        postgresql_ops={"embedding": "vector_cosine_ops"},
     )
 
     # ===== audit_entries =====

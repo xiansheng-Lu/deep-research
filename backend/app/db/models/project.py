@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import ForeignKey, Index, String
+from sqlalchemy import DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, IdMixin, TimestampMixin
@@ -35,7 +35,9 @@ class Project(Base, IdMixin, TimestampMixin):
     status: Mapped[Literal["active", "archived"]] = mapped_column(
         String(16), nullable=False, default="active"
     )
-    deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     team: Mapped[Team] = relationship(back_populates="projects")
     runs: Mapped[list[ResearchRun]] = relationship(back_populates="project")

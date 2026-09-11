@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, IdMixin, TimestampMixin
@@ -38,7 +38,9 @@ class Conflict(Base, IdMixin, TimestampMixin):
     status: Mapped[Literal[
         "detected", "awaiting_human", "resolved", "abandoned"
     ]] = mapped_column(String(16), nullable=False, default="detected")
-    resolved_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class Verdict(Base, IdMixin):

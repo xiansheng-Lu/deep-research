@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import JSON, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, IdMixin, TimestampMixin
@@ -46,8 +46,10 @@ class Evidence(Base, IdMixin, TimestampMixin):
     fingerprint: Mapped[str] = mapped_column(
         String(64), nullable=False, index=True, comment="URL + content hash 去重"
     )
-    published_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    fetched_at: Mapped[datetime] = mapped_column(nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     metadata_: Mapped[dict] = mapped_column(
         "metadata", JSON, nullable=False, default=dict
     )

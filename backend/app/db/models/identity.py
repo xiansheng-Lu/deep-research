@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import JSON, ForeignKey, String
+from sqlalchemy import DateTime, JSON, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, IdMixin, TimestampMixin
@@ -47,7 +47,12 @@ class User(Base, IdMixin, TimestampMixin):
     role: Mapped[Literal["owner", "admin", "researcher", "reviewer"]] = mapped_column(
         String(16), nullable=False
     )
-    last_login_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # 时间列统一使用 UTC 带时区类型，与 0001 迁移中的 timestamptz 定义对齐
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     team: Mapped[Team] = relationship(back_populates="users")
