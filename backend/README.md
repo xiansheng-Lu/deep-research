@@ -5,7 +5,7 @@
 - 语言/运行时：Python 3.11 - 3.12（要求 >=3.11,<3.13）
 - 包管理：[uv](https://docs.astral.sh/uv/)（锁定文件见 `uv.lock`）
 - Web 框架：FastAPI + Uvicorn（异步）
-- 当前里程碑：**M1 已完成**（ORM、编排执行器、M1 联调接口与 WebSocket 已交付）
+- 当前里程碑：**M1 已完成**（最小链路端到端 demo；五条验收准则经双方共同回归全部闭合，2026-09-12 关闭，详见「里程碑与当前状态」）
 
 ---
 
@@ -35,7 +35,7 @@
 | 数据库 | PostgreSQL 16 + pgvector、SQLAlchemy 2（asyncio）、Alembic |
 | 智能体编排 | LangGraph 1.x、langchain-core 1.x、langchain-openai 1.x |
 | 异步任务 | Celery 5、Redis 7 |
-| 检索 / 抓取 | Tavily、httpx、Playwright、trafilatura、readability-lxml |
+| 检索 / 抓取 | 博查（默认）/ Tavily、httpx、Playwright、trafilatura、readability-lxml |
 | 对象存储 | MinIO（S3 兼容） |
 | 鉴权 | JWT（python-jose、PyJWT、bcrypt） |
 | 可观测性 | structlog、OpenTelemetry、请求级 trace_id |
@@ -287,23 +287,24 @@ flowchart TD
 - `app/provider` 基于 OpenAI 兼容协议适配 LLM，按 `LLM_PRIMARY_*` / `LLM_BACKUP_*` 构造主备配对（亦可指向任意兼容网关）。
 - `CircuitBreaker` 在主线路连续失败达到阈值（`LLM_CIRCUIT_FAIL_THRESHOLD`）后熔断，冷却（`LLM_CIRCUIT_RESET_SECONDS`）后尝试恢复。
 - 调用层统一处理超时（`LLM_TIMEOUT_SECONDS`）与重试（`LLM_MAX_RETRIES`），并归集 token 用量。
-- M1 阶段 `lifespan` 暂不注入真实客户端（`app.state.llm = None`），节点走无 LLM 的降级路径；配置好 `LLM_PRIMARY_API_KEY` 后由后续里程碑接入。
+- 应用启动时由 `lifespan` 按密钥配置情况注入客户端：配置了 `LLM_PRIMARY_API_KEY` 即构造真实客户端（当前国内联调默认指向 DeepSeek），未配置则记 warning 且节点走无 LLM 的降级路径。
 
 ### 检索流水线
 
 `app/retrieval` 提供统一门面 `RetrievalClient`：
 
 ```text
-Web 检索（Tavily 主/备 + 熔断）→ 指纹去重 → 正文抽取（httpx / trafilatura / Playwright）→ 排序打分
+Web 检索（WEB_SEARCH_PROVIDER 选择博查 / Tavily）→ 指纹去重 → 正文抽取（httpx / trafilatura / Playwright）→ 排序打分
 ```
 
-- 主 Provider 失败自动切换备 Provider，失败计入熔断，避免雪崩。
+- 通过 `WEB_SEARCH_PROVIDER` 在博查（国内，默认）与 Tavily（海外）之间二选一；对应供应商未配置密钥时不构造空壳客户端，检索节点明确走失败路径。
+- 博查检索在 `search(summary=true)` 阶段即取得长摘要，不产生二次正文抽取请求；供应商调用失败统一收敛为 `ExternalServiceError`。
 - 抽取结果沉淀为 `Evidence`，保留来源域名、来源级别、可信度、指纹、发布时间等溯源字段。
 
 ### 实时通信
 
 - 进程内 `RealtimeHub`（`app/realtime/hub.py`）维护频道订阅，执行器与 WebSocket 端点通过它解耦。
-- 频道 `runs:{run_id}` 推送阶段事件与终态事件（`run.finished` / `run.failed`），事件采用统一 envelope。
+- 频道 `runs:{run_id}` 推送逐阶段 `stage.started` 事件与终态事件（`run.finished` / `run.failed`），事件采用统一 envelope；执行器同时把 `current_stage` 实时落库，保证 WS、DB 轮询与重连初帧三处状态一致。
 - 另有 SSE 通道实现（`app/realtime/sse.py`）备用。
 
 ### 成本治理
@@ -417,8 +418,8 @@ uv run alembic current
 | 数据库 | `DB_ASYNC_URL`、`DB_SYNC_URL`、`DB_POOL_SIZE`、`DB_MAX_OVERFLOW` | 异步/同步双连接串 |
 | Redis / Celery | `REDIS_URL`、`CELERY_BROKER_URL`、`CELERY_RESULT_BACKEND` | 建议 broker / backend 使用不同 db 编号 |
 | 对象存储 | `OBJECT_STORAGE_ENDPOINT`、`OBJECT_STORAGE_ACCESS_KEY`、`OBJECT_STORAGE_SECRET_KEY`、`OBJECT_STORAGE_BUCKET`、`OBJECT_STORAGE_SECURE` | MinIO 或任意 S3 兼容服务 |
-| LLM | `LLM_PRIMARY_BASE_URL/API_KEY/MODEL`、`LLM_BACKUP_*`、`LLM_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES`、`LLM_CIRCUIT_*` | 主备两路 OpenAI 兼容配置 |
-| 检索 | `TAVILY_API_KEY` | Tavily Web 检索 |
+| LLM | `LLM_PRIMARY_BASE_URL/API_KEY/MODEL`、`LLM_BACKUP_*`、`LLM_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES`、`LLM_CIRCUIT_*` | 主备两路 OpenAI 兼容配置；默认指向 DeepSeek（`deepseek-v4-flash`），留空密钥走降级路径 |
+| 检索 | `WEB_SEARCH_PROVIDER`、`BOCHA_API_KEY`、`BOCHA_BASE_URL`、`BOCHA_TIMEOUT_SECONDS`、`TAVILY_API_KEY` | `bocha`（默认）/ `tavily` 二选一，仅需配置所选供应商密钥 |
 | 成本治理 | `QUOTA_DEFAULT_TIER`、`QUOTA_TIER_QUICK_TOKENS`、`QUOTA_TIER_STANDARD_TOKENS`、`QUOTA_TIER_DEEP_TOKENS`、`QUOTA_TIER_EXTREME_TOKENS` | 四档预算 |
 | 实时通信 | `WS_HEARTBEAT_SECONDS`、`SSE_HEARTBEAT_SECONDS` | 心跳间隔 |
 | 追踪 | `OTEL_ENABLED`、`OTEL_EXPORTER_OTLP_ENDPOINT`、`OTEL_SERVICE_NAME`、`LLM_TRACE_ENABLED`、`LLM_TRACE_SAMPLE_RATE` | OpenTelemetry 与 LLM 留痕采样 |
@@ -486,17 +487,40 @@ docker run --rm -p 8000:8000 --env-file .env deep-research-backend:dev
 
 ## 里程碑与当前状态
 
-| 里程碑 | 内容 | 状态 |
-| --- | --- | --- |
-| M0 | 项目骨架、配置体系、分层脚手架、状态图骨架 | 已完成 |
-| M1 | ORM 模型与迁移、鉴权、项目/运行/报告 API、编排执行器、WebSocket 事件、OpenAPI 契约冻结 | 已完成 |
-| M2 | 真实 LLM / 检索客户端注入、Postgres checkpointer、HITL 恢复闭环、Celery 接管长任务、知识库与连接器 | 计划中 |
+> 里程碑口径以《软件开发计划（SDP）》（`docs/plan/AI研究者助手-软件开发计划.md` §3）为唯一事实源；《后端详细设计》§15 中的 M1-x / M2-x 编号是里程碑之下的工程工作包分解，不是独立里程碑。本表只描述后端侧的承担内容与状态，产品侧交付物以 SDP 为准。
 
-M1 已知边界（后续里程碑消除，非缺陷）：
+| 里程碑 | SDP 目标 | 后端承担内容 | 状态 |
+| --- | --- | --- | --- |
+| M0 | 项目基础设施 + 底座 | 项目脚手架与配置体系、多租户基线（租户/用户/项目三层数据模型与鉴权中间件）、模型调用层抽象（主备配对、熔断、token 计量点）、LangGraph 编排引擎骨架、任务追踪与审计雏形 | 已完成 |
+| M1 | 最小链路端到端 demo | 六阶段最简链路（clarify → decompose → retrieve → standardize → critique → report）、Researcher×N 拓扑分层并行与单实例失败隔离、公域检索（博查/Tavily）接入与指纹去重、四段 Markdown 报告、节点级日志与逐阶段 WS 事件、成本闸门自动挂起；支撑工程：ORM 与迁移、鉴权、项目/运行/报告 API、编排执行器、WebSocket、OpenAPI M1 契约冻结 | 已完成（2026-09-12） |
+| M2 | 能力补齐与工程化 | 意图路由 classify 接口、批判收敛与分歧 API、透明看板数据接口、Orchestrator 补齐（依赖检测、回溯、降级、暂停接口）、实时成本计量与审计决策留档完整版、信源元数据抽取、数据点级溯源落库、Postgres checkpointer 与 HITL 恢复闭环、Celery 接管长任务 | 未开始 |
+| M3 | 核心 MVP | 档位参数化、领域模板、运营账号与反馈通道等后端接口，整合 M1+M2 能力支撑首批内部试用 | 未开始 |
+| M4 | 体验打磨 | 实时成本推送、暂停/追问/剔除证据等用户介入接口、报告精修与点击回溯、Word/PDF 导出、项目级角色权限 | 未开始 |
+| M5 | 私域能力 | 文档上传连接器（PDF/Word/Markdown/Excel 入库检索）、私域/公域信源区分标注、数据源级权限 | 未开始 |
+| M6 | SaaS GA | 运营监控指标与 SLA 支撑、审计导出、私有化部署能力与技术白皮书 | 未开始 |
 
-- LLM 与检索客户端未在 `lifespan` 注入，节点运行在降级路径。
-- LangGraph checkpointer 为 `InMemorySaver`，运行状态随进程丢失。
-- Celery 任务为占位实现，研究运行在 API 进程内异步执行。
+M3-M6 的完整交付物、依赖与验收准则以 SDP 原文为准，本表不展开。
+
+### M1 验收准则核对
+
+按 SDP §3 的 M1 五条验收准则逐条核对（双方共同回归 2026-09-12 通过，后端测试 301 个全部通过）：
+
+1. **固定问题端到端全程成功（手工冒烟）——达成**：真实 DeepSeek + 博查链路下多次运行 `succeeded`（含"什么是 X"定义类与"PG vs MongoDB""Redis vs Memcached"对比类问法），真实计费 2,387-4,373 token（非降级路径），产出非空四段 Markdown 报告，含 8-9 条真实信源引用。
+2. **每个阶段均有可见日志与状态——达成**：六节点进入/退出日志完备；执行器以 `astream(values)` 逐 super-step 推送 `stage.started` 并实时落库 `current_stage`；经前端 Vite 代理（`/api` 开启 `ws` 转发）浏览器实测 101 握手并按序收到 decompose → retrieve → standardize → critique → report 事件（clarify 首帧在订阅前发出，由 live 后 REST 对齐补偿，服务端初帧回放留待 M2-4），指挥舱无刷新自动收敛到终态。
+3. **Researcher 并行实例彼此独立、单实例失败不影响其他——达成**：拓扑分层 + 层内 `asyncio.gather`，单实例异常被隔离为 `status=failed`，有单元测试覆盖。
+4. **达到 token 预算上限时自动停止、不超支——达成**：正向测试构造超预算 90% 的真实图执行，断言在用户介入前挂起（`paused`）、不产出报告、真实用量回写；联调中另修复了 paused 态 token 用量不落库的缺陷。
+5. **报告渲染至少能在 Web 端查看基本结论——达成**：浏览器实测报告四段、编号发现与真实引用链接完整渲染，无 undefined / NaN / Console 报错；置信度枚举中文化，LLM 返回的结构化研究范围（include/exclude 字典）归一为中文短句。
+
+共同回归期间另修复两项影响验收的后端问题：澄清节点判定口径过严导致主题明确的开放研究问题一律挂起（已改为默认放行、判定温度固定 0）、报告研究范围泄漏 Python 字典原文。前端侧修复与故障注入结论见 `docs/feedback/M1前后端联调前端缺陷反馈.md`；已登记但不阻断 M1 的体验项（硬刷新时网络故障被误判为登出、REST 错误文案技术化、核心发现为来源标题堆砌）列入 M2 处理。
+
+**M1 已于 2026-09-12 关闭**，下一里程碑按 SDP 从 M2-1 意图路由启动。
+
+### M1 已知工程边界（后续阶段消除，非缺陷）
+
+- LangGraph checkpointer 为 `InMemorySaver`，运行状态随进程丢失；M2 切换为 `AsyncPostgresSaver`。
+- 检索/子问题等过程数据仅存内存 state（生产路径未接 DB 会话），进程退出不保留；M2 看板与溯源需要先接通过程数据持久化。
+- WS 不回放订阅前事件（首帧可能错过 clarify）；M2-4 看板快照接口提供服务端初帧。
+- Celery 任务为占位实现，研究运行在 API 进程内异步执行；M2 起逐步接管。
 - refresh token 黑名单、WS 子协议鉴权、Playwright 浏览器内核需在后续阶段补齐。
 
 ---
@@ -516,7 +540,7 @@ M1 已知边界（后续里程碑消除，非缺陷）：
 项目依赖均提供 Windows 预编译 wheel；如遇问题请确认 uv 与 Python 版本满足 >=3.11,<3.13，并删除虚拟环境后重新 `uv sync`。
 
 **5. 调用研究接口后没有真实报告内容？**
-M1 阶段未注入真实 LLM，节点走降级逻辑；配置 `LLM_PRIMARY_*` 并等待 M2 注入完成后可跑通完整智能体链路。接口、状态流转与事件推送链路当前已可端到端联调。
+先确认 `.env` 已配置 `LLM_PRIMARY_API_KEY`（默认 DeepSeek）与所选供应商的检索密钥（`WEB_SEARCH_PROVIDER=bocha` 时配 `BOCHA_API_KEY`，tavily 时配 `TAVILY_API_KEY`）：启动日志应出现"LLM Provider 已注入"与"公域检索 Provider 注入状态 enabled=true"。未配置密钥时 clarifier / sub_questioner 走降级启发式、检索节点标记失败，但接口、状态流转与事件推送链路仍可联调。
 
 **6. 如何确认一次请求的全链路日志？**
 请求头携带或由服务端自动生成 `x-trace-id`，响应头原样返回；structlog 输出的每条日志均带该 trace_id，可据此串联编排节点与外部调用。
