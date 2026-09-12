@@ -132,7 +132,19 @@ pnpm dlx @openapitools/openapi-generator-cli generate `
 
 生成产物建议放在 `src/services/generated/` 并在 `.gitignore` 中忽略，作为再生成资源维护；后端契约变更后重新执行该命令即可。当前 M1 手写的 REST 接口类型集中在 [src/services/api/types.ts](src/services/api/types.ts)，实时事件类型在 [src/services/realtime/types.ts](src/services/realtime/types.ts)，接入生成客户端时逐页面替换。
 
-所有 HTTP 调用统一经 [src/services/http/http.ts](src/services/http/http.ts) 发起：它是 fetch 的薄封装，负责 `Accept` 与幂等键（`Idempotency-Key`）注入，并把两类后端错误响应归一为 `ApiError`（含 `status` / `code` / `title` / `detail` / `traceId`）：业务异常体 `{code, message, details}` 与 FastAPI 请求体校验错误体 `{detail: [...]}`，错误处理分支统一按 `code` 判断；401 时还会以 single-flight 方式刷新 access token 并重放原请求一次。
+所有 HTTP 调用统一经 [src/services/http/http.ts](src/services/http/http.ts) 发起：它是 fetch 的薄封装，负责 `Accept` 与幂等键（`Idempotency-Key`）注入，并把两类后端错误响应归一为 `ApiError`（含 `status` / `code` / `title` / `detail` / `traceId`）：业务异常体 `{code, message, details}` 与 FastAPI 请求体校验错误体 `{detail: [...]}`，错误处理分支统一按 `code` 判断；401 时还会以 single-flight 方式刷新 access token 并重放原请求一次。SSE 流式接口（M2 闲聊 `/assistant/chat`）使用同模块导出的 `httpStream()` 获取原始 `Response`，鉴权与 401 重放口径一致，调用方自行按 `text/event-stream` 解析。
+
+### M2 契约层与 M2-9 生成客户端切换清单
+
+M2 在 OpenAPI 冻结前继续手写类型，枚举统一收敛在 [src/types/domain.ts](src/types/domain.ts)（单一事实源），由 [src/services/api/types.ts](src/services/api/types.ts) 再导出兼容 M1 引用路径；实体字段在文件头注释标注了后端出处（LLD §4.2 / 契约草案 §6 / 已落地的 M2-1 schema）。M2-1 意图与闲聊接口以后端 `feature/backend-m2-intent-router` 真实 schema 为准；看板（stages/sub-questions/evidence/cost）、HITL（pause/resume/intervene）、结构化报告（blocks/citations）字段在对应后端工作包（M2-4/5/6/7）冻结后逐批核对。
+
+后端 M2-9 导出 openapi-m2 后，按以下清单切换到 typescript-fetch 生成客户端（预计 0.5-1 人日，独立工作包）：
+
+1. 生成产物落 `src/services/generated/`（gitignore），以 openapi-m2.json 为输入。
+2. 替换顺序：枚举（`types/domain.ts` 改为从 generated 类型收窄/别名）→ 实体接口（`services/api/types.ts`）→ 各 `services/api/*.ts` 请求函数改为 generated fetch 适配，保留现有函数签名，页面与 composables 零改动。
+3. `http.ts` 的错误归一/401 单飞逻辑保留为适配层，不直接使用生成客户端自带错误处理。
+4. SSE（assistant）与 WS（realtime）不在生成客户端覆盖范围，维持自研。
+5. 切换完成后删除手写类型中已被生成产物覆盖的部分，并更新本小节。
 
 ## 目录结构
 

@@ -44,11 +44,25 @@ function refreshAccessToken(): Promise<string | null> {
 }
 
 export async function http<T>(input: string, init: HttpOptions = {}): Promise<T> {
-  return request<T>(input, init, true)
+  const response = await request(input, init, true)
+  if (response.status === 204) {
+    return undefined as T
+  }
+  return (await response.json()) as T
+}
+
+// 流式（SSE）专用：同样完成鉴权注入与 401 刷新重放，但返回原始 Response，
+// 由调用方按 text/event-stream 自行读取 body（如 POST /assistant/chat）。
+export function httpStream(input: string, init: HttpOptions = {}): Promise<Response> {
+  return request(input, init, true)
 }
 
 // allowRetry=false 表示该请求已经是刷新后的重放，再次 401 不再重试
-async function request<T>(input: string, init: HttpOptions, allowRetry: boolean): Promise<T> {
+async function request(
+  input: string,
+  init: HttpOptions,
+  allowRetry: boolean
+): Promise<Response> {
   const headers = new Headers(init.headers)
   if (init.idempotencyKey) {
     headers.set('Idempotency-Key', init.idempotencyKey)
@@ -72,16 +86,13 @@ async function request<T>(input: string, init: HttpOptions, allowRetry: boolean)
     if (response.status === 401 && allowRetry && !init.skipAuth && authProvider) {
       const newToken = await refreshAccessToken()
       if (newToken) {
-        return request<T>(input, init, false)
+        return request(input, init, false)
       }
       authProvider.onAuthExpired?.()
     }
     throw await toApiError(response)
   }
-  if (response.status === 204) {
-    return undefined as T
-  }
-  return (await response.json()) as T
+  return response
 }
 
 async function toApiError(response: Response): Promise<ApiError> {
