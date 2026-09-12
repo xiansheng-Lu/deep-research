@@ -59,8 +59,15 @@ export function useEvidenceList(runId: string, options: UseEvidenceListOptions =
     })
   })
 
-  // 实时增量可能超过 REST 已加载页覆盖范围：以两者最大值暴露总数
-  const total = computed(() => Math.max(restTotal.value, mergedItems.value.length))
+  // 实时增量可能超过 REST 已加载页覆盖范围：以两者最大值暴露总数。
+  // 口径必须与 items 的过滤一致：默认视图不含已剔除证据，剔除后计数应同步减少，
+  // 不能拿含剔除标记的实时行把服务端 total 顶回去
+  const total = computed(() => {
+    const visibleLiveCount = mergedItems.value.filter(
+      (item) => includeExcluded.value || !item.excluded_by_user
+    ).length
+    return Math.max(restTotal.value, visibleLiveCount)
+  })
   // 视图是 REST 与实时态的并集：并集（按当前过滤）已覆盖服务端总数即无需再翻页；
   // 纯 REST 使用（无实时缓存，如事后回看终态 run）时退化为标准分页
   const hasMore = computed(() => items.value.length < restTotal.value)

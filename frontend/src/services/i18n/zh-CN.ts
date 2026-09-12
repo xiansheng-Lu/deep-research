@@ -7,6 +7,15 @@ export const zhCN = {
     network: '网络异常，请检查连接',
     unauthorized: '会话已过期，请重新登录'
   },
+  // HITL 介入动作错误码 → 中文短标题（WP-15；详细原因仍取 ApiError.detail 展示）
+  interventionErrors: {
+    RUN_NOT_PAUSABLE: '当前阶段无法暂停',
+    RUN_ALREADY_PAUSED: '研究已处于暂停状态',
+    RUN_NOT_RESUMABLE: '当前状态无法继续研究',
+    INTERVENE_NOT_ALLOWED: '当前研究状态不允许该操作',
+    INVALID_ACTION_PAYLOAD: '介入请求内容不完整',
+    UNSUPPORTED_ACTION: '暂不支持该介入操作'
+  } as Record<string, string>,
   common: {
     confirm: '确认',
     cancel: '取消',

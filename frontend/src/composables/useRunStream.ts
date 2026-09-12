@@ -14,7 +14,9 @@ import type {
   ConflictResponse,
   CostSnapshot,
   EvidenceResponse,
+  InterventionAction,
   ResearchStageName,
+  RunControlResponse,
   RunResponse,
   RunStatus,
   StageResponse,
@@ -23,7 +25,12 @@ import type {
 import { realtimeClient, type WsChannel } from '@/services/realtime/realtime'
 import type { ChannelState } from '@/services/realtime/types'
 import { buildRunStreamUrl } from '@/services/api/runs'
-import { pauseRun, proceedRun, submitClarificationAnswers } from '@/services/api/interventions'
+import {
+  intervene as interveneRun,
+  pauseRun,
+  proceedRun,
+  submitClarificationAnswers
+} from '@/services/api/interventions'
 import {
   REALTIME_EVENT,
   type ClarificationQuestion,
@@ -117,7 +124,8 @@ export interface RunStreamState {
   conflicts: ConflictResponse[]
   cost: CostState
   // 进行中的澄清/裁决介入请求（interrupt.requested）；M2 WP-15 渲染卡片
-  interrupt: (InterruptRequestedPayload & { stage?: string }) | null
+  // receivedAt=帧到达本机时间戳，供澄清卡倒计时扣除在途耗时
+  interrupt: (InterruptRequestedPayload & { stage?: string; receivedAt: number }) | null
   channelState: ChannelState
   loading: boolean
   notFound: boolean
@@ -428,13 +436,16 @@ export function useRunStream(runId: string) {
   function handleSubQuestion(env: RealtimeEnvelope): void {
     const payload = env.payload as SubQuestionLifecyclePayload
     if (!payload.sub_question_id) return
+    // 生命周期帧（started/finished）通常只带 id/status/count；缺省字段以既有行为准，
+    // 不能用空串/空数组兜底，否则会覆盖 created 帧已带的题干与依赖关系
+    const previous = state.subQuestions.find((item) => item.id === payload.sub_question_id)
     const next: SubQuestionResponse = {
       id: payload.sub_question_id,
       run_id: runId,
-      question: payload.question ?? '',
-      depends_on: payload.depends_on ?? [],
+      question: payload.question ?? previous?.question ?? '',
+      depends_on: payload.depends_on ?? previous?.depends_on ?? [],
       status: payload.status ?? 'queued',
-      evidence_count: payload.evidence_count ?? 0
+      evidence_count: payload.evidence_count ?? previous?.evidence_count ?? 0
     }
     state.subQuestions = mergeSubQuestions(state.subQuestions, [next])
   }
@@ -482,7 +493,8 @@ export function useRunStream(runId: string) {
       questions: payload.questions as ClarificationQuestion[],
       defaults: payload.defaults ?? {},
       expires_in_seconds: payload.expires_in_seconds,
-      stage: env.stage
+      stage: env.stage,
+      receivedAt: Date.now()
     }
   }
 
@@ -664,6 +676,9 @@ export function useRunStream(runId: string) {
       const run = await getRun(runId)
       if (disposedAfter()) return
       applyRun(run)
+      // 澄清已被提交/运行已恢复时，清掉模块缓存中可能残留的上一次 interrupt 帧，
+      // 避免重新进入看板后仍弹出已失效的澄清卡
+      if (run.status !== 'paused') state.interrupt = null
       if (!TERMINAL_RUN_STATUSES.has(run.status)) {
         connectStream()
       } else {
@@ -682,11 +697,33 @@ export function useRunStream(runId: string) {
     }
   }
 
-  // HITL 受控动作（M2 WP-15 接 UI；REST 通道，与 WS sendCommand 等价）
+  // HITL 受控动作（M2 WP-15；统一走 REST 受控通道，与 WS sendCommand 语义等价）
+  // 每次介入生成独立幂等键：页面以 submitting 态阻止双击双发，网络重放时服务端按键去重
+  function makeIdempotencyKey(): string {
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
+    return `iv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  }
+
   const actions = {
-    pause: () => pauseRun(runId),
-    proceed: () => proceedRun(runId),
-    submitAnswers: (answers: Record<string, string>) => submitClarificationAnswers(runId, answers)
+    pause: () => pauseRun(runId, {}, { idempotencyKey: makeIdempotencyKey() }),
+    proceed: () => proceedRun(runId, { idempotencyKey: makeIdempotencyKey() }),
+    submitAnswers: (answers: Record<string, string>) =>
+      submitClarificationAnswers(runId, answers, { idempotencyKey: makeIdempotencyKey() }),
+    async intervene(action: InterventionAction): Promise<RunControlResponse> {
+      const result = await interveneRun(runId, action, { idempotencyKey: makeIdempotencyKey() })
+      // 剔除/恢复成功后在本地即时归约：与服务端广播的 evidence.fetched 同构帧等价，
+      // 暂停态 WS 已关闭收不到广播帧，不主动 patch 界面就只能等恢复后才收敛
+      if (action.type === 'exclude_evidence') {
+        const evidenceId = action.payload.evidence_id
+        if (typeof evidenceId === 'string') {
+          const excluded = action.payload.excluded !== false
+          state.evidence = state.evidence.map((item) =>
+            item.id === evidenceId ? { ...item, excluded_by_user: excluded } : item
+          )
+        }
+      }
+      return result
+    }
   }
 
   onMounted(init)

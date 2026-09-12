@@ -19,19 +19,31 @@ const props = withDefaults(
     contentError?: string
     // 子问题归属标签（如「子问题 1」），由页面按证据 id 反查
     sqLabel?: string | null
+    // 是否展示剔除入口（WP-15：研究运行中/暂停由页面按状态开启）
+    excludable?: boolean
+    // 剔除请求在途（按钮转圈并禁用，防止重复提交）
+    excluding?: boolean
   }>(),
   {
     expanded: false,
     content: null,
     contentLoading: false,
     contentError: undefined,
-    sqLabel: null
+    sqLabel: null,
+    excludable: false,
+    excluding: false
   }
 )
 
 const emit = defineEmits<{
   (e: 'toggle', evidenceId: string): void
+  (e: 'exclude', evidenceId: string): void
 }>()
+
+function onExclude(): void {
+  if (props.excluding) return
+  emit('exclude', props.evidence.id)
+}
 
 const relevancePercent = computed(() =>
   Math.round((props.evidence.relevance_score ?? 0) * 100)
@@ -48,34 +60,70 @@ function onToggle(): void {
     :class="{ 'is-expanded': expanded }"
   >
     <div class="evidence-card__main">
-      <button
-        type="button"
+      <div
         class="evidence-card__head"
+        role="button"
+        tabindex="0"
         :aria-expanded="expanded"
         @click="onToggle"
+        @keydown.enter.prevent="onToggle"
+        @keydown.space.prevent="onToggle"
       >
         <span
           class="evidence-card__title"
           :title="evidence.title"
         >{{ evidence.title }}</span>
-        <svg
-          class="evidence-card__chevron"
-          :class="{ 'is-open': expanded }"
-          viewBox="0 0 16 16"
-          width="12"
-          height="12"
-          aria-hidden="true"
-        >
-          <path
-            d="M4 6 L8 10 L12 6"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-      </button>
+        <span class="evidence-card__head-actions">
+          <button
+            v-if="excludable"
+            type="button"
+            class="evidence-card__exclude"
+            :disabled="excluding"
+            :title="excluding ? '剔除提交中…' : '从研究证据中剔除'"
+            :aria-label="excluding ? '剔除提交中' : '剔除该证据'"
+            @click.stop="onExclude"
+          >
+            <svg
+              v-if="!excluding"
+              viewBox="0 0 16 16"
+              width="12"
+              height="12"
+              aria-hidden="true"
+            >
+              <path
+                d="M3.5 4.5h9M6.5 4.5V3.2h3v1.3M5 4.5l.6 8h4.8l.6-8"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span
+              v-else
+              class="evidence-card__exclude-spinner"
+              aria-hidden="true"
+            />
+          </button>
+          <svg
+            class="evidence-card__chevron"
+            :class="{ 'is-open': expanded }"
+            viewBox="0 0 16 16"
+            width="12"
+            height="12"
+            aria-hidden="true"
+          >
+            <path
+              d="M4 6 L8 10 L12 6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </span>
+      </div>
 
       <p class="evidence-card__snippet">
         {{ evidence.snippet }}
@@ -177,6 +225,63 @@ function onToggle(): void {
   font-weight: 500;
   line-height: 1.5;
   color: var(--color-text-strong);
+}
+
+.evidence-card__head-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.evidence-card__exclude {
+  display:inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    background-color var(--motion-fast) var(--ease-out);
+}
+
+.evidence-card:hover .evidence-card__exclude,
+.evidence-card:focus-within .evidence-card__exclude,
+.evidence-card__exclude:focus-visible {
+  opacity: 1;
+}
+
+.evidence-card__exclude:hover:not(:disabled) {
+  color: var(--danger-500);
+  background: var(--danger-50);
+}
+
+.evidence-card__exclude:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.evidence-card__exclude-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.6px solid var(--neutral-300);
+  border-top-color: var(--brand-600);
+  animation: evidence-card-spin 0.7s linear infinite;
+}
+
+@keyframes evidence-card-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .evidence-card__chevron {

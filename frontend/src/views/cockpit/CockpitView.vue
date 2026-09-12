@@ -1,15 +1,15 @@
 <script setup lang="ts">
-// 研究指挥舱 · 实时看板（[前端详细设计 §11.3 M2]，WP-14）
+// 研究指挥舱 · 实时看板（[前端详细设计 §11.3 M2]，WP-14/WP-15）
 // 双列布局：左=StageTimeline + SubQuestionPlan（只读 m/n）+ 冲突提示列表；
 // 右=当前阶段描述 + 证据流（REST 分页与实时增量双源、全文懒加载）+ CostMeter。
-// 顶栏提供暂停（模态确认，软暂停受控通道）；取消按钮待后端 M2-5 能力交付后再开放，不预造入口。
-// 澄清回答/继续/追问/剔除等介入入口在 WP-15。
-import { computed, onUnmounted, ref } from 'vue'
+// WP-15 HITL 闭环：澄清卡（InterventionDrawer）、暂停/继续（超 15 分钟确认）、
+// 阶段3 追加追问、证据剔除与可恢复列；全部经 useRunStream.actions 受控通道，不绕过编排层。
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRunStream } from '@/composables/useRunStream'
 import { useEvidenceList } from '@/composables/useEvidenceList'
 import { RESEARCH_STAGES, STAGE_DESCRIPTIONS } from '@/services/domain/stages'
-import { runStatusLabel, runStatusVariant, stageLabel, tierLabel } from '@/services/i18n/zh-CN'
+import { runStatusLabel, runStatusVariant, stageLabel, tierLabel, zhCN } from '@/services/i18n/zh-CN'
 import { formatDuration } from '@/utils/format'
 import type { ApiError } from '@/services/http/error'
 import type { EvidenceResponse } from '@/services/api/types'
@@ -26,6 +26,12 @@ import SubQuestionPlan from '@/components/business/SubQuestionPlan.vue'
 import EvidenceCard from '@/components/business/EvidenceCard.vue'
 import CostMeter from '@/components/business/CostMeter.vue'
 import ConflictBlock from '@/components/business/ConflictBlock.vue'
+import InterventionDrawer, {
+  type InterventionMode
+} from '@/components/business/InterventionDrawer.vue'
+
+// 软暂停后再次继续的确认时限：暂停超过此时长需用户二次确认（[前端详细设计 §11.3]）
+const RESUME_CONFIRM_AFTER_MS = 15 * 60 * 1000
 
 const route = useRoute()
 const router = useRouter()
@@ -34,6 +40,12 @@ const runId = String(route.params.runId)
 
 const { state, derived, reload, actions } = useRunStream(runId)
 const evidenceList = useEvidenceList(runId, { pageSize: 10 })
+// 可恢复列：含已剔除证据的独立列表，仅在出现剔除项时才拉取，避免常规流量放大
+const excludedList = useEvidenceList(runId, {
+  pageSize: 100,
+  includeExcluded: true,
+  immediate: false
+})
 
 const run = computed(() => state.run)
 const sqStats = derived.subQuestions
@@ -122,10 +134,202 @@ const pausedStageName = computed(
   () => state.interrupt?.stage ?? run.value?.current_stage ?? 'clarify'
 )
 
-// ─── 暂停（软暂停，模态确认）───
+// 介入可操作窗口：研究进行中或安全点暂停（澄清挂起除外，其时仅可回答澄清）
+const interventionActive = computed(
+  () => run.value?.status === 'running' || run.value?.status === 'paused'
+)
+// 追加追问入口仅在证据检索阶段出现（[前端详细设计 §11.3]「阶段3 行内输入」）
+const followupAvailable = computed(
+  () => interventionActive.value && currentStage.value === 'retrieve'
+)
+// 剔除入口：软暂停/进行中可剔除；澄清挂起阶段尚无证据不开放
+const evidenceExcludable = computed(
+  () =>
+    run.value?.status === 'running' ||
+    (run.value?.status === 'paused' && !awaitingClarification.value)
+)
+
+// ─── 介入统一错误文案：错误码映射优先，回退服务端消息与通用标题 ───
+
+function interventionErrorTitle(err: unknown, fallback: string): string {
+  const apiError = err as ApiError
+  if (apiError?.code && zhCN.interventionErrors[apiError.code]) {
+    return zhCN.interventionErrors[apiError.code]
+  }
+  return apiError?.title || fallback
+}
+
+function interventionErrorDescription(err: unknown): string | undefined {
+  const apiError = err as ApiError
+  return apiError?.detail || apiError?.code || undefined
+}
+
+// ─── 统一介入抽屉（澄清 / 追问）───
+
+const drawerOpen = ref(false)
+const drawerMode = ref<InterventionMode>('clarify')
+const drawerSubmitting = ref(false)
+
+// 澄清帧到达即弹出抽屉：interrupt.requested 先于 run.finished(paused) 约 300ms，
+// 不能等待 status 变 paused，否则弹窗条件永不成立；用户可手动关闭，由横幅入口重新打开
+watch(
+  () => state.interrupt,
+  (interrupt) => {
+    if (interrupt) {
+      drawerMode.value = 'clarify'
+      drawerOpen.value = true
+    }
+  },
+  { immediate: true }
+)
+
+function openClarifyDrawer(): void {
+  drawerMode.value = 'clarify'
+  drawerOpen.value = true
+}
+
+function openFollowupDrawer(): void {
+  drawerMode.value = 'followup'
+  drawerOpen.value = true
+}
+
+async function submitClarification(answers: Record<string, string>): Promise<void> {
+  drawerSubmitting.value = true
+  try {
+    await actions.submitAnswers(answers)
+    drawerOpen.value = false
+    toast.success('澄清答案已提交，研究继续推进')
+    // resume 后 run 转 running：重取快照并重建实时通道，同时清掉旧 interrupt
+    await reload()
+  } catch (err) {
+    toast.danger(interventionErrorTitle(err, '澄清答案提交失败'), {
+      description: interventionErrorDescription(err)
+    })
+  } finally {
+    drawerSubmitting.value = false
+  }
+}
+
+async function submitFollowup(payload: {
+  subQuestionId: string | null
+  question: string
+}): Promise<void> {
+  drawerSubmitting.value = true
+  try {
+    await actions.intervene({
+      type: 'ask_followup',
+      payload:
+        payload.subQuestionId !== null
+          ? { sub_question_id: payload.subQuestionId, question: payload.question }
+          : { question: payload.question }
+    })
+    drawerOpen.value = false
+    toast.success('追问已提交，将纳入后续检索与分析')
+  } catch (err) {
+    toast.danger(interventionErrorTitle(err, '追问提交失败'), {
+      description: interventionErrorDescription(err)
+    })
+  } finally {
+    drawerSubmitting.value = false
+  }
+}
+
+// ─── 证据剔除与可恢复列 ───
+
+const pendingExcludeIds = ref<Set<string>>(new Set())
+
+// 实时态中的已剔除证据（含关闭通道后的 REST 全量快照）
+const liveExcluded = computed(() => state.evidence.filter((item) => item.excluded_by_user))
+
+// 一旦出现剔除项即拉取含剔除项的全量列表，供刷新/终态后恢复列仍可见
+watch(
+  () => liveExcluded.value.length,
+  (count) => {
+    if (count > 0) void excludedList.refresh()
+  },
+  { immediate: true }
+)
+
+// 可恢复列：REST（含剔除项）与实时态并集，仅保留 excluded_by_user 行
+const excludedRows = computed<EvidenceResponse[]>(() => {
+  const map = new Map<string, EvidenceResponse>()
+  for (const item of excludedList.items.value) {
+    if (item.excluded_by_user) map.set(item.id, item)
+  }
+  for (const item of liveExcluded.value) map.set(item.id, item)
+  return Array.from(map.values())
+})
+
+async function excludeEvidence(evidenceId: string): Promise<void> {
+  if (pendingExcludeIds.value.has(evidenceId)) return
+  pendingExcludeIds.value = new Set(pendingExcludeIds.value).add(evidenceId)
+  try {
+    await actions.intervene({
+      type: 'exclude_evidence',
+      payload: { evidence_id: evidenceId }
+    })
+    toast.success('证据已从研究中剔除', { description: '可在证据流底部「已剔除证据」中恢复' })
+    // 主列表重拉收敛分页 total；可恢复列由 liveExcluded watch 统一驱动，避免重复拉取造成区块抖动
+    await evidenceList.refresh()
+  } catch (err) {
+    toast.danger(interventionErrorTitle(err, '剔除证据失败'), {
+      description: interventionErrorDescription(err)
+    })
+  } finally {
+    const next = new Set(pendingExcludeIds.value)
+    next.delete(evidenceId)
+    pendingExcludeIds.value = next
+  }
+}
+
+async function restoreEvidence(evidence: EvidenceResponse): Promise<void> {
+  if (pendingExcludeIds.value.has(evidence.id)) return
+  pendingExcludeIds.value = new Set(pendingExcludeIds.value).add(evidence.id)
+  try {
+    // excluded=false 为恢复语义（mock 先行形态，与后端 M2-5 冻结契约对齐时复核）
+    await actions.intervene({
+      type: 'exclude_evidence',
+      payload: { evidence_id: evidence.id, excluded: false }
+    })
+    toast.success(`《${evidence.title}》已恢复到证据流`)
+    // 实时态 patch 后可恢复列经 computed 立即移除；只需重拉主列表让证据回到分页结果
+    await evidenceList.refresh()
+  } catch (err) {
+    toast.danger(interventionErrorTitle(err, '恢复证据失败'), {
+      description: interventionErrorDescription(err)
+    })
+  } finally {
+    const next = new Set(pendingExcludeIds.value)
+    next.delete(evidence.id)
+    pendingExcludeIds.value = next
+  }
+}
+
+// ─── 暂停（软暂停，模态确认）与继续 ───
 
 const pauseDialogOpen = ref(false)
 const pauseSubmitting = ref(false)
+
+// 软暂停起点（毫秒时间戳）：暂停成功时记录；页面挂载时已处于软暂停则以 updated_at 近似
+const pausedSince = ref<number | null>(null)
+
+watch(
+  () => run.value?.status,
+  (status, oldStatus) => {
+    if (status === 'paused' && !awaitingClarification.value) {
+      if (pausedSince.value === null) {
+        pausedSince.value = oldStatus ? Date.now() : new Date(run.value?.updated_at ?? Date.now()).getTime()
+      }
+    } else if (status === 'running' || status === 'succeeded' || status === 'cancelled' || status === 'failed') {
+      pausedSince.value = null
+    }
+  },
+  { immediate: true }
+)
+
+// 「继续」二次确认弹窗（暂停超 15 分钟）
+const resumeDialogOpen = ref(false)
+const resumeSubmitting = ref(false)
 
 function openPauseDialog(): void {
   pauseDialogOpen.value = true
@@ -136,16 +340,44 @@ async function confirmPause(): Promise<void> {
   try {
     await actions.pause()
     pauseDialogOpen.value = false
+    pausedSince.value = Date.now()
     toast.success('研究已暂停，系统将在当前安全点停止推进')
     // 立即重取快照收敛 paused 态（暂停后实时通道关闭）
     await reload()
   } catch (err) {
-    const apiError = err as ApiError
-    toast.danger(apiError?.title || '暂停失败', {
-      description: apiError?.detail || apiError?.code || undefined
+    toast.danger(interventionErrorTitle(err, '暂停失败'), {
+      description: interventionErrorDescription(err)
     })
   } finally {
     pauseSubmitting.value = false
+  }
+}
+
+function onProceedClick(): void {
+  if (resumeSubmitting.value) return
+  if (
+    pausedSince.value !== null &&
+    Date.now() - pausedSince.value > RESUME_CONFIRM_AFTER_MS
+  ) {
+    resumeDialogOpen.value = true
+    return
+  }
+  void confirmProceed()
+}
+
+async function confirmProceed(): Promise<void> {
+  resumeSubmitting.value = true
+  try {
+    await actions.proceed()
+    resumeDialogOpen.value = false
+    toast.success('研究已继续推进')
+    await reload()
+  } catch (err) {
+    toast.danger(interventionErrorTitle(err, '继续研究失败'), {
+      description: interventionErrorDescription(err)
+    })
+  } finally {
+    resumeSubmitting.value = false
   }
 }
 
@@ -229,6 +461,14 @@ function openReport(): void {
               暂停
             </UiButton>
             <UiButton
+              v-if="run.status === 'paused' && !awaitingClarification"
+              size="sm"
+              :loading="resumeSubmitting"
+              @click="onProceedClick"
+            >
+              继续
+            </UiButton>
+            <UiButton
               v-if="run.status === 'succeeded'"
               size="sm"
               @click="openReport"
@@ -281,22 +521,41 @@ function openReport(): void {
           class="cockpit-paused"
           role="status"
         >
-          <template v-if="awaitingClarification">
-            <p class="cockpit-paused__title">
-              研究已暂停：等待澄清确认
-            </p>
-            <p class="cockpit-paused__message">
-              系统在「{{ stageLabel(pausedStageName) }}」阶段需要补充信息后才能继续。
-            </p>
-          </template>
-          <template v-else>
-            <p class="cockpit-paused__title">
-              研究已暂停
-            </p>
-            <p class="cockpit-paused__message">
-              系统已在安全点停止推进，已采集的证据与进度均已保留，实时事件暂停推送。
-            </p>
-          </template>
+          <div class="cockpit-paused__body">
+            <template v-if="awaitingClarification">
+              <p class="cockpit-paused__title">
+                研究已暂停：等待澄清确认
+              </p>
+              <p class="cockpit-paused__message">
+                系统在「{{ stageLabel(pausedStageName) }}」阶段需要补充信息后才能继续。
+              </p>
+            </template>
+            <template v-else>
+              <p class="cockpit-paused__title">
+                研究已暂停
+              </p>
+              <p class="cockpit-paused__message">
+                系统已在安全点停止推进，已采集的证据与进度均已保留，实时事件暂停推送。
+              </p>
+            </template>
+          </div>
+          <div class="cockpit-paused__actions">
+            <UiButton
+              v-if="awaitingClarification"
+              size="sm"
+              @click="openClarifyDrawer"
+            >
+              回答澄清问题
+            </UiButton>
+            <UiButton
+              v-else-if="!awaitingClarification"
+              size="sm"
+              :loading="resumeSubmitting"
+              @click="onProceedClick"
+            >
+              继续研究
+            </UiButton>
+          </div>
         </div>
 
         <!-- 双列看板 -->
@@ -397,9 +656,19 @@ function openReport(): void {
                 <h2 class="cockpit-panel__title">
                   证据流
                 </h2>
-                <UiBadge variant="neutral">
-                  {{ evidenceList.total.value }}
-                </UiBadge>
+                <span class="cockpit-evidence__head-actions">
+                  <UiButton
+                    v-if="followupAvailable"
+                    variant="secondary"
+                    size="sm"
+                    @click="openFollowupDrawer"
+                  >
+                    追加追问
+                  </UiButton>
+                  <UiBadge variant="neutral">
+                    {{ evidenceList.total.value }}
+                  </UiBadge>
+                </span>
               </header>
 
               <UiSkeleton
@@ -428,10 +697,43 @@ function openReport(): void {
                       :content-loading="evidenceList.isContentLoading(evidence.id)"
                       :content-error="evidenceList.contentError(evidence.id)"
                       :sq-label="sqLabelMap.get(evidence.sub_question_id) ?? null"
+                      :excludable="evidenceExcludable"
+                      :excluding="pendingExcludeIds.has(evidence.id)"
                       @toggle="toggleEvidence"
+                      @exclude="excludeEvidence"
                     />
                   </li>
                 </ul>
+
+                <!-- 已剔除证据可恢复列（[前端详细设计 §11.3]：剔除隐藏、可恢复） -->
+                <section
+                  v-if="excludedRows.length > 0"
+                  class="cockpit-excluded"
+                >
+                  <h3 class="cockpit-excluded__title">
+                    已剔除证据（{{ excludedRows.length }}）
+                  </h3>
+                  <ul class="cockpit-excluded__list">
+                    <li
+                      v-for="evidence in excludedRows"
+                      :key="evidence.id"
+                      class="cockpit-excluded__item"
+                    >
+                      <span
+                        class="cockpit-excluded__name"
+                        :title="evidence.title"
+                      >{{ evidence.title }}</span>
+                      <UiButton
+                        variant="secondary"
+                        size="sm"
+                        :loading="pendingExcludeIds.has(evidence.id)"
+                        @click="restoreEvidence(evidence)"
+                      >
+                        恢复
+                      </UiButton>
+                    </li>
+                  </ul>
+                </section>
 
                 <p
                   v-if="evidenceList.error.value"
@@ -493,6 +795,50 @@ function openReport(): void {
         </UiButton>
       </template>
     </UiDialog>
+
+    <!-- 继续确认：暂停超 15 分钟二次确认（[前端详细设计 §11.3]） -->
+    <UiDialog
+      v-model="resumeDialogOpen"
+      size="sm"
+      title="继续研究"
+      :close-on-mask="!resumeSubmitting"
+      :close-on-esc="!resumeSubmitting"
+    >
+      <p class="cockpit-pause-dialog__text">
+        本次研究已暂停超过 15 分钟，确认从当前安全点继续推进吗？
+      </p>
+      <p class="cockpit-pause-dialog__text">
+        继续后系统将沿用已采集的证据与子问题进度，无需重新开始。
+      </p>
+      <template #footer>
+        <UiButton
+          variant="secondary"
+          size="sm"
+          :disabled="resumeSubmitting"
+          @click="resumeDialogOpen = false"
+        >
+          暂不继续
+        </UiButton>
+        <UiButton
+          size="sm"
+          :loading="resumeSubmitting"
+          @click="confirmProceed"
+        >
+          确认继续
+        </UiButton>
+      </template>
+    </UiDialog>
+
+    <!-- 统一介入抽屉：阶段1 澄清卡 / 阶段3 追加追问 -->
+    <InterventionDrawer
+      v-model="drawerOpen"
+      :mode="drawerMode"
+      :interrupt="state.interrupt"
+      :sub-questions="state.subQuestions"
+      :submitting="drawerSubmitting"
+      @submit-answers="submitClarification"
+      @submit-followup="submitFollowup"
+    />
   </section>
 </template>
 
@@ -603,6 +949,18 @@ function openReport(): void {
   border: 1px solid var(--warning-500);
   border-radius: var(--radius-md);
   background: var(--warning-50);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.cockpit-paused__body {
+  min-width: 0;
+}
+
+.cockpit-paused__actions {
+  flex: 0 0 auto;
 }
 
 .cockpit-paused__title {
@@ -712,6 +1070,53 @@ function openReport(): void {
 .cockpit-evidence__more {
   margin-top: var(--space-3);
   text-align: center;
+}
+
+.cockpit-evidence__head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.cockpit-excluded {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--color-border);
+}
+
+.cockpit-excluded__title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-xs);
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.cockpit-excluded__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.cockpit-excluded__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--neutral-100);
+}
+
+.cockpit-excluded__name {
+  min-width: 0;
+  font-size: var(--font-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cockpit-pause-dialog__text {

@@ -224,9 +224,12 @@ export function controlIntervene(
     const list = store.evidenceByRunId.get(runId) ?? []
     const target = list.find((e) => e.id === evidenceId)
     if (!target) return notFound('证据不存在或不属于该研究运行')
-    target.excluded_by_user = true
+    // excluded=false 表示恢复已剔除证据（前端「可恢复列」）。
+    // 说明：后端 M2-5 介入通道冻结前的 mock 先行形态，真实契约定稿后以前端对齐后端为准。
+    const excluded = payload.excluded !== false
+    target.excluded_by_user = excluded
     target.updated_at = nowIso()
-    // 广播一条证据更新帧，看板据此即时置灰（payload 与 evidence.fetched 同构）
+    // 广播一条证据更新帧，看板据此即时置灰隐藏/恢复显示（payload 与 evidence.fetched 同构）
     const event: RealtimeEnvelope = {
       v: REALTIME_PROTOCOL_VERSION,
       event_id: `evt_evidence_excluded_${Date.now()}`,
@@ -245,7 +248,7 @@ export function controlIntervene(
         credibility: target.credibility,
         relevance_score: target.relevance_score,
         published_at: target.published_at ?? null,
-        excluded_by_user: true
+        excluded_by_user: excluded
       }
     }
     broadcastWsEvent(runId, event)
