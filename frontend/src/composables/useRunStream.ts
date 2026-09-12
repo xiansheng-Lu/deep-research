@@ -1,13 +1,14 @@
 // 单个研究运行的实时状态编排（[前端详细设计 §7.3 M2 全量版]）
 // 模块级 Map 缓存 reactive 状态：指挥舱/报告等多页面订阅同一 run 共享状态与同一条 WS
 // （RealtimeClient 引用计数，跨页切换不重建连接）；页面卸载只解绑，终态帧保留在缓存。
-import { onMounted, onUnmounted, reactive } from 'vue'
+import { onMounted, onUnmounted, reactive, computed, type ComputedRef } from 'vue'
 import { getRun } from '@/services/api/runs'
 import {
   getCostSnapshot,
   getRunConflicts,
   getRunStages,
-  getRunSubQuestions
+  getRunSubQuestions,
+  listRunEvidence
 } from '@/services/api/dashboard'
 import type {
   ConflictResponse,
@@ -48,8 +49,10 @@ const STREAM_CLOSED_STATUSES: ReadonlySet<RunStatus> = new Set([
   'paused'
 ])
 
-// 非关闭态兜底 REST 轮询间隔（M1 P0-2：WS 不可用时仍能收敛）
+// 非关闭态兜底 REST 轮询间隔（M2 WP-13：仅通道 retrying 时启用，避免 live 期间高频重复拉取）
 const REST_POLL_INTERVAL_MS = 4000
+// 重连补齐时证据池首帧拉取上限：覆盖最近增量即可，更早分页由 useEvidenceList 按需加载
+const EVIDENCE_ALIGN_PAGE_SIZE = 50
 // 证据增量 rAF 合批窗口（[§9.4]）
 // （同一帧内多条 evidence.fetched 合并一次响应式写入）
 
@@ -62,6 +65,40 @@ export interface StageRuntime {
   errorMessage?: string
   // 后端标记可重试（stage.failed.retryable），M2-5 前仅记录，不提供按钮
   retryable?: boolean
+}
+
+// 子问题进度派生（WP-14 SubQuestionPlan 的 m/n 与异常态口径）
+export interface SubQuestionStats {
+  total: number
+  queued: number
+  running: number
+  succeeded: number
+  failed: number
+  evidenceShort: number
+  // 已完成（成功）数 m
+  completed: number
+  // 全部结束（成功/失败/证据不足均算终态）
+  allSettled: boolean
+}
+
+export interface StageStats {
+  total: number
+  completed: number
+  currentIndex: number
+  currentName: ResearchStageName | null
+}
+
+export interface ConflictStats {
+  total: number
+  // 未解决（detected/awaiting_human），看板红点计数
+  unresolved: number
+}
+
+// 随状态缓存的派生集合（模块级单例，跨页面订阅不重复创建 computed）
+export interface RunStreamDerived {
+  subQuestions: ComputedRef<SubQuestionStats>
+  stages: ComputedRef<StageStats>
+  conflicts: ComputedRef<ConflictStats>
 }
 
 export interface CostState {
@@ -128,13 +165,71 @@ function createInitialState(): RunStreamState {
 
 // 模块级缓存：runId -> 共享响应式状态
 const stateCache = new Map<string, RunStreamState>()
+// runId -> 派生统计（随状态缓存同生命周期）
+const derivedCache = new Map<string, RunStreamDerived>()
 
 function ensureState(runId: string): RunStreamState {
   const cached = stateCache.get(runId)
   if (cached) return cached
   const state = reactive(createInitialState())
   stateCache.set(runId, state)
+  derivedCache.set(runId, createDerived(state))
   return state
+}
+
+// 只读窥视口：供不同时挂载 useRunStream 的消费方（useEvidenceList）读取共享实时态，
+// 不触发任何生命周期或连接；无缓存时返回 null
+export function peekRunStreamState(runId: string): RunStreamState | null {
+  return stateCache.get(runId) ?? null
+}
+
+// 派生统计：m/n 进度、异常态计数均在响应式层计算，WP-14 直接渲染不重复派生
+function createDerived(state: RunStreamState): RunStreamDerived {
+  return {
+    subQuestions: computed<SubQuestionStats>(() => {
+      const list = state.subQuestions
+      const stats: SubQuestionStats = {
+        total: list.length,
+        queued: 0,
+        running: 0,
+        succeeded: 0,
+        failed: 0,
+        evidenceShort: 0,
+        completed: 0,
+        allSettled: list.length > 0
+      }
+      for (const item of list) {
+        if (item.status === 'queued' || item.status === 'pending') stats.queued += 1
+        else if (item.status === 'running') stats.running += 1
+        else if (item.status === 'succeeded') stats.succeeded += 1
+        else if (item.status === 'failed') stats.failed += 1
+        else if (item.status === 'evidence_short') stats.evidenceShort += 1
+        if (item.status === 'pending' || item.status === 'queued' || item.status === 'running') {
+          stats.allSettled = false
+        }
+      }
+      stats.completed = stats.succeeded
+      return stats
+    }),
+    stages: computed<StageStats>(() => {
+      const completed = state.stages.filter((s) => s.status === 'done').length
+      const running = state.stages.find((s) => s.status === 'running')
+      const currentIndex = running ? state.stages.indexOf(running) : -1
+      return {
+        total: RESEARCH_STAGES.length,
+        completed,
+        currentIndex,
+        currentName: running?.name ?? null
+      }
+    }),
+    conflicts: computed<ConflictStats>(() => {
+      const list = state.conflicts
+      return {
+        total: list.length,
+        unresolved: list.filter((c) => c.status === 'detected' || c.status === 'awaiting_human').length
+      }
+    })
+  }
 }
 
 // run 快照映射六阶段状态（REST 初帧/补帧/兜底轮询共用）
@@ -219,10 +314,26 @@ export function useRunStream(runId: string) {
       applyRun(await getRun(runId))
       if (STREAM_CLOSED_STATUSES.has(state.run!.status)) return
       // M2-4 看板端点未上线前这些请求可能 404：各自独立静默，端点就绪后自动生效
-      await Promise.allSettled([syncStages(), syncSubQuestions(), syncConflicts(), syncCost()])
+      await Promise.allSettled([
+        syncStages(),
+        syncSubQuestions(),
+        syncConflicts(),
+        syncCost(),
+        syncEvidence()
+      ])
     } catch {
-      // 等待 live 重连或兜底轮询对齐，补帧失败不打断实时视图
+      // 等待 live 重连或 retrying 轮询对齐，补帧失败不打断实时视图
     }
+  }
+
+  // 证据重连补齐：拉最近一页与实时增量做稳定 key 合并（更早分页由 useEvidenceList 按需加载）
+  async function syncEvidence(): Promise<void> {
+    const page = await listRunEvidence(runId, {
+      page: 1,
+      page_size: EVIDENCE_ALIGN_PAGE_SIZE,
+      include_excluded: true
+    })
+    state.evidence = mergeEvidence(state.evidence, page.items)
   }
 
   async function syncStages(): Promise<void> {
@@ -422,7 +533,15 @@ export function useRunStream(runId: string) {
     if (payload.current_stage) {
       run.current_stage = payload.current_stage as ResearchStageName
     }
-    if (typeof payload.token_used === 'number') run.token_used = payload.token_used
+    if (typeof payload.token_used === 'number') {
+      run.token_used = payload.token_used
+      // 终态 token 是最终权威值，同步成本卡状态，避免停在最后一条 token.usage 增量帧
+      applyCost({
+        used: payload.token_used,
+        budget: run.token_budget,
+        ratio: run.token_budget ? payload.token_used / run.token_budget : 0
+      })
+    }
     if (payload.error_code !== undefined) run.error_code = payload.error_code
     if (payload.error_message !== undefined) run.error_message = payload.error_message
     state.stages = mapStages(run, state.stages)
@@ -475,10 +594,7 @@ export function useRunStream(runId: string) {
 
     const channelId = `runs:${runId}`
     channel = realtimeClient.ensureChannel(channelId, { url: buildRunStreamUrl(runId, token) })
-    channel.setOnStateChange((next) => {
-      state.channelState = next
-      if (next === 'live') void alignWithRest()
-    })
+    channel.setOnStateChange(handleChannelState)
     unsubscribe.push(channel.on(REALTIME_EVENT.STAGE_STARTED, handleStageStarted))
     unsubscribe.push(channel.on(REALTIME_EVENT.STAGE_FINISHED, handleStageFinished))
     unsubscribe.push(channel.on(REALTIME_EVENT.STAGE_FAILED, handleStageFailed))
@@ -494,15 +610,30 @@ export function useRunStream(runId: string) {
     unsubscribe.push(channel.on(REALTIME_EVENT.RUN_FAILED, handleRunFailed))
     channel.connect()
     state.channelState = channel.getState()
-    startPolling()
+    // 初始连接前 init() 已取过快照；按当前通道状态决定是否需要兜底轮询
+    syncPollingWithChannel(state.channelState)
   }
 
-  // 兜底轮询：非关闭态每 4s GET 快照（WS 中断/事件稀疏时保证收敛）
-  function startPolling(): void {
-    stopPolling()
-    pollTimer = setInterval(() => {
-      void alignWithRest()
-    }, REST_POLL_INTERVAL_MS)
+  // WP-13 轮询策略：仅 retrying（WS 退避重连中）才定时轮询快照，
+  // live 后一次性补帧即停轮询，避免高频重复拉取（M1 为无条件 4s 轮询）
+  function handleChannelState(next: ChannelState): void {
+    state.channelState = next
+    syncPollingWithChannel(next)
+    if (next === 'live') void alignWithRest()
+  }
+
+  function syncPollingWithChannel(channelState: ChannelState): void {
+    if (channelState === 'retrying') {
+      if (pollTimer === null) {
+        // 立即补一次，再按 4s 间隔兜底，使断线期间看板快速收敛
+        void alignWithRest()
+        pollTimer = setInterval(() => {
+          void alignWithRest()
+        }, REST_POLL_INTERVAL_MS)
+      }
+    } else {
+      stopPolling()
+    }
   }
 
   function stopPolling(): void {
@@ -549,7 +680,14 @@ export function useRunStream(runId: string) {
     detach('release')
   })
 
-  return { state, connect: connectStream, disconnect: () => detach('destroy'), reload: init, actions }
+  return {
+    state,
+    derived: derivedCache.get(runId)!,
+    connect: connectStream,
+    disconnect: () => detach('destroy'),
+    reload: init,
+    actions
+  }
 }
 
 // ─── 合并工具：稳定 key 增量更新，避免整表重渲染 ───

@@ -37,6 +37,16 @@ export function listRunEvidence(
   )
 }
 
+// GET /runs/{id}/evidence/{evidenceId}：单条证据详情（含全文 content）
+// 卡片展开时懒加载（[前端详细设计 §9.4]：事件与列表只带 snippet，避免大 payload）。
+// 注意：LLD §4.2.5 当前仅冻结证据池分页端点，本路径为 mock 先行形态，
+// 后端 M2-4 契约冻结后若路径/参数有变，仅改本函数与 mock 路由。
+export function getEvidence(runId: string, evidenceId: string): Promise<EvidenceResponse> {
+  return http<EvidenceResponse>(
+    `/runs/${encodeURIComponent(runId)}/evidence/${encodeURIComponent(evidenceId)}`
+  )
+}
+
 // GET /runs/{id}/conflicts：run 下分歧列表
 export function getRunConflicts(runId: string): Promise<ConflictResponse[]> {
   return http<ConflictResponse[]>(`/runs/${encodeURIComponent(runId)}/conflicts`)

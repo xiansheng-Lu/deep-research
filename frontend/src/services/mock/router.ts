@@ -503,6 +503,26 @@ route('GET', '/api/v1/runs/{run_id}/conflicts', (req, res, params) => {
   sendJson(res, 200, store.conflictsByRunId.get(params.run_id) ?? [])
 })
 
+// 单条证据详情（含全文；M2-4 契约冻结前的 mock 先行路径，前端按 §9.4 懒加载）
+route('GET', '/api/v1/runs/{run_id}/evidence/{evidence_id}', (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  const list = store.evidenceByRunId.get(params.run_id) ?? []
+  const found = list.find((e) => e.id === params.evidence_id)
+  if (!found) {
+    sendAppError(res, 404, 'not_found', '证据不存在或不属于该研究运行')
+    return
+  }
+  // fixture 仅为重点条目手写了全文；其余条目在 mock 层确定性地生成演示全文，
+  // 保证卡片展开交互可演示（真实全文由后端 M2-7 元数据抽取产出）
+  const content =
+    found.content ??
+    `《${found.title}》（${found.domain}）正文摘要：${found.snippet} ` +
+      `mock 演示全文：该来源发布于 ${found.published_at ?? '日期不详'}，` +
+      `来源类型 ${found.source_type}、可信分级 ${found.credibility}，` +
+      `与子问题的相关度评分为 ${found.relevance_score}。完整原文将在后端 M2-7 元数据抽取落地后提供。`
+  sendJson(res, 200, { ...found, content })
+})
+
 route('GET', '/api/v1/conflicts/{conflict_id}', (req, res, params) => {
   const user = authenticate(req, res)
   if (!user) return
