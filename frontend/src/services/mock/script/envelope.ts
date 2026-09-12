@@ -17,8 +17,13 @@ export interface RawEvent {
   [key: string]: unknown
 }
 
+// 进程内单调序号：同毫秒连发多个同类型事件时保证 event_id 不撞车
+// （客户端 WsChannel 按 event_id FIFO 去重，撞 id 会导致整帧被丢弃）
+let envelopeSeq = 0
+
 export function wrapEnvelope(runId: string, event: RawEvent): RealtimeEnvelope {
   const ts = Date.now()
+  envelopeSeq += 1
   const stageName = event.stage ?? event.current_stage
   // 仅当取值为已知阶段时写入信封 stage，未知值交由订阅者按 payload 兜底
   const stage = RESEARCH_STAGES.includes(stageName as ResearchStageName)
@@ -26,7 +31,7 @@ export function wrapEnvelope(runId: string, event: RawEvent): RealtimeEnvelope {
     : undefined
   return {
     v: REALTIME_PROTOCOL_VERSION,
-    event_id: `evt_${event.type}_${ts}`,
+    event_id: `evt_${event.type}_${ts}_${envelopeSeq.toString(36)}`,
     ts,
     run_id: runId,
     stage,

@@ -11,11 +11,16 @@ import {
   type MockRun,
   type MockReport
 } from './store'
-import { broadcastWsEvent, closeWsConnections } from './realtime'
-import { buildHappyPathScript, buildReportMarkdown } from './fixtures/happy_path'
-import { executeNode } from './script/runner'
-import { TERMINAL_EVENT_TYPES } from '../realtime/types'
-import type { RealtimeEnvelope } from '../realtime/types'
+import { buildHappyPathScript } from './fixtures/happy_path'
+import {
+  controlCancel,
+  controlIntervene,
+  controlPause,
+  controlResume,
+  startDemoClarify,
+  startScript,
+  type ControlResult
+} from './engine'
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, params: Record<string, string>) => void | Promise<void>
 
@@ -383,20 +388,12 @@ route('POST', '/api/v1/runs', async (req, res) => {
   }
   store.runs.set(runId, run)
 
-  // 后台执行剧本：事件同时更新内存态并广播到 WS
-  void executeNode(buildHappyPathScript(run), {
-    runId,
-    sendEvent: (event) => {
-      applyEventToRun(runId, event)
-      broadcastWsEvent(runId, event)
-      // 与后端一致：终态事件推送后关闭连接
-      if (TERMINAL_EVENT_TYPES.has(event.type)) {
-        closeWsConnections(runId)
-      }
-    }
-  }).catch((err: unknown) => {
-    console.error('[mock-gateway] 剧本执行失败:', err)
-  })
+  // 剧本选择：template_id=demo_full 走 M2 全分支演示（澄清挂起先停），其余走 M1 happy_path
+  if (run.template_id === 'demo_full') {
+    startDemoClarify(run)
+  } else {
+    startScript(run, buildHappyPathScript(run), 'happy_path', 'running')
+  }
 
   sendJson(res, 201, run)
 })
@@ -441,6 +438,148 @@ route('GET', '/api/v1/reports/{run_id}', (req, res, params) => {
   const report = loadOwnedReport(req, res, params.run_id)
   if (!report) return
   sendJson(res, 200, report)
+})
+
+// ─── M2 看板数据（WP-10：REST 与 WS 同源，集合由 engine 按事件归约维护）───
+
+// 鉴权 + run 归属校验，通过后返回 run（失败时已写错误响应）
+function loadOwnedRun(req: IncomingMessage, res: ServerResponse, runId: string): MockRun | null {
+  const user = authenticate(req, res)
+  if (!user) return null
+  const run = store.runs.get(runId)
+  if (!run || run.creator_id !== user.id) {
+    sendAppError(res, 404, 'not_found', '研究运行不存在')
+    return null
+  }
+  return run
+}
+
+// 统一回写控制动作结果（RunControlResponse 形态对齐契约 §6.1）
+function replyControlResult(res: ServerResponse, result: ControlResult): void {
+  if (result.ok) {
+    sendJson(res, 200, { run_id: result.runId, status: result.status })
+    return
+  }
+  sendAppError(res, result.httpStatus, result.code, result.message)
+}
+
+route('GET', '/api/v1/runs/{run_id}/stages', (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  sendJson(res, 200, store.stagesByRunId.get(params.run_id) ?? [])
+})
+
+route('GET', '/api/v1/runs/{run_id}/sub-questions', (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  sendJson(res, 200, store.subQuestionsByRunId.get(params.run_id) ?? [])
+})
+
+route('GET', '/api/v1/runs/{run_id}/evidence', (req, res, params) => {
+  const run = loadOwnedRun(req, res, params.run_id)
+  if (!run) return
+  const url = new URL(req.url ?? '/', 'http://localhost')
+  const pageSize = Math.min(Math.max(Number(url.searchParams.get('page_size') ?? '20') || 20, 1), 100)
+  const page = Math.max(Number(url.searchParams.get('page') ?? '1') || 1, 1)
+  const subQuestionId = url.searchParams.get('sub_question_id')
+  const includeExcluded = url.searchParams.get('include_excluded') === 'true'
+
+  let items = store.evidenceByRunId.get(run.id) ?? []
+  if (subQuestionId) items = items.filter((e) => e.sub_question_id === subQuestionId)
+  if (!includeExcluded) items = items.filter((e) => !e.excluded_by_user)
+
+  const total = items.length
+  const start = (page - 1) * pageSize
+  const pageItems = items.slice(start, start + pageSize)
+  sendJson(res, 200, {
+    items: pageItems,
+    total,
+    page,
+    page_size: pageSize,
+    has_more: start + pageSize < total
+  })
+})
+
+route('GET', '/api/v1/runs/{run_id}/conflicts', (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  sendJson(res, 200, store.conflictsByRunId.get(params.run_id) ?? [])
+})
+
+route('GET', '/api/v1/conflicts/{conflict_id}', (req, res, params) => {
+  const user = authenticate(req, res)
+  if (!user) return
+  for (const list of store.conflictsByRunId.values()) {
+    const found = list.find((c) => c.id === params.conflict_id)
+    if (found) {
+      const ownerRun = store.runs.get(found.run_id)
+      if (ownerRun?.creator_id === user.id) {
+        sendJson(res, 200, found)
+        return
+      }
+    }
+  }
+  sendAppError(res, 404, 'not_found', '分歧不存在')
+})
+
+route('GET', '/api/v1/runs/{run_id}/cost/snapshot', (req, res, params) => {
+  const run = loadOwnedRun(req, res, params.run_id)
+  if (!run) return
+  const ratio = run.token_budget ? Math.min(1, run.token_used / run.token_budget) : 0
+  sendJson(res, 200, { used: run.token_used, budget: run.token_budget, ratio })
+})
+
+// ─── M2 运行控制与用户介入（契约草案 §6.1/§6.2）───
+
+route('POST', '/api/v1/runs/{run_id}/pause', async (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  replyControlResult(res, controlPause(params.run_id))
+})
+
+route('POST', '/api/v1/runs/{run_id}/resume', async (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  const body = await parseBody(req)
+  const humanInput = (body.human_input ?? {}) as Record<string, unknown>
+  // answers=澄清答案；kind=proceed/空对象=纯继续；action=介入动作（与 /intervene 等价）
+  if (humanInput.action && typeof humanInput.action === 'object') {
+    replyControlResult(
+      res,
+      controlIntervene(params.run_id, humanInput.action as { type?: unknown; payload?: unknown })
+    )
+    return
+  }
+  const answers =
+    humanInput.answers && typeof humanInput.answers === 'object'
+      ? (humanInput.answers as Record<string, unknown>)
+      : undefined
+  replyControlResult(res, controlResume(params.run_id, answers))
+})
+
+route('POST', '/api/v1/runs/{run_id}/cancel', async (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  replyControlResult(res, controlCancel(params.run_id))
+})
+
+route('POST', '/api/v1/runs/{run_id}/intervene', async (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  const body = await parseBody(req)
+  if (typeof body.type !== 'string') {
+    sendValidationError(res, [{ loc: ['body', 'type'], msg: 'Field required', type: 'missing' }])
+    return
+  }
+  replyControlResult(
+    res,
+    controlIntervene(params.run_id, { type: body.type, payload: body.payload })
+  )
+})
+
+// ─── M2-6 数据点溯源（WP-10：demo_full 终稿后可拉取，happy_path 无引用返回空列表）───
+
+route('GET', '/api/v1/reports/{run_id}/citations', (req, res, params) => {
+  const run = loadOwnedRun(req, res, params.run_id)
+  if (!run) return
+  if (!store.reportsByRunId.has(run.id)) {
+    sendAppError(res, 422, 'validation_error', '报告尚未生成')
+    return
+  }
+  sendJson(res, 200, store.citationsByRunId.get(run.id) ?? [])
 })
 
 // ─── 意图路由（M2-1：POST /intent/classify，启发式三分类，供 mock 模式联调）───
@@ -551,47 +690,23 @@ route('POST', '/api/v1/assistant/chat', async (req, res) => {
   void user
 })
 
-// ─── 事件归约：把 WS 事件更新到 run 内存态，终态时落报告 ───
+// ─── 埋点（WP-10/WP-18：POST /telemetry/batch，mock 累计计数供验收观测）───
 
-function applyEventToRun(runId: string, env: RealtimeEnvelope): void {
-  const run = store.runs.get(runId)
-  if (!run) return
-  const payload = (env.payload ?? {}) as Record<string, unknown>
-  const ts = nowIso()
-
-  if (env.type === 'stage.started') {
-    run.status = 'running'
-    if (!run.started_at) run.started_at = ts
-    run.current_stage = typeof payload.stage === 'string' ? payload.stage : null
-    run.updated_at = ts
+route('POST', '/api/v1/telemetry/batch', async (req, res) => {
+  const user = authenticate(req, res)
+  if (!user) return
+  const body = await parseBody(req)
+  if (!Array.isArray(body.events)) {
+    sendValidationError(res, [{ loc: ['body', 'events'], msg: 'Field required', type: 'missing' }])
     return
   }
-
-  if (env.type === 'run.finished' || env.type === 'run.failed') {
-    const failed = env.type === 'run.failed'
-    run.status = failed
-      ? 'failed'
-      : (typeof payload.status === 'string' ? payload.status as MockRun['status'] : 'succeeded')
-    run.current_stage = typeof payload.current_stage === 'string' ? payload.current_stage : null
-    run.token_used = typeof payload.token_used === 'number' ? payload.token_used : run.token_used
-    run.finished_at = ts
-    run.updated_at = ts
-    if (failed) {
-      run.error_code = typeof payload.error_code === 'string' ? payload.error_code : 'INTERNAL_ERROR'
-      run.error_message = typeof payload.error_message === 'string' ? payload.error_message : null
-      return
-    }
-    if (run.status === 'succeeded') {
-      store.reportsByRunId.set(runId, {
-        id: generateId(),
-        run_id: runId,
-        template_id: run.template_id,
-        status: 'final',
-        content_md: buildReportMarkdown(run),
-        token_used: run.token_used,
-        created_at: ts,
-        updated_at: ts
-      })
-    }
+  let accepted = 0
+  for (const item of body.events) {
+    if (!item || typeof item !== 'object') continue
+    const event = (item as Record<string, unknown>).event
+    if (typeof event !== 'string' || !event) continue
+    store.telemetryCounts.set(event, (store.telemetryCounts.get(event) ?? 0) + 1)
+    accepted += 1
   }
-}
+  sendJson(res, 200, { accepted, total: store.telemetryCounts.size })
+})

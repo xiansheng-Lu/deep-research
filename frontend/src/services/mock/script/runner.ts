@@ -9,6 +9,8 @@ export type EventSender = (event: RealtimeEnvelope) => void
 export interface RunnerContext {
   runId: string
   sendEvent: EventSender
+  // gate 节点回调：由执行引擎注入，决定挂起/中止/放行；缺省时 gate 直接通过
+  awaitGate?: (gateId: string) => Promise<void>
 }
 
 // 执行脚本节点
@@ -32,6 +34,10 @@ export async function executeNode(node: ScriptNode, ctx: RunnerContext): Promise
 
     case 'wait':
       await sleep(node.durationMs)
+      break
+
+    case 'gate':
+      await ctx.awaitGate?.(node.gateId)
       break
   }
 }
