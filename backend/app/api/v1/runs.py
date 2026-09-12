@@ -120,6 +120,7 @@ async def create_run(
     hub = _get_hub(request)
     llm = _get_llm(request)
     retrieval_client = _get_retrieval_client(request)
+    checkpointer = getattr(request.app.state, "checkpointer", None)
 
     asyncio.create_task(
         run_research_async(
@@ -137,6 +138,7 @@ async def create_run(
             llm=llm,
             retrieval_client=retrieval_client,
             hub=hub,
+            checkpointer=checkpointer,
         )
     )
 

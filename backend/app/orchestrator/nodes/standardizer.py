@@ -25,6 +25,7 @@ from typing import Any, Literal
 from app.core.logging import get_logger
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.nodes._base import instrument
+from app.orchestrator.persistence import persist_evidence, persist_sub_questions
 from app.orchestrator.state import (
     EvidenceDict,
     ResearchStage,
@@ -155,15 +156,20 @@ def _reindex_sub_questions(
 async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str, Any]:
     """标准化节点入口。
 
-    返回值会被 LangGraph 自动合并到 ``ResearchState`` 中。
+    返回值会被 LangGraph 自动合并到 ``ResearchState`` 中。分类完成的证据在此
+    统一落库（retrieve 阶段不写证据，避免固化临时分级），子问题引用收敛结果
+    同步 upsert。
     """
-    # 兼容 M0 签名：未注入 deps 时仍可运行
-    del deps  # 当前实现仅依赖 state
-
     raw: list[EvidenceDict] = list(state.get("evidence") or [])
     subqs: list[SubQuestionDict] = list(state.get("sub_questions") or [])
 
     if not raw:
+        if deps is not None and deps.db_session is not None and subqs:
+            await persist_sub_questions(
+                deps.db_session,
+                run_id=str(state.get("run_id") or ""),
+                items=subqs,
+            )
         return {"standardized_evidence": [], "sub_questions": subqs}
 
     # 1) 跨子问题去重
@@ -188,6 +194,12 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
     # 4) 收敛子问题引用：丢弃因去重消失的证据 ID
     kept_ids = {e["id"] for e in classified}
     updated_subs = _reindex_sub_questions(subqs, kept_evidence_ids=kept_ids)
+
+    # 5) 落库（幂等）：子问题终态引用 + 分类后证据；无 DB 会话（纯单测）时跳过
+    if deps is not None and deps.db_session is not None:
+        run_id = str(state.get("run_id") or "")
+        await persist_sub_questions(deps.db_session, run_id=run_id, items=updated_subs)
+        await persist_evidence(deps.db_session, run_id=run_id, items=classified)
 
     return {
         "standardized_evidence": classified,

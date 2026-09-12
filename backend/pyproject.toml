@@ -57,6 +57,8 @@ dependencies = [
     "python-dateutil>=2.9,<3.0",
     "pyyaml>=6.0,<7.0",
     "python-ulid>=3.0,<5.0",
+    "langgraph-checkpoint-postgres>=3.1.2",
+    "psycopg[binary]>=3.3.5",
 ]
 
 [dependency-groups]
@@ -128,3 +130,6 @@ filterwarnings = [
     "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
 ]
 addopts = "-ra --strict-markers"
+markers = [
+    "integration: 需要真实 Postgres 的集成测试，数据库不可达时自动跳过",
+]

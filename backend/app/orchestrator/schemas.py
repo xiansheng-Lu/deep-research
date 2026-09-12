@@ -93,9 +93,50 @@ class IntentClassification(BaseModel):
     reason: str = Field(default="", max_length=300)
 
 
+# 冲突四类型（与 Conflict ORM / 前端枚举严格一致，§4.2.6）
+ConflictTypeLiteral = Literal["factual", "methodological", "temporal", "perspective"]
+# 严重度三值：low/medium 自动收敛，high 挂起等裁决
+ConflictSeverityLiteral = Literal["low", "medium", "high"]
+
+
+class ConflictPairResult(BaseModel):
+    """单对候选证据的语义冲突判定结果（§6.5.6）。
+
+    Attributes:
+        pair_index: 候选对在请求批次中的下标（由请求方编号，结果按此回联）。
+        is_conflict: 是否构成实质冲突。
+        claim: 议题（冲突针对的具体论断）；非冲突时可为空串。
+        type: 冲突类型——factual 事实对立 / methodological 口径方法 /
+            temporal 时间错配 / perspective 观点分歧。
+        severity: 严重度——high 结论性矛盾需裁决 / medium 可按权威消解 / low 轻微出入。
+        reason: 一句中文判定依据。
+    """
+
+    model_config = _LLM_OUTPUT_CONFIG
+
+    pair_index: int = Field(ge=0)
+    is_conflict: bool = False
+    claim: str = Field(default="", max_length=300)
+    type: ConflictTypeLiteral = "factual"
+    severity: ConflictSeverityLiteral = "medium"
+    reason: str = Field(default="", max_length=300)
+
+
+class ConflictDetectionSchema(BaseModel):
+    """critic 单批次语义冲突检测输出（§6.5.6）。"""
+
+    model_config = _LLM_OUTPUT_CONFIG
+
+    results: list[ConflictPairResult] = Field(default_factory=list)
+
+
 __all__ = [
     "ClarificationQuestion",
     "ClarificationSchema",
+    "ConflictDetectionSchema",
+    "ConflictPairResult",
+    "ConflictSeverityLiteral",
+    "ConflictTypeLiteral",
     "IntentClassification",
     "SubQuestionItem",
     "SubQuestionListSchema",

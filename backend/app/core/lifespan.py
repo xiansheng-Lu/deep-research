@@ -2,18 +2,20 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from typing import Any
 
 from fastapi import FastAPI
 
 from app.core.config import Settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import init_engine, shutdown_engine
+from app.orchestrator.checkpoint import build_checkpointer, close_checkpointer
 from app.provider.client import LLMClient
 from app.realtime.hub import get_hub
 from app.retrieval.client import RetrievalClient
 
 
-def _build_llm_client(settings: Settings, log) -> LLMClient | None:
+def _build_llm_client(settings: Settings, log: Any) -> LLMClient | None:
     """配置了主模型密钥时构造 LLMClient；否则返回 None（节点走降级路径）。"""
     if not settings.llm_primary_api_key.get_secret_value():
         log.warning("未配置 LLM_PRIMARY_API_KEY，LLM 节点将走降级路径")
@@ -40,6 +42,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     session_factory = init_engine(settings)
     app.state.session_factory = session_factory.maker()
 
+    # 编排检查点：PostgresSaver（支持跨请求 HITL 恢复）；失败回退应用级内存 saver
+    checkpointer, checkpointer_pool = await build_checkpointer(settings)
+    app.state.checkpointer = checkpointer
+    app.state.checkpointer_pool = checkpointer_pool
+
     # RealtimeHub 注入
     app.state.hub = get_hub()
 
@@ -64,4 +71,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if retrieval is not None:
             with suppress(Exception):
                 await retrieval.aclose()
+        # 关闭 checkpointer 关联的 Postgres 连接池
+        with suppress(Exception):
+            await close_checkpointer(getattr(app.state, "checkpointer_pool", None))
         shutdown_engine()

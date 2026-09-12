@@ -14,12 +14,15 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 
+from app.db.models.report import Report
 from app.db.models.run import ResearchRun
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.executor import (
     _build_initial_state,
     _compile_for_deps,
+    resume_research_async,
     run_research_async,
 )
 from app.orchestrator.schemas import ClarificationSchema, SubQuestionListSchema
@@ -114,9 +117,7 @@ async def test_compiled_graph_runs_all_nodes_without_signature_error() -> None:
         trace_id="trace-001",
     )
 
-    final_state = await graph.ainvoke(
-        initial_state, config={"configurable": {"thread_id": "test-run-graph"}}
-    )
+    final_state = await graph.ainvoke(initial_state, config={"configurable": {"thread_id": "test-run-graph"}})
 
     assert final_state["current_stage"] == ResearchStage.REPORT
     assert (final_state.get("report_draft") or "").strip()
@@ -245,6 +246,12 @@ async def test_run_research_async_success_marks_succeeded() -> None:
     mock_session.add = MagicMock()
     mock_session.flush = AsyncMock()
     mock_session.commit = AsyncMock()
+    # 过程数据持久化查询（子问题/证据幂等检查）在本测试无既有行；
+    # AsyncMock 的子属性仍为 AsyncMock，直接 await 后 .all() 会返回协程，
+    # 因此 scalars 的结果对象显式用 MagicMock 构造
+    _scalars_result = MagicMock()
+    _scalars_result.all.return_value = []
+    mock_session.scalars = AsyncMock(return_value=_scalars_result)
 
     mock_factory = MagicMock()
     mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
@@ -266,7 +273,7 @@ async def test_run_research_async_success_marks_succeeded() -> None:
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(
             "app.orchestrator.executor._compile_for_deps",
-            lambda deps: fake_graph,
+            lambda deps, checkpointer=None: fake_graph,
         )
         await run_research_async(
             run_id="test-run-success",
@@ -332,6 +339,12 @@ async def test_run_research_async_real_graph_values_stream() -> None:
     mock_session.add = MagicMock()
     mock_session.flush = AsyncMock()
     mock_session.commit = AsyncMock()
+    # 过程数据持久化查询（子问题/证据幂等检查）在本测试无既有行；
+    # AsyncMock 的子属性仍为 AsyncMock，直接 await 后 .all() 会返回协程，
+    # 因此 scalars 的结果对象显式用 MagicMock 构造
+    _scalars_result = MagicMock()
+    _scalars_result.all.return_value = []
+    mock_session.scalars = AsyncMock(return_value=_scalars_result)
 
     mock_factory = MagicMock()
     mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
@@ -472,6 +485,12 @@ async def test_run_research_async_budget_exceeded_pauses_before_report() -> None
     mock_session.add = MagicMock()
     mock_session.flush = AsyncMock()
     mock_session.commit = AsyncMock()
+    # 过程数据持久化查询（子问题/证据幂等检查）在本测试无既有行；
+    # AsyncMock 的子属性仍为 AsyncMock，直接 await 后 .all() 会返回协程，
+    # 因此 scalars 的结果对象显式用 MagicMock 构造
+    _scalars_result = MagicMock()
+    _scalars_result.all.return_value = []
+    mock_session.scalars = AsyncMock(return_value=_scalars_result)
 
     mock_factory = MagicMock()
     mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
@@ -513,8 +532,9 @@ async def test_run_research_async_budget_exceeded_pauses_before_report() -> None
     assert run.finished_at is None
     # 两次结构化调用的真实 token 用量如实回写（120），但执行在报告前已停止
     assert run.token_used == 120
-    # 不超支的直接证据：没有任何 Report 产出
-    assert not mock_session.add.called
+    # 不超支的直接证据：挂起路径允许证据落库，但绝不产出 Report
+    added_objs = [call.args[0] for call in mock_session.add.call_args_list]
+    assert not any(isinstance(obj, Report) for obj in added_objs)
     assert mock_session.commit.called
 
     # 阶段事件止于审视：成本闸门不产生新阶段，report 绝不执行
@@ -530,3 +550,136 @@ async def test_run_research_async_budget_exceeded_pauses_before_report() -> None
     assert len(finished_events) == 1
     assert finished_events[0]["status"] == "paused"
     assert finished_events[0]["token_used"] == 120
+
+
+@pytest.mark.asyncio
+async def test_resume_research_async_from_gate_completes_with_shared_saver() -> None:
+    """HITL 恢复（AC-9）：共享持久检查点下，新编译图实例可从挂起线程续跑。
+
+    首次执行因预算超 90% 在 ``user_intervention`` 的 interrupt_before 挂起；
+    用同一个 InMemorySaver（等价跨请求/跨实例存活的持久 saver）经
+    ``resume_research_async`` 注入 ``kind=proceed`` 续跑，图从挂起点继续执行到
+    report 并成功收尾。
+    """
+    run_id = "test-run-resume"
+    run = ResearchRun(
+        id=run_id,
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="quick",
+        question="HITL 恢复验证问题",
+        status="pending",
+        token_budget=100,
+    )
+
+    mock_session = AsyncMock()
+    # scalar 三次调用：首次执行加载 run；恢复时再加载 run；随后查 project.team_id
+    mock_session.scalar.side_effect = [run, run, "team-001"]
+    mock_session.add = MagicMock()
+    mock_session.flush = AsyncMock()
+    mock_session.commit = AsyncMock()
+    # 过程数据持久化查询（子问题/证据幂等检查）在本测试无既有行；
+    # AsyncMock 的子属性仍为 AsyncMock，直接 await 后 .all() 会返回协程，
+    # 因此 scalars 的结果对象显式用 MagicMock 构造
+    _scalars_result = MagicMock()
+    _scalars_result.all.return_value = []
+    mock_session.scalars = AsyncMock(return_value=_scalars_result)
+
+    mock_factory = MagicMock()
+    mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    hub = RealtimeHub()
+
+    async def _collect_one() -> list[dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
+        async for event in hub.subscribe(f"runs:{run_id}"):
+            collected.append(event)
+            if event.get("type") == "run.finished":
+                break
+        return collected
+
+    shared_saver = InMemorySaver()
+
+    collect_pause = asyncio.create_task(_collect_one())
+    await run_research_async(
+        run_id=run_id,
+        project_id="proj-001",
+        template_id="generic",
+        tier="quick",
+        question="HITL 恢复验证问题",
+        token_budget=100,
+        clarification=None,
+        team_id="team-001",
+        creator_id="user-001",
+        trace_id="trace-resume",
+        session_factory=mock_factory,
+        llm=_BudgetedStructuredLLM(tokens_per_call=60),
+        retrieval_client=_OfflineRetrievalClient(),
+        hub=hub,
+        checkpointer=shared_saver,
+    )
+    paused_events = await collect_pause
+    assert run.status == "paused"
+    assert paused_events[-1]["status"] == "paused"
+
+    # 挂起线程已写入共享检查点：跨请求恢复的前提事实
+    checkpoint_tuple = await shared_saver.aget_tuple({"configurable": {"thread_id": run_id}})
+    assert checkpoint_tuple is not None
+
+    # 模拟新请求：恢复入口内重新编译图，仅凭 thread_id 从检查点续跑
+    collect_resume = asyncio.create_task(_collect_one())
+    await asyncio.sleep(0)
+    await resume_research_async(
+        run_id=run_id,
+        human_input={"kind": "proceed"},
+        session_factory=mock_factory,
+        checkpointer=shared_saver,
+        llm=None,
+        retrieval_client=_OfflineRetrievalClient(),
+        hub=hub,
+    )
+    resumed_events = await collect_resume
+
+    assert run.status == "succeeded"
+    assert run.current_stage == "report"
+    added_objs = [call.args[0] for call in mock_session.add.call_args_list]
+    assert any(isinstance(obj, Report) for obj in added_objs)
+    assert resumed_events[-1]["type"] == "run.finished"
+    assert resumed_events[-1]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_resume_research_async_ignores_non_paused_run() -> None:
+    """非 paused 状态的恢复请求被幂等忽略：不续跑、不推事件。"""
+    run = ResearchRun(
+        id="test-run-resume-ignore",
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="quick",
+        question="不应恢复的问题",
+        status="succeeded",
+        token_budget=100,
+        current_stage="report",
+    )
+    mock_session = AsyncMock()
+    mock_session.scalar.return_value = run
+    mock_factory = MagicMock()
+    mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+    hub = RealtimeHub()
+
+    await resume_research_async(
+        run_id="test-run-resume-ignore",
+        human_input={"kind": "proceed"},
+        session_factory=mock_factory,
+        checkpointer=InMemorySaver(),
+        llm=None,
+        retrieval_client=None,
+        hub=hub,
+    )
+
+    assert run.status == "succeeded"
+    assert mock_session.commit.call_count == 0

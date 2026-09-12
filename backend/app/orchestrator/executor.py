@@ -7,10 +7,14 @@
 - 入口 ``run_research_async`` 由 ``asyncio.create_task`` 调度；不阻塞 API 响应。
 - 节点依赖通过闭包绑定到 ``NodeDeps`` 后再装配图（与 ``graph.build_research_graph``
   共享同一份接线，单点注入 deps）。
-- ``checkpointer=InMemorySaver()`` 仅用于 M1 端到端冒烟；M2 切到 ``AsyncPostgresSaver``。
+- 检查点由调用方显式传入（生产为应用级 ``AsyncPostgresSaver``，thread_id=run_id，
+  支持 HITL 跨请求/跨进程恢复，见 ``app.orchestrator.checkpoint``）；未传时退化为
+  每次执行新建 ``InMemorySaver``（仅测试/遗留调用路径使用）。
+- HITL 恢复入口 ``resume_research_async``：先把 ``human_input`` 写入线程状态，
+  再以 ``Command(resume=...)`` 从 interrupt_before 挂起点续跑（§6.5.10 / §6.6）。
 - 执行结果通过 ``RealtimeHub`` 推送 ``runs:{run_id}`` 频道事件。
-- 完成后 ``ResearchRun.status`` 写回 ``succeeded`` / ``failed``；``Report`` 在
-  成功路径新建一条 ``draft``；失败路径不创建报告。
+- 完成后 ``ResearchRun.status`` 写回 ``succeeded`` / ``failed`` / ``paused``；
+  ``Report`` 在成功路径新建一条 ``draft``；失败路径不创建报告。
 """
 
 from __future__ import annotations
@@ -19,13 +23,16 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.logging import get_logger
 from app.db.base import new_ulid
+from app.db.models.project import Project
 from app.db.models.report import Report
 from app.db.models.run import ResearchRun
 from app.orchestrator.dependencies import NodeDeps
@@ -76,17 +83,17 @@ def _build_graph_with_deps(deps: NodeDeps) -> Any:
     仅在节点 callable 上注入运行时依赖，避免污染生产入口。
 
     注意：只有签名含 ``deps`` 关键字的节点（clarifier / sub_questioner /
-    researcher_fan_out / standardizer / critic / reporter）才闭包绑定；
-    failure_recovery / await_human / cost_checkpoint / user_intervention
-    为纯 state 节点，``run(state)`` 不接受 deps，直接注册。
+    researcher_fan_out / standardizer / critic / reporter / await_human）才闭包
+    绑定；failure_recovery / cost_checkpoint / user_intervention 为纯 state
+    节点，``run(state)`` 不接受 deps，直接注册。
     """
     graph = StateGraph(ResearchState)
     # 纯 state 节点：run(state)，不注入 deps
     graph.add_node("failure_recovery", failure_recovery.run)
-    graph.add_node("await_human", await_human.run)
     graph.add_node("cost_checkpoint", cost_checkpoint.run)
     graph.add_node("user_intervention", user_intervention.run)
     # 依赖节点：run(state, deps=...)，闭包注入运行时依赖
+    graph.add_node("await_human", _bind(await_human.run, deps))
     graph.add_node("clarify", _bind(clarifier.run, deps))
     graph.add_node("decompose", _bind(sub_questioner.run, deps))
     graph.add_node("retrieve", _bind(researcher_fan_out.run, deps))
@@ -124,11 +131,20 @@ def _build_graph_with_deps(deps: NodeDeps) -> Any:
     return graph
 
 
-def _compile_for_deps(deps: NodeDeps) -> Any:
-    """编译绑定 deps 后的可执行图。"""
-    checkpointer = InMemorySaver()
+def _compile_for_deps(
+    deps: NodeDeps,
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
+) -> Any:
+    """编译绑定 deps 后的可执行图。
+
+    Args:
+        deps: 节点运行时依赖。
+        checkpointer: 调用方持有的持久检查点（生产传应用级 PostgresSaver）；
+            缺省时每次新建内存 saver，仅供测试隔离与遗留调用使用。
+    """
+    saver = checkpointer if checkpointer is not None else InMemorySaver()
     return _build_graph_with_deps(deps).compile(
-        checkpointer=checkpointer,
+        checkpointer=saver,
         interrupt_before=list(_INTERRUPT_BEFORE),
     )
 
@@ -314,8 +330,9 @@ async def run_research_async(
     llm: Any,
     retrieval_client: Any,
     hub: RealtimeHub,
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
 ) -> None:
-    """后台异步执行研究流程。
+    """后台异步执行研究流程（首次执行）。
 
     Args:
         run_id: 已落库 ``ResearchRun`` 的 ULID。
@@ -330,6 +347,7 @@ async def run_research_async(
         session_factory: SQLAlchemy 异步 sessionmaker；用于加载/写回 ORM。
         llm / retrieval_client: 节点共享依赖；缺省时节点走降级路径。
         hub: 实时事件总线；阶段事件 / 终态事件由此推送。
+        checkpointer: 应用级持久检查点；None 时退化为一次性内存 saver（测试用）。
     """
     deps = NodeDeps(
         run_id=run_id,
@@ -350,7 +368,6 @@ async def run_research_async(
         clarification=clarification,
         trace_id=trace_id,
     )
-    thread_config: dict[str, Any] = {"configurable": {"thread_id": run_id}}
 
     # 让事件订阅者有机会注册（asyncio 调度顺序）
     await asyncio.sleep(0)
@@ -372,71 +389,200 @@ async def run_research_async(
         run.current_stage = ResearchStage.CLARIFY.value
         await session.flush()
 
-        graph = _compile_for_deps(deps)
-        final_state: ResearchState | None = None
-        error_code = "INTERNAL_ERROR"
-        error_message = ""
+        graph = _compile_for_deps(deps, checkpointer)
+        await _drive_to_terminal(
+            graph=graph,
+            graph_input=initial_state,
+            run=run,
+            template_id=template_id,
+            session=session,
+            hub=hub,
+            deps=deps,
+            fallback_state=initial_state,
+        )
+
+
+async def _drive_to_terminal(
+    *,
+    graph: Any,
+    graph_input: Any,
+    run: ResearchRun,
+    template_id: str,
+    session: AsyncSession,
+    hub: RealtimeHub,
+    deps: NodeDeps,
+    fallback_state: ResearchState | None,
+) -> ResearchState | None:
+    """驱动图执行到终态并完成落库与终态事件推送（首次执行/恢复共用）。
+
+    - 节点依赖会话与执行器会话共享：节点侧落库与 run 状态写在同一事务边界；
+    - 成功有报告 → succeeded + Report(draft)；无报告（HITL 挂起）→ paused；
+      异常 → failed；三种终态统一提交后推送恰好一条 ``run.finished``。
+    """
+    run_id = run.id
+    deps.db_session = session
+    deps.hub = hub
+    thread_config: dict[str, Any] = {"configurable": {"thread_id": run_id}}
+
+    final_state: ResearchState | None = None
+    try:
+        final_state = await _astream_and_publish(
+            graph,
+            graph_input,
+            thread_config,
+            run=run,
+            session=session,
+            hub=hub,
+            run_id=run_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("graph.astream 执行失败", extra={"run_id": run_id})
+        await _mark_failed(
+            session,
+            run,
+            error_code=exc.__class__.__name__,
+            error_message=repr(exc),
+            partial_state=final_state,
+        )
+    else:
+        # 未抛异常时 astream 必返回最后一份快照（空图才可能为 None，此处不会发生）
+        assert final_state is not None
+        report_md = str(final_state.get("report_draft") or "")
+        if report_md:
+            await _mark_succeeded(
+                session,
+                run,
+                final_state=final_state,
+                report_markdown=report_md,
+                template_id=template_id,
+            )
+        else:
+            # 无产出（如仍挂起在 HITL）→ 标记 paused
+            run.status = "paused"
+            # 挂起同样回写真实 token 用量：成本闸门触发时前端/轮询需看到
+            # 已消耗量，否则预算治理在 paused 态失去可观测性
+            run.token_used = int(final_state.get("token_used") or 0)
+            cur_stage = final_state.get("current_stage")
+            if isinstance(cur_stage, str):
+                run.current_stage = cur_stage
+            run.finished_at = None
+
+    await session.commit()
+
+    finished_state = final_state if final_state is not None else (fallback_state or {})
+    finished_event: dict[str, Any] = {
+        "type": "run.finished",
+        "run_id": run_id,
+        "status": run.status,
+        "current_stage": run.current_stage,
+        "token_used": int(finished_state.get("token_used") or run.token_used),
+        "occurred_at": _utcnow_iso(),
+    }
+    if run.status == "failed":
+        finished_event["error_code"] = run.error_code
+        finished_event["error_message"] = run.error_message
+    await _publish_event(hub, run_id, finished_event)
+    return final_state
+
+
+async def resume_research_async(
+    *,
+    run_id: str,
+    human_input: dict[str, Any],
+    session_factory: async_sessionmaker[AsyncSession],
+    checkpointer: BaseCheckpointSaver[Any] | None,
+    llm: Any,
+    retrieval_client: Any,
+    hub: RealtimeHub,
+) -> None:
+    """从 HITL 挂起点恢复研究（澄清答案 / 分歧裁决 / 纯继续）。
+
+    图以 ``interrupt_before`` 挂起时，``Command(resume=...)`` 的负载不会自动并入
+    图状态，因此先 ``aupdate_state`` 写入 ``human_input``，再从挂起线程续跑；
+    ``await_human`` 节点随后按 ``interrupt_reason`` 分流回流（详设 §6.5.10）。
+
+    仅 ``paused`` 状态的 run 可恢复；非挂起调用直接忽略（幂等保护）。
+    """
+    await asyncio.sleep(0)
+
+    async with session_factory() as session:
+        run = await _load_run(session, run_id)
+        if run is None:
+            log.error("恢复目标 run 不存在", extra={"run_id": run_id})
+            await _publish_event(
+                hub,
+                run_id,
+                {"type": "run.failed", "run_id": run_id, "error_code": "RUN_NOT_FOUND"},
+            )
+            return
+        if run.status != "paused":
+            log.warning(
+                "非 paused 状态忽略恢复请求",
+                extra={"run_id": run_id, "status": run.status},
+            )
+            return
+
         try:
-            final_state = await _astream_and_publish(
-                graph,
-                initial_state,
-                thread_config,
+            team_id = await session.scalar(select(Project.team_id).where(Project.id == run.project_id))
+            deps = NodeDeps(
+                run_id=run_id,
+                team_id=str(team_id or ""),
+                trace_id=run_id,
+                llm=llm,
+                retrieval_client=retrieval_client,
+                db_session=None,
+            )
+            graph = _compile_for_deps(deps, checkpointer)
+            thread_config: dict[str, Any] = {"configurable": {"thread_id": run_id}}
+
+            # 把人类输入显式写入挂起线程状态，供 await_human 节点读取
+            await graph.aupdate_state(thread_config, {"human_input": human_input})
+
+            run.status = "running"
+            run.error_code = None
+            run.error_message = None
+            run.finished_at = None
+            await session.flush()
+
+            await _drive_to_terminal(
+                graph=graph,
+                graph_input=Command(resume=human_input),
                 run=run,
+                template_id=run.template_id,
                 session=session,
                 hub=hub,
-                run_id=run_id,
+                deps=deps,
+                fallback_state=None,
             )
-        except Exception as exc:  # noqa: BLE001
-            log.exception("graph.astream 执行失败", extra={"run_id": run_id})
-            error_code = exc.__class__.__name__
-            error_message = repr(exc)
+        except Exception as exc:  # noqa: BLE001 - 恢复护栏：任何异常都落 failed + 终态帧（TR-8.3）
+            log.exception("HITL 恢复执行失败", extra={"run_id": run_id})
             await _mark_failed(
                 session,
                 run,
-                error_code=error_code,
-                error_message=error_message,
+                error_code=exc.__class__.__name__,
+                error_message=repr(exc),
                 partial_state=None,
             )
-        else:
-            report_md = str(final_state.get("report_draft") or "")
-            if report_md:
-                await _mark_succeeded(
-                    session,
-                    run,
-                    final_state=final_state,
-                    report_markdown=report_md,
-                    template_id=template_id,
-                )
-            else:
-                # 无产出（如仍挂起在 HITL）→ 标记 paused
-                run.status = "paused"
-                # 挂起同样回写真实 token 用量：成本闸门触发时前端/轮询需看到
-                # 已消耗量，否则预算治理在 paused 态失去可观测性
-                run.token_used = int(final_state.get("token_used") or 0)
-                cur_stage = final_state.get("current_stage")
-                if isinstance(cur_stage, str):
-                    run.current_stage = cur_stage
-                run.finished_at = None
-
-        await session.commit()
-
-        finished_state = final_state if final_state is not None else initial_state
-        finished_event: dict[str, Any] = {
-            "type": "run.finished",
-            "run_id": run_id,
-            "status": run.status,
-            "current_stage": run.current_stage,
-            "token_used": int(finished_state.get("token_used") or 0),
-            "occurred_at": _utcnow_iso(),
-        }
-        if run.status == "failed":
-            finished_event["error_code"] = run.error_code
-            finished_event["error_message"] = run.error_message
-        await _publish_event(hub, run_id, finished_event)
+            await session.commit()
+            await _publish_event(
+                hub,
+                run_id,
+                {
+                    "type": "run.finished",
+                    "run_id": run_id,
+                    "status": "failed",
+                    "current_stage": run.current_stage,
+                    "error_code": run.error_code,
+                    "error_message": run.error_message,
+                    "occurred_at": _utcnow_iso(),
+                },
+            )
 
 
 __all__ = [
     "run_research_async",
+    "resume_research_async",
+    "_drive_to_terminal",
     "_build_initial_state",
     "_compile_for_deps",
 ]

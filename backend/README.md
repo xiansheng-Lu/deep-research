@@ -5,7 +5,7 @@
 - 语言/运行时：Python 3.11 - 3.12（要求 >=3.11,<3.13）
 - 包管理：[uv](https://docs.astral.sh/uv/)（锁定文件见 `uv.lock`）
 - Web 框架：FastAPI + Uvicorn（异步）
-- 当前里程碑：**M2 进行中**（M1 已于 2026-09-12 关闭；M2-1 意图路由与闲聊接口已完成，详见「里程碑与当前状态」）
+- 当前里程碑：**M2-2 批判收敛与人机裁决已完成**（M1 2026-09-12 关闭；M2-1 意图路由、M2-2 LLM 语义冲突检测/落库/裁决 REST/PostgresSaver 跨请求恢复已完成，详见「里程碑与当前状态」）
 
 ---
 
@@ -201,7 +201,7 @@ backend/
 │   ├── audit/                   # 审计日志
 │   ├── notifications/           # 通知分发
 │   ├── templates/               # 项目 / 报告模板
-│   └── export_openapi.py        # M1 OpenAPI 契约导出脚本
+│   └── export_openapi.py        # OpenAPI 冻结契约导出（M1 / M2-2 快照）
 ├── tests/                       # pytest 测试（无外部服务依赖）
 ├── pyproject.toml               # 依赖与工具配置（唯一清单）
 ├── uv.lock                      # uv 锁定文件
@@ -263,7 +263,7 @@ flowchart TD
 
 - `await_human` 是统一挂起点，`interrupt_reason` 区分回流路径（`clarify` / `critique`）。
 - `cost_checkpoint` 超支时挂起到 `user_intervention`，由用户决定继续或收敛。
-- M1 阶段 checkpointer 使用 `InMemorySaver`（端到端冒烟）；M2 将切换为 `AsyncPostgresSaver` 以支持跨进程持久化恢复。
+- checkpointer：默认应用级 `AsyncPostgresSaver`（`CHECKPOINTER_BACKEND=postgres`，thread_id=run_id，启动自建 checkpoint 表，支持澄清/裁决跨请求、跨进程恢复）；Postgres 不可用或显式配置 `CHECKPOINTER_BACKEND=memory` 时回退进程级 `InMemorySaver`，仅同实例内可恢复。
 
 ### 智能体
 
@@ -359,6 +359,16 @@ access token 默认有效期 30 分钟，refresh token 默认 7 天（见 `JWT_*
 
 研究运行状态机：`pending → running → succeeded / failed / paused`（`paused` 表示挂起在 HITL 节点等待用户输入）。
 
+### 批判收敛与人机裁决（M2-2 已实现）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/runs/{run_id}/conflicts` | 列出 run 下全部分歧（按创建时间升序）；非创建者 404 |
+| GET | `/api/v1/conflicts/{conflict_id}` | 分歧详情，内嵌 evidence_a/evidence_b 八项摘要（id/title/url/domain/snippet/credibility/source_type/published_at） |
+| POST | `/api/v1/conflicts/{conflict_id}/verdict` | 提交裁决（evidence_a/evidence_b/both/reject + reason 必填非空，additional_note 可空），冲突置 resolved；409 重复裁决、422 枚举/空 reason |
+
+high 冲突挂起 `paused@critique`；末条 awaiting_human 冲突裁决后经 AsyncPostgresSaver 自动恢复续跑至 succeeded，无需单独「继续」接口。实时帧：`conflict.detected`（每检出一条 high 冲突，载荷嵌套 payload）、`conflict.verdicts`（裁决恢复时）。报告「冲突与不确定性」段区分「待人工裁决」与「分歧与局限」（both/reject 保留项）。离线评估见 `tests/eval/conflict_cases.jsonl` + `scripts/eval_conflicts.py`（不进 CI），冒烟脚本 `scripts/smoke_m22.py`。
+
 ### WebSocket（M1 已实现）
 
 | 协议 | 路径 | 说明 |
@@ -369,22 +379,22 @@ access token 默认有效期 30 分钟，refresh token 默认 7 天（见 `JWT_*
 - 心跳：服务端每 30 秒发送 `ping`，客户端须在 60 秒内回 `pong`，否则断开。
 - 终态：推送完 `run.finished` / `run.failed` 后服务端关闭连接。
 
-### 占位接口（脚手架，不属于 M1 联调范围）
+### 占位接口（脚手架，不属于当前联调范围）
 
 以下资源当前仅提供 `GET` 占位响应，将在后续里程碑替换为业务实现：
 
-`/users`、`/teams`、`/conflicts`、`/knowledge`、`/connectors`、`/templates`、`/audit`
+`/users`、`/teams`、`/knowledge`、`/connectors`、`/templates`、`/audit`
 
 ### OpenAPI 契约
 
 - 在线文档：启动服务后访问 `/docs`（Swagger UI）。
-- M1 冻结契约导出：
+- 冻结契约导出：
 
 ```powershell
 uv run python -m app.export_openapi
 ```
 
-脚本会把 M1 联调接口子集导出到仓库根目录的 `docs/contract/openapi-m1.json`，前端可用 openapi-generator（typescript-fetch）生成客户端与类型。
+脚本导出当前里程碑快照到仓库根目录 `docs/contract/`：M2-2 快照 `openapi-m2-2.json`（M1 端点 + 分歧三端点）。M1 历史快照 `openapi-m1.json` 默认冻结不覆盖，如需重写加 `--refresh-m1`。前端可用 openapi-generator（typescript-fetch）生成客户端与类型。
 
 ---
 
@@ -502,7 +512,7 @@ docker run --rm -p 8000:8000 --env-file .env deep-research-backend:dev
 | --- | --- | --- | --- |
 | M0 | 项目基础设施 + 底座 | 项目脚手架与配置体系、多租户基线（租户/用户/项目三层数据模型与鉴权中间件）、模型调用层抽象（主备配对、熔断、token 计量点）、LangGraph 编排引擎骨架、任务追踪与审计雏形 | 已完成 |
 | M1 | 最小链路端到端 demo | 六阶段最简链路（clarify → decompose → retrieve → standardize → critique → report）、Researcher×N 拓扑分层并行与单实例失败隔离、公域检索（博查/Tavily）接入与指纹去重、四段 Markdown 报告、节点级日志与逐阶段 WS 事件、成本闸门自动挂起；支撑工程：ORM 与迁移、鉴权、项目/运行/报告 API、编排执行器、WebSocket、OpenAPI M1 契约冻结 | 已完成（2026-09-12） |
-| M2 | 能力补齐与工程化 | 意图路由 classify 接口、批判收敛与分歧 API、透明看板数据接口、Orchestrator 补齐（依赖检测、回溯、降级、暂停接口）、实时成本计量与审计决策留档完整版、信源元数据抽取、数据点级溯源落库、Postgres checkpointer 与 HITL 恢复闭环、Celery 接管长任务 | 进行中（M2-1 意图路由 + 闲聊 SSE 已完成，研究召回离线评估 100%） |
+| M2 | 能力补齐与工程化 | 意图路由 classify 接口、批判收敛与分歧 API、透明看板数据接口、Orchestrator 补齐（依赖检测、回溯、降级、暂停接口）、实时成本计量与审计决策留档完整版、信源元数据抽取、数据点级溯源落库、Postgres checkpointer 与 HITL 恢复闭环、Celery 接管长任务 | 进行中（M2-1 意图路由 + 闲聊 SSE 已完成；M2-2 LLM 语义冲突检测、过程数据落库、分歧三端点、PostgresSaver 跨请求恢复、报告分歧呈现已完成，410 测试通过） |
 | M3 | 核心 MVP | 档位参数化、领域模板、运营账号与反馈通道等后端接口，整合 M1+M2 能力支撑首批内部试用 | 未开始 |
 | M4 | 体验打磨 | 实时成本推送、暂停/追问/剔除证据等用户介入接口、报告精修与点击回溯、Word/PDF 导出、项目级角色权限 | 未开始 |
 | M5 | 私域能力 | 文档上传连接器（PDF/Word/Markdown/Excel 入库检索）、私域/公域信源区分标注、数据源级权限 | 未开始 |

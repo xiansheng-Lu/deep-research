@@ -22,6 +22,7 @@ from app.core.logging import get_logger
 from app.db.base import new_ulid
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.nodes._base import instrument
+from app.orchestrator.persistence import persist_sub_questions
 from app.orchestrator.schemas import SubQuestionItem, SubQuestionListSchema
 from app.orchestrator.state import ResearchStage, ResearchState, SubQuestionDict, SubQuestionStatus
 from app.provider.base import ChatMessage
@@ -152,6 +153,21 @@ def _fallback(clarification: dict[str, Any] | None, original_question: str | Non
     ]
 
 
+async def _maybe_persist(
+    deps: NodeDeps | None,
+    state: ResearchState,
+    items: list[SubQuestionDict],
+) -> None:
+    """注入了 DB 会话时把新拆解的子问题落库（幂等，无会话则静默跳过）。"""
+    if deps is None or deps.db_session is None or not items:
+        return
+    await persist_sub_questions(
+        deps.db_session,
+        run_id=str(state.get("run_id") or ""),
+        items=items,
+    )
+
+
 @instrument(ResearchStage.DECOMPOSE)
 async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str, Any]:
     """子问题拆解节点入口。
@@ -182,14 +198,18 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
     if parsed is not None:
         items = list(parsed.sub_questions)
         if items:
+            result_sqs = _assign_ids(items, max_count=max_count)
+            await _maybe_persist(deps, state, result_sqs)
             return {
-                "sub_questions": _assign_ids(items, max_count=max_count),
+                "sub_questions": result_sqs,
                 **token_patch,
             }
 
     # 2) 降级：单子问题直通
+    fallback_sqs = _fallback(clarification, state.get("question"))
+    await _maybe_persist(deps, state, fallback_sqs)
     return {
-        "sub_questions": _fallback(clarification, state.get("question")),
+        "sub_questions": fallback_sqs,
     }
 
 

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.provider.client import LLMClient
+    from app.realtime.hub import RealtimeHub
     from app.retrieval.client import RetrievalClient
 
 
@@ -29,6 +30,8 @@ class NodeDeps:
         retrieval_client: 检索门面；缺省时节点回退到全局 ``get_default_client()``。
         db_session: 异步 SQLAlchemy 会话；缺省时 ``researcher_fan_out`` 仅写入 state，
             不直接落库（外层编排可在 checkpoint 时统一持久化）。
+        hub: 实时事件总线；critic 检出 high 冲突逐条推送 ``conflict.detected``、
+            await_human 回流时推送 ``conflict.verdicts``；缺省不推送。
     """
 
     run_id: str
@@ -37,6 +40,7 @@ class NodeDeps:
     llm: LLMClient | None = None
     retrieval_client: RetrievalClient | None = None
     db_session: AsyncSession | None = None
+    hub: RealtimeHub | None = None
 
     def safe(self) -> dict[str, Any]:
         """返回便于日志输出的轻量字典（不暴露敏感字段）。"""
@@ -47,6 +51,7 @@ class NodeDeps:
             "has_llm": self.llm is not None,
             "has_retrieval": self.retrieval_client is not None,
             "has_db_session": self.db_session is not None,
+            "has_hub": self.hub is not None,
         }
 
 

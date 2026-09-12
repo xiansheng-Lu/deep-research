@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     db_sync_url: str = Field(alias="DB_SYNC_URL")
     db_pool_size: int = Field(default=10, alias="DB_POOL_SIZE")
     db_max_overflow: int = Field(default=20, alias="DB_MAX_OVERFLOW")
+    # 编排检查点后端：postgres=AsyncPostgresSaver（生产默认，支持跨请求/跨进程
+    # HITL 恢复）；memory=应用级单例 InMemorySaver（测试与无 DB 环境兜底）
+    checkpointer_backend: Literal["postgres", "memory"] = Field(
+        default="postgres", alias="CHECKPOINTER_BACKEND"
+    )
 
     # ===== Redis / Celery =====
     redis_url: str = Field(alias="REDIS_URL")

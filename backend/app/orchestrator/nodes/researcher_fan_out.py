@@ -13,8 +13,9 @@
       ``evidence_ids=[]``。
     - 跨子问题去重：按 ``app.retrieval.dedup.fingerprint`` 去重，避免同一 URL 在
       多子问题下重复落库。
-    - 落库（可选）：``deps.db_session`` 不为空时把 ``EvidenceDict`` 同步插入；
-      为空时仅生成 ``EvidenceDict`` 写入 state，由外层在 checkpoint 时统一持久化。
+    - 落库（可选，M2-2）：``deps.db_session`` 不为空时仅 upsert 子问题执行状态；
+      证据统一在 standardize 节点完成分类后幂等写入，避免固化 retrieve 阶段的
+      临时分级（见 ``app.orchestrator.persistence``）。
     - 重复执行：已终止状态（succeeded / failed / evidence_short）的子问题跳过，
       保持幂等。
 
@@ -33,7 +34,9 @@ from app.core.logging import get_logger
 from app.db.base import new_ulid
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.nodes._base import instrument
+from app.orchestrator.persistence import persist_sub_questions
 from app.orchestrator.state import (
+    EvidenceDict,
     ResearchStage,
     ResearchState,
     SubQuestionDict,
@@ -134,8 +137,8 @@ def _hit_to_evidence_dict(
     hit_fetched_at: datetime | None,
     sub_question_id: str,
     fingerprint_str: str,
-) -> dict[str, Any]:
-    """把 ``RetrievalHit`` 序列化成 ``EvidenceDict`` 友好形态。"""
+) -> EvidenceDict:
+    """把 ``RetrievalHit`` 序列化成 ``EvidenceDict`` 形态。"""
     url = hit_url or ""
     domain = _extract_domain(url)
     source_type = "news" if hit_source == RetrievalSource.WEB else "search"
@@ -162,7 +165,7 @@ async def _research_one(
     retrieval: RetrievalClient,
     run_id: str,
     top_k: int,
-) -> tuple[SubQuestionDict, list[dict[str, Any]]]:
+) -> tuple[SubQuestionDict, list[EvidenceDict]]:
     """处理单个子问题：search → extract → 去重 → 转 EvidenceDict。
 
     返回 ``(更新后的子问题, 证据列表)``。任何异常都会被捕获：子问题标
@@ -192,9 +195,7 @@ async def _research_one(
         )
 
     try:
-        extracted = await asyncio.wait_for(
-            retrieval.extract(hits), timeout=_PER_SUB_QUESTION_TIMEOUT
-        )
+        extracted = await asyncio.wait_for(retrieval.extract(hits), timeout=_PER_SUB_QUESTION_TIMEOUT)
     except TimeoutError:
         log.warning(
             "researcher_fan_out 单子问题 extract 超时",
@@ -210,7 +211,7 @@ async def _research_one(
 
     # 单子问题内部仍按 fingerprint 去重
     seen_fps: set[str] = set()
-    evidence: list[dict[str, Any]] = []
+    evidence: list[EvidenceDict] = []
     for hit in extracted:
         fp = fingerprint(hit)
         if fp in seen_fps:
@@ -244,49 +245,13 @@ async def _research_one(
     )
 
 
-def _persist_evidence(
-    db_session: Any,
-    *,
-    run_id: str,
-    items: list[dict[str, Any]],
-) -> int:
-    """把 EvidenceDict 列表落库（同步会话下使用）；返回写入条数。"""
-    # 延迟导入避免节点模块级依赖 sqlalchemy
-    from app.db.models.evidence import Evidence
-
-    inserted = 0
-    for item in items:
-        db_session.add(
-            Evidence(
-                id=item["id"],
-                run_id=run_id,
-                sub_question_id=item["sub_question_id"],
-                url=item["url"],
-                domain=item["domain"],
-                title=item["title"],
-                snippet=item["snippet"],
-                content=None,
-                source_type=item["source_type"],  # type: ignore[arg-type]
-                source_level=item["source_level"],  # type: ignore[arg-type]
-                credibility=item["credibility"],  # type: ignore[arg-type]
-                fingerprint=item["fingerprint"],
-                published_at=datetime.fromisoformat(item["published_at"])
-                if item["published_at"]
-                else None,
-                fetched_at=datetime.fromisoformat(item["fetched_at"]),
-            )
-        )
-        inserted += 1
-    return inserted
-
-
 @instrument(ResearchStage.RETRIEVE)
 async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str, Any]:
     """检索节点入口。
 
     返回值会被 LangGraph 自动合并到 ``ResearchState`` 中。
     """
-    subqs = list(state.get("sub_questions") or [])
+    subqs: list[SubQuestionDict] = list(state.get("sub_questions") or [])
     if not subqs:
         return {"evidence": list(state.get("evidence") or [])}
 
@@ -296,34 +261,37 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
         return {"evidence": list(state.get("evidence") or [])}
 
     retrieval = _resolve_retrieval(deps)
-    if retrieval is None:
-        log.warning("researcher_fan_out 未获取到检索客户端，全部子问题标记 failed")
-        failed = [{**s, "status": "failed", "evidence_ids": []} for s in pending]
-        by_id = {s["id"]: s for s in subqs}
-        by_id.update({f["id"]: f for f in failed})
-        return {"evidence": list(state.get("evidence") or []), "sub_questions": list(by_id.values())}
-
     db_session = getattr(deps, "db_session", None) if deps is not None else None
     run_id = str(state.get("run_id") or "")
+    if retrieval is None:
+        log.warning("researcher_fan_out 未获取到检索客户端，全部子问题标记 failed")
+        failed: list[SubQuestionDict] = [{**s, "status": "failed", "evidence_ids": []} for s in pending]
+        by_id: dict[str, SubQuestionDict] = {s["id"]: s for s in subqs}
+        by_id.update({f["id"]: f for f in failed})
+        if db_session is not None:
+            # 失败状态同样落库，保证看板/恢复链路可见终态
+            await persist_sub_questions(db_session, run_id=run_id, items=list(by_id.values()))
+        return {"evidence": list(state.get("evidence") or []), "sub_questions": list(by_id.values())}
+
     top_k = top_k_for_tier(state.get("tier"))
 
     layers = _topological_layers(pending)
-    by_id: dict[str, SubQuestionDict] = {s["id"]: s for s in subqs}
-    all_evidence: list[dict[str, Any]] = list(state.get("evidence") or [])
+    by_id = {s["id"]: s for s in subqs}
+    all_evidence: list[EvidenceDict] = list(state.get("evidence") or [])
 
     for layer in layers:
         results = await asyncio.gather(
-            *[
-                _research_one(sq, retrieval=retrieval, run_id=run_id, top_k=top_k)
-                for sq in layer
-            ],
+            *[_research_one(sq, retrieval=retrieval, run_id=run_id, top_k=top_k) for sq in layer],
             return_exceptions=False,
         )
+        updated_sqs: list[SubQuestionDict] = []
         for updated_sq, evidence in results:
             by_id[updated_sq["id"]] = updated_sq
+            updated_sqs.append(updated_sq)
             all_evidence.extend(evidence)
-            if db_session is not None and evidence:
-                _persist_evidence(db_session, run_id=run_id, items=evidence)
+        if db_session is not None and updated_sqs:
+            # 仅回写子问题执行状态；证据统一在 standardize 分类后落库
+            await persist_sub_questions(db_session, run_id=run_id, items=updated_sqs)
 
     return {
         "evidence": all_evidence,
