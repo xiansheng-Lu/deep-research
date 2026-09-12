@@ -74,15 +74,13 @@ export async function streamAssistantChat(
       const frame = buffer.slice(0, sepIndex)
       buffer = buffer.slice(sepIndex + 2)
       if (!handleFrame(frame)) {
-        await reader.cancel()
+        // [DONE] / error：服务端随后主动关闭流，不做客户端 cancel（避免 ERR_ABORTED 日志）
         return
       }
     }
   }
   // 收尾：处理残留在 buffer 中的最后一帧
-  if (buffer.trim() && handleFrame(buffer)) {
-    // 服务端未发 [DONE] 即关闭连接：不视为错误，增量已全部交付
-  }
+  if (buffer.trim()) handleFrame(buffer)
 }
 
 // 便于 UI 层把错误帧与建连错误统一映射

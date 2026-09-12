@@ -1,62 +1,109 @@
-// 单个研究运行的实时状态编排（[前端详细设计 §7.3] 的 M1 裁剪版）
-// 进入先 GET /runs/{id} 取初帧并映射六阶段；非终态再建立 WS：
-//   - stage.started 推进时间线当前阶段；
-//   - run.finished / run.failed 写入终态；
-//   - 通道 live 后补一次 GET 对齐订阅前漏帧（重连 live 同样补帧）；
-//   - 非终态期间每 4s 兜底轮询 GET：WS 不可用（代理拦截/握手超时）时仍能收敛到终态。
-// 模块级 Map 缓存 reactive 状态：指挥舱重进不闪骨架；M1 不做跨页引用计数，
-// 页面卸载即解绑订阅并销毁通道，终态帧保留在缓存中（报告页自行走 REST）。
+// 单个研究运行的实时状态编排（[前端详细设计 §7.3 M2 全量版]）
+// 模块级 Map 缓存 reactive 状态：指挥舱/报告等多页面订阅同一 run 共享状态与同一条 WS
+// （RealtimeClient 引用计数，跨页切换不重建连接）；页面卸载只解绑，终态帧保留在缓存。
 import { onMounted, onUnmounted, reactive } from 'vue'
-import { getRun, buildRunStreamUrl } from '@/services/api/runs'
-import type { ResearchStageName, RunResponse, RunStatus } from '@/services/api/types'
-import type { ApiError } from '@/services/http/error'
+import { getRun } from '@/services/api/runs'
+import {
+  getCostSnapshot,
+  getRunConflicts,
+  getRunStages,
+  getRunSubQuestions
+} from '@/services/api/dashboard'
+import type {
+  ConflictResponse,
+  CostSnapshot,
+  EvidenceResponse,
+  ResearchStageName,
+  RunResponse,
+  RunStatus,
+  StageResponse,
+  SubQuestionResponse
+} from '@/services/api/types'
 import { realtimeClient, type WsChannel } from '@/services/realtime/realtime'
+import type { ChannelState } from '@/services/realtime/types'
+import { buildRunStreamUrl } from '@/services/api/runs'
+import { pauseRun, proceedRun, submitClarificationAnswers } from '@/services/api/interventions'
 import {
   REALTIME_EVENT,
-  type ChannelState,
+  type ClarificationQuestion,
+  type ConflictDetectedPayload,
+  type CostWarningPayload,
+  type EvidenceFetchedPayload,
+  type InterruptRequestedPayload,
   type RealtimeEnvelope,
   type RunFinishedPayload,
-  type StageStartedPayload
+  type StageFailedPayload,
+  type SubQuestionLifecyclePayload,
+  type TokenUsagePayload
 } from '@/services/realtime/types'
-import { RESEARCH_STAGES } from '@/services/domain/stages'
 import { useSessionStore } from '@/stores/session'
+import { RESEARCH_STAGES } from '@/services/domain/stages'
 
-// 兜底轮询间隔：WS 中断或建连超时时，靠 REST 快照持续推进页面并收敛到终态
-const REST_POLL_INTERVAL_MS = 4000
-
-// 单个阶段在时间线上的运行态
-export interface StageRuntime {
-  name: ResearchStageName
-  // 待执行 / 进行中 / 完成 / 失败
-  status: 'pending' | 'running' | 'done' | 'failed'
-  // 尝试次数（M1 事件恒为 1；初帧 REST 不含该信息时为 null）
-  attempt: number | null
-  // 阶段开始的毫秒时间戳（来自 stage.started 信封 ts）
-  startedAt: number | null
-}
-
-// 一个 run 的可观察状态（模块缓存中的值即此结构的 reactive 代理）
-export interface RunStreamState {
-  run: RunResponse | null
-  stages: StageRuntime[]
-  // 实时通道状态；终态 run 不建通道，恒为 idle
-  channelState: ChannelState
-  loading: boolean
-  notFound: boolean
-  error: ApiError | null
-}
-
-// 通道关闭态：run 不再产生实时事件，无需建立/保留 WS 与兜底轮询
-// succeeded/failed/cancelled 为终态；paused 为澄清挂起，M1 冻结契约无恢复端点（M2 再开放）
-const STREAM_CLOSED_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
+// run 进入通道关闭后不再产生实时事件：succeeded/failed/cancelled 终态 + paused 澄清挂起
+// （paused 的恢复在 M2 HITL，恢复前不建 WS 也不轮询，避免无意义流量）
+const STREAM_CLOSED_STATUSES: ReadonlySet<RunStatus> = new Set([
   'succeeded',
   'failed',
   'cancelled',
   'paused'
 ])
 
-// 模块级缓存：runId -> 共享响应式状态
-const stateCache = new Map<string, RunStreamState>()
+// 非关闭态兜底 REST 轮询间隔（M1 P0-2：WS 不可用时仍能收敛）
+const REST_POLL_INTERVAL_MS = 4000
+// 证据增量 rAF 合批窗口（[§9.4]）
+// （同一帧内多条 evidence.fetched 合并一次响应式写入）
+
+export interface StageRuntime {
+  name: ResearchStageName
+  status: 'pending' | 'running' | 'done' | 'failed'
+  attempt: number | null
+  startedAt: number | null
+  errorCode?: string
+  errorMessage?: string
+  // 后端标记可重试（stage.failed.retryable），M2-5 前仅记录，不提供按钮
+  retryable?: boolean
+}
+
+export interface CostState {
+  used: number
+  budget: number
+  ratio: number
+  // 当前预警级别（null=正常；warning=70%；danger=90%）
+  warningLevel: 'warning' | 'danger' | null
+}
+
+export interface RunStreamState {
+  run: RunResponse | null
+  stages: StageRuntime[]
+  subQuestions: SubQuestionResponse[]
+  evidence: EvidenceResponse[]
+  conflicts: ConflictResponse[]
+  cost: CostState
+  // 进行中的澄清/裁决介入请求（interrupt.requested）；M2 WP-15 渲染卡片
+  interrupt: (InterruptRequestedPayload & { stage?: string }) | null
+  channelState: ChannelState
+  loading: boolean
+  notFound: boolean
+  error: ApiErrorLike | null
+}
+
+interface ApiErrorLike {
+  status: number
+  code: string
+  title: string
+  detail?: string
+}
+
+const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = STREAM_CLOSED_STATUSES
+
+function createInitialCost(run?: RunResponse | null): CostState {
+  return {
+    used: run?.token_used ?? 0,
+    budget: run?.token_budget ?? 0,
+    ratio: run?.token_budget ? Math.min(1, (run.token_used ?? 0) / run.token_budget) : 0,
+    warningLevel: null
+  }
+}
 
 function createInitialState(): RunStreamState {
   return {
@@ -67,12 +114,20 @@ function createInitialState(): RunStreamState {
       attempt: null,
       startedAt: null
     })),
+    subQuestions: [],
+    evidence: [],
+    conflicts: [],
+    cost: createInitialCost(),
+    interrupt: null,
     channelState: 'idle',
     loading: false,
     notFound: false,
     error: null
   }
 }
+
+// 模块级缓存：runId -> 共享响应式状态
+const stateCache = new Map<string, RunStreamState>()
 
 function ensureState(runId: string): RunStreamState {
   const cached = stateCache.get(runId)
@@ -82,36 +137,44 @@ function ensureState(runId: string): RunStreamState {
   return state
 }
 
-// 依据 run 实体快照映射六阶段状态；prev 用于保留 WS 已写入的 attempt/startedAt
+// run 快照映射六阶段状态（REST 初帧/补帧/兜底轮询共用）
+// 前置截断 current_stage：paused 归入通道关闭态，其所在阶段按"进行中"语义保留
 function mapStages(run: RunResponse, prev: StageRuntime[]): StageRuntime[] {
   const currentIndex = run.current_stage ? RESEARCH_STAGES.indexOf(run.current_stage) : -1
-
-  return RESEARCH_STAGES.map((name, i): StageRuntime => {
-    const previous = prev.find((item) => item.name === name) ?? null
-    const base: StageRuntime = {
+  return RESEARCH_STAGES.map((name, i) => {
+    const previous = prev.find((item) => item.name === name) ?? {
       name,
-      status: 'pending',
-      attempt: previous?.attempt ?? null,
-      startedAt: previous?.startedAt ?? null
+      status: 'pending' as const,
+      attempt: null,
+      startedAt: null
     }
-
     if (run.status === 'succeeded') {
-      base.status = 'done'
-      return base
+      return { ...previous, name, status: 'done' }
     }
-
     if (run.status === 'failed') {
-      if (currentIndex === -1) return base
-      if (i < currentIndex) base.status = 'done'
-      else if (i === currentIndex) base.status = 'failed'
-      return base
+      if (i === currentIndex) {
+        return {
+          ...previous,
+          name,
+          status: 'failed',
+          errorCode: run.error_code ?? undefined,
+          errorMessage: run.error_message ?? undefined
+        }
+      }
+      if (i < currentIndex) {
+        return { ...previous, name, status: 'done' }
+      }
+      return { ...previous, name, status: 'pending' }
     }
-
-    // running / pending / paused / cancelled：按当前阶段截断渲染
-    if (currentIndex === -1) return base
-    if (i < currentIndex) base.status = 'done'
-    else if (i === currentIndex) base.status = 'running'
-    return base
+    if (run.status === 'cancelled') {
+      if (i < currentIndex) return { ...previous, name, status: 'done' }
+      return { ...previous, name, status: 'pending' }
+    }
+    // running / pending / paused：按当前阶段截断渲染
+    if (currentIndex === -1) return { ...previous, name, status: 'pending' }
+    if (i < currentIndex) return { ...previous, name, status: 'done' }
+    if (i === currentIndex) return { ...previous, name, status: 'running' }
+    return { ...previous, name, status: 'pending' }
   })
 }
 
@@ -119,31 +182,236 @@ export function useRunStream(runId: string) {
   const session = useSessionStore()
   const state = ensureState(runId)
 
-  // 以下为本次页面挂载的通道资源（缓存共享状态，通道随页面生命周期销毁）
   let channel: WsChannel | null = null
-  let pollTimer: number | null = null
   const unsubscribe: Array<() => void> = []
   let disposed = false
+  let pollTimer: ReturnType<typeof setInterval> | null = null
 
-  // 应用 run 快照到共享状态并切换通道存在性
+  // 证据增量 rAF 合批队列
+  let evidenceFrame: EvidenceFetchedPayload[] = []
+  let evidenceRafId: number | null = null
+
+  // ─── 快照应用 ───
+
+  function applyCost(cost: Partial<CostState> & { used?: number; budget?: number; ratio?: number }): void {
+    if (typeof cost.used === 'number') state.cost.used = cost.used
+    if (typeof cost.budget === 'number') state.cost.budget = cost.budget
+    if (typeof cost.ratio === 'number') state.cost.ratio = cost.ratio
+    if (cost.warningLevel !== undefined) state.cost.warningLevel = cost.warningLevel
+  }
+
   function applyRun(run: RunResponse): void {
     state.run = run
     state.stages = mapStages(run, state.stages)
+    applyCost({
+      used: run.token_used,
+      budget: run.token_budget,
+      ratio: run.token_budget ? Math.min(1, run.token_used / run.token_budget) : state.cost.ratio
+    })
     if (STREAM_CLOSED_STATUSES.has(run.status)) {
-      destroyStream()
+      detach('destroy')
     }
   }
 
-  // 通道 live 后补 GET：对齐订阅建立前的漏帧；失败则保持事件推进的现有状态
+  // 通道 live 后补 GET：对齐订阅建立前漏帧（[§9.3] 补齐流程）
   async function alignWithRest(): Promise<void> {
     try {
       applyRun(await getRun(runId))
+      if (STREAM_CLOSED_STATUSES.has(state.run!.status)) return
+      // M2-4 看板端点未上线前这些请求可能 404：各自独立静默，端点就绪后自动生效
+      await Promise.allSettled([syncStages(), syncSubQuestions(), syncConflicts(), syncCost()])
     } catch {
-      // 等待下一次 live 或后续阶段事件对齐，不用补帧失败打断实时视图
+      // 等待 live 重连或兜底轮询对齐，补帧失败不打断实时视图
     }
   }
 
-  // 应用 run 结束事件负载（run.finished / run.failed）；status 可能为 paused（澄清挂起）
+  async function syncStages(): Promise<void> {
+    const stages: StageResponse[] = await getRunStages(runId)
+    for (const s of stages) {
+      const idx = RESEARCH_STAGES.indexOf(s.name)
+      if (idx === -1) continue
+      const prev = state.stages[idx]
+      state.stages[idx] = {
+        name: s.name,
+        status:
+          s.status === 'succeeded'
+            ? 'done'
+            : s.status === 'skipped'
+              ? 'done'
+              : s.status === 'failed'
+                ? 'failed'
+                : s.status === 'running'
+                  ? 'running'
+                  : 'pending',
+        attempt: s.attempt ?? prev.attempt,
+        startedAt: prev.startedAt,
+        errorCode: prev.errorCode,
+        errorMessage: prev.errorMessage
+      }
+    }
+  }
+
+  async function syncSubQuestions(): Promise<void> {
+    const items = await getRunSubQuestions(runId)
+    state.subQuestions = mergeSubQuestions(state.subQuestions, items)
+  }
+
+  async function syncConflicts(): Promise<void> {
+    const items = await getRunConflicts(runId)
+    state.conflicts = mergeConflicts(state.conflicts, items)
+  }
+
+  async function syncCost(): Promise<void> {
+    const snapshot: CostSnapshot = await getCostSnapshot(runId)
+    applyCost({ used: snapshot.used, budget: snapshot.budget, ratio: snapshot.ratio })
+  }
+
+  // ─── 事件处理（§9.2 路由表）───
+
+  function handleStageStarted(env: RealtimeEnvelope): void {
+    const payload = env.payload as { stage?: ResearchStageName; attempt?: number }
+    const stage = env.stage ?? payload.stage
+    if (!stage || !RESEARCH_STAGES.includes(stage)) return
+    const index = RESEARCH_STAGES.indexOf(stage)
+    state.stages = state.stages.map((item, i) => {
+      if (i < index && item.status !== 'failed') return { ...item, status: 'done' }
+      if (i === index) {
+        return { ...item, status: 'running', attempt: payload.attempt ?? item.attempt ?? 1, startedAt: env.ts ?? item.startedAt }
+      }
+      return item
+    })
+    if (state.run) {
+      state.run.current_stage = stage as ResearchStageName
+      if (state.run.status === 'pending') state.run.status = 'running'
+    }
+  }
+
+  function handleStageFinished(env: RealtimeEnvelope): void {
+    const payload = env.payload as { stage?: ResearchStageName }
+    const stage = env.stage ?? payload.stage
+    if (!stage) return
+    const index = RESEARCH_STAGES.indexOf(stage)
+    if (index === -1) return
+    state.stages = state.stages.map((item, i) => (i === index ? { ...item, status: 'done' } : item))
+  }
+
+  function handleStageFailed(env: RealtimeEnvelope): void {
+    const payload = env.payload as StageFailedPayload
+    const stage = env.stage ?? payload.stage
+    if (!stage) return
+    const index = RESEARCH_STAGES.indexOf(stage)
+    if (index === -1) return
+    state.stages = state.stages.map((item, i) =>
+      i === index
+        ? {
+            ...item,
+            status: 'failed',
+            errorCode: payload.error_code,
+            errorMessage: payload.error_message,
+            retryable: payload.retryable
+          }
+        : item
+    )
+  }
+
+  function handleSubQuestion(env: RealtimeEnvelope): void {
+    const payload = env.payload as SubQuestionLifecyclePayload
+    if (!payload.sub_question_id) return
+    const next: SubQuestionResponse = {
+      id: payload.sub_question_id,
+      run_id: runId,
+      question: payload.question ?? '',
+      depends_on: payload.depends_on ?? [],
+      status: payload.status ?? 'queued',
+      evidence_count: payload.evidence_count ?? 0
+    }
+    state.subQuestions = mergeSubQuestions(state.subQuestions, [next])
+  }
+
+  function queueEvidence(env: RealtimeEnvelope): void {
+    const payload = env.payload as EvidenceFetchedPayload
+    if (!payload?.id) return
+    evidenceFrame.push(payload)
+    if (evidenceRafId === null && typeof requestAnimationFrame === 'function') {
+      evidenceRafId = requestAnimationFrame(flushEvidenceFrame)
+    } else if (evidenceRafId === null) {
+      // 非浏览器帧环境兜底：微任务后立即 flush
+      evidenceRafId = 0
+      void Promise.resolve().then(flushEvidenceFrame)
+    }
+  }
+
+  function flushEvidenceFrame(): void {
+    evidenceRafId = null
+    const batch = evidenceFrame
+    evidenceFrame = []
+    const incoming: EvidenceResponse[] = batch.map((p) => ({
+      id: p.id,
+      run_id: runId,
+      sub_question_id: p.sub_question_id,
+      url: p.url,
+      domain: p.domain,
+      title: p.title,
+      snippet: p.snippet,
+      source_type: p.source_type,
+      source_level: p.source_level,
+      credibility: p.credibility,
+      relevance_score: p.relevance_score,
+      published_at: p.published_at ?? null,
+      excluded_by_user: p.excluded_by_user ?? false
+    }))
+    state.evidence = mergeEvidence(state.evidence, incoming)
+  }
+
+  function handleInterrupt(env: RealtimeEnvelope): void {
+    const payload = env.payload as InterruptRequestedPayload
+    if (!payload || !Array.isArray(payload.questions)) return
+    state.interrupt = {
+      reason: payload.reason,
+      questions: payload.questions as ClarificationQuestion[],
+      defaults: payload.defaults ?? {},
+      expires_in_seconds: payload.expires_in_seconds,
+      stage: env.stage
+    }
+  }
+
+  function handleConflict(env: RealtimeEnvelope): void {
+    const payload = env.payload as ConflictDetectedPayload
+    if (!payload?.id) return
+    const next: ConflictResponse = {
+      id: payload.id,
+      run_id: runId,
+      claim: payload.claim,
+      evidence_a_id: payload.evidence_a_id,
+      evidence_b_id: payload.evidence_b_id,
+      type: payload.type,
+      severity: payload.severity,
+      status: payload.status
+    }
+    state.conflicts = mergeConflicts(state.conflicts, [next])
+  }
+
+  function handleTokenUsage(env: RealtimeEnvelope): void {
+    const payload = env.payload as TokenUsagePayload
+    applyCost({
+      used: payload.used,
+      budget: payload.budget ?? state.cost.budget,
+      ratio: payload.budget ? payload.used / payload.budget : payload.used / (state.cost.budget || 1)
+    })
+    if (state.run) state.run.token_used = payload.used
+  }
+
+  function handleCostWarning(env: RealtimeEnvelope): void {
+    const payload = env.payload as CostWarningPayload
+    applyCost({
+      used: payload.used,
+      budget: payload.budget,
+      ratio: payload.ratio,
+      warningLevel: payload.level
+    })
+  }
+
+  // 应用 run 结束事件（run.finished/run.failed）；状态以事件负载 status 为准
   function applyTerminalPayload(
     payload: RunFinishedPayload,
     status: Extract<RunStatus, 'succeeded' | 'failed' | 'cancelled' | 'paused'>
@@ -154,45 +422,14 @@ export function useRunStream(runId: string) {
     if (payload.current_stage) {
       run.current_stage = payload.current_stage as ResearchStageName
     }
-    if (typeof payload.token_used === 'number') {
-      run.token_used = payload.token_used
-    }
+    if (typeof payload.token_used === 'number') run.token_used = payload.token_used
     if (payload.error_code !== undefined) run.error_code = payload.error_code
     if (payload.error_message !== undefined) run.error_message = payload.error_message
     state.stages = mapStages(run, state.stages)
-    // run 已终态：销毁通道并停止兜底轮询（服务端随后也会关闭连接）
-    destroyStream()
-  }
-
-  function handleStageStarted(env: RealtimeEnvelope): void {
-    const payload = env.payload as StageStartedPayload
-    const stage = env.stage ?? payload.stage
-    if (!stage || !RESEARCH_STAGES.includes(stage as ResearchStageName)) return
-    const index = RESEARCH_STAGES.indexOf(stage as ResearchStageName)
-
-    state.stages = state.stages.map((item, i) => {
-      if (i < index && item.status !== 'failed') {
-        return { ...item, status: 'done' }
-      }
-      if (i === index) {
-        return {
-          ...item,
-          status: 'running',
-          attempt: payload.attempt ?? item.attempt ?? 1,
-          startedAt: env.ts ?? item.startedAt
-        }
-      }
-      return item
-    })
-
-    if (state.run) {
-      state.run.current_stage = stage as ResearchStageName
-      if (state.run.status === 'pending') state.run.status = 'running'
-    }
+    detach('destroy')
   }
 
   function handleRunFinished(env: RealtimeEnvelope): void {
-    // 状态以事件负载为准：后端澄清挂起时同样发 run.finished，但 status=paused
     const payload = env.payload as RunFinishedPayload
     applyTerminalPayload(payload, payload.status)
   }
@@ -202,26 +439,57 @@ export function useRunStream(runId: string) {
     applyTerminalPayload(payload, 'failed')
   }
 
-  // 建立（或重建）实时通道与订阅
-  function connectStream(): void {
-    destroyStream()
+  // ─── 实时通道与轮询 ───
 
-    // 路由守卫已保证登录并恢复令牌；此处为空属程序装配错误，直接抛出
+  // 本实例解绑：release=仅释放引用（跨页共享，RealtimeClient 延迟 5s 断开）；
+  // destroy=终态/异常立即关闭（不等待引用归零）
+  function detach(mode: 'release' | 'destroy'): void {
+    for (const off of unsubscribe) off()
+    unsubscribe.length = 0
+    stopPolling()
+    if (evidenceRafId !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(evidenceRafId)
+    }
+    evidenceRafId = null
+    evidenceFrame = []
+    if (channel) {
+      const channelId = `runs:${runId}`
+      if (mode === 'destroy') {
+        realtimeClient.destroyChannel(channelId)
+        state.channelState = 'idle'
+      } else {
+        realtimeClient.releaseChannel(channelId)
+      }
+      channel = null
+    }
+  }
+
+  function connectStream(): void {
+    // 重连/重试前先释放本实例旧引用（共享连接若仍被其他页面持有则不断开）
+    detach('release')
+
     const token = session.accessToken
     if (!token) {
       throw new Error('建立实时连接前访问令牌缺失')
     }
 
     const channelId = `runs:${runId}`
-    channel = realtimeClient.ensureChannel(channelId, {
-      url: buildRunStreamUrl(runId, token)
-    })
+    channel = realtimeClient.ensureChannel(channelId, { url: buildRunStreamUrl(runId, token) })
     channel.setOnStateChange((next) => {
       state.channelState = next
-      // 首次连接与每次重连 live 后都补一次 REST，消除订阅空窗漏帧
       if (next === 'live') void alignWithRest()
     })
     unsubscribe.push(channel.on(REALTIME_EVENT.STAGE_STARTED, handleStageStarted))
+    unsubscribe.push(channel.on(REALTIME_EVENT.STAGE_FINISHED, handleStageFinished))
+    unsubscribe.push(channel.on(REALTIME_EVENT.STAGE_FAILED, handleStageFailed))
+    unsubscribe.push(channel.on(REALTIME_EVENT.SUB_QUESTION_CREATED, handleSubQuestion))
+    unsubscribe.push(channel.on(REALTIME_EVENT.SUB_QUESTION_STARTED, handleSubQuestion))
+    unsubscribe.push(channel.on(REALTIME_EVENT.SUB_QUESTION_FINISHED, handleSubQuestion))
+    unsubscribe.push(channel.on(REALTIME_EVENT.EVIDENCE_FETCHED, queueEvidence))
+    unsubscribe.push(channel.on(REALTIME_EVENT.INTERRUPT_REQUESTED, handleInterrupt))
+    unsubscribe.push(channel.on(REALTIME_EVENT.CONFLICT_DETECTED, handleConflict))
+    unsubscribe.push(channel.on(REALTIME_EVENT.TOKEN_USAGE_UPDATE, handleTokenUsage))
+    unsubscribe.push(channel.on(REALTIME_EVENT.COST_WARNING, handleCostWarning))
     unsubscribe.push(channel.on(REALTIME_EVENT.RUN_FINISHED, handleRunFinished))
     unsubscribe.push(channel.on(REALTIME_EVENT.RUN_FAILED, handleRunFailed))
     channel.connect()
@@ -229,65 +497,94 @@ export function useRunStream(runId: string) {
     startPolling()
   }
 
-  // 兜底轮询：WS 建连失败或事件丢帧时，REST 快照仍能推进阶段并收敛到终态
+  // 兜底轮询：非关闭态每 4s GET 快照（WS 中断/事件稀疏时保证收敛）
   function startPolling(): void {
     stopPolling()
-    pollTimer = window.setInterval(() => {
+    pollTimer = setInterval(() => {
       void alignWithRest()
     }, REST_POLL_INTERVAL_MS)
   }
 
   function stopPolling(): void {
     if (pollTimer !== null) {
-      window.clearInterval(pollTimer)
+      clearInterval(pollTimer)
       pollTimer = null
     }
   }
 
-  // 解绑订阅并销毁通道（幂等）
-  function destroyStream(): void {
-    for (const off of unsubscribe) off()
-    unsubscribe.length = 0
-    stopPolling()
-    if (channel) {
-      realtimeClient.destroyChannel(channel.id)
-      channel = null
-    }
-    state.channelState = 'idle'
-  }
+  // ─── 初帧加载 ───
 
-  // 初帧加载：GET 取初帧映射阶段，非终态建 WS；404 单独走不存在态
   async function init(): Promise<void> {
-    const firstLoad = state.run === null
-    state.loading = firstLoad
-    state.notFound = false
-    state.error = null
+    const disposedAfter = () => disposed
+    state.loading = true
     try {
       const run = await getRun(runId)
-      if (disposed) return
+      if (disposedAfter()) return
       applyRun(run)
-      if (!STREAM_CLOSED_STATUSES.has(run.status)) connectStream()
+      if (!TERMINAL_RUN_STATUSES.has(run.status)) connectStream()
     } catch (err) {
-      const apiError = err as ApiError
+      const apiError = err as ApiErrorLike
       if (apiError.status === 404) {
         state.notFound = true
       } else {
         state.error = apiError
       }
-      destroyStream()
+      detach('destroy')
     } finally {
       state.loading = false
     }
   }
 
+  // HITL 受控动作（M2 WP-15 接 UI；REST 通道，与 WS sendCommand 等价）
+  const actions = {
+    pause: () => pauseRun(runId),
+    proceed: () => proceedRun(runId),
+    submitAnswers: (answers: Record<string, string>) => submitClarificationAnswers(runId, answers)
+  }
+
   onMounted(init)
   onUnmounted(() => {
     disposed = true
-    destroyStream()
+    // 离开页面只释放引用：其他页面（报告/看板）仍可共享同一条连接
+    detach('release')
   })
 
-  return {
-    state,
-    reload: init
+  return { state, connect: connectStream, disconnect: () => detach('destroy'), reload: init, actions }
+}
+
+// ─── 合并工具：稳定 key 增量更新，避免整表重渲染 ───
+
+function mergeSubQuestions(
+  prev: SubQuestionResponse[],
+  incoming: SubQuestionResponse[]
+): SubQuestionResponse[] {
+  const map = new Map(prev.map((item) => [item.id, item]))
+  for (const item of incoming) {
+    const old = map.get(item.id)
+    map.set(item.id, old ? { ...old, ...compact(item) } : item)
   }
+  return Array.from(map.values())
+}
+
+function mergeEvidence(prev: EvidenceResponse[], incoming: EvidenceResponse[]): EvidenceResponse[] {
+  const map = new Map(prev.map((item) => [item.id, item]))
+  for (const item of incoming) {
+    const old = map.get(item.id)
+    map.set(item.id, old ? { ...old, ...compact(item) } : item)
+  }
+  return Array.from(map.values())
+}
+
+function mergeConflicts(prev: ConflictResponse[], incoming: ConflictResponse[]): ConflictResponse[] {
+  const map = new Map(prev.map((item) => [item.id, item]))
+  for (const item of incoming) {
+    const old = map.get(item.id)
+    map.set(item.id, old ? { ...old, ...compact(item) } : item)
+  }
+  return Array.from(map.values())
+}
+
+// 去掉 undefined 字段，避免增量合入时把已有关键字段覆盖为 undefined
+function compact<T extends object>(obj: T): Partial<T> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>
 }

@@ -443,6 +443,114 @@ route('GET', '/api/v1/reports/{run_id}', (req, res, params) => {
   sendJson(res, 200, report)
 })
 
+// ─── 意图路由（M2-1：POST /intent/classify，启发式三分类，供 mock 模式联调）───
+
+const TIER_BUDGET: Record<string, number> = {
+  quick: 50_000,
+  standard: 150_000,
+  deep: 400_000,
+  extreme: 1_000_000
+}
+
+// 闲聊启发式关键词（与后端离线评估分桶口径近似，mock 仅用于 UI 分流演示）
+const CHAT_HINTS = ['你好', '您好', '谢谢', '再见', '你是谁', '讲个笑话', 'hello', 'hi', '在吗']
+const RESEARCH_HINTS = ['对比', '分析', '趋势', '调研', '研究', '市场', '技术', '方案', '报告', '为什么', '如何']
+
+route('POST', '/api/v1/intent/classify', async (req, res) => {
+  const user = authenticate(req, res)
+  if (!user) return
+  const body = await parseBody(req)
+  const text = typeof body.text === 'string' ? body.text.trim() : ''
+  if (!text || text.length > 2000) {
+    sendValidationError(res, [
+      { loc: ['body', 'text'], msg: text ? 'String should have at most 2000 characters' : 'Field required', type: text ? 'string_too_long' : 'missing' }
+    ])
+    return
+  }
+  const force = body.force
+  if (force !== undefined && force !== null && force !== 'chat' && force !== 'research') {
+    sendValidationError(res, [{ loc: ['body', 'force'], msg: "Input should be 'chat' or 'research'", type: 'literal_error' }])
+    return
+  }
+
+  // 强制路径：完全绕过判别（source=forced，confidence=1.0）
+  if (force === 'chat' || force === 'research') {
+    sendJson(res, 200, force === 'chat'
+      ? { intent: 'chat', confidence: 1, recommended_template: null, recommended_tier: null, estimated_token_budget: null, estimated_cost_grade: null, source: 'forced', degraded: false, reason: '用户强制闲聊' }
+      : { intent: 'research', confidence: 1, recommended_template: 'generic', recommended_tier: 'quick', estimated_token_budget: TIER_BUDGET.quick, estimated_cost_grade: 'quick', source: 'forced', degraded: false, reason: '用户强制深度研究' })
+    return
+  }
+
+  const isChat = CHAT_HINTS.some((hint) => text.includes(hint)) || (text.length < 8 && !RESEARCH_HINTS.some((hint) => text.includes(hint)))
+  if (isChat) {
+    sendJson(res, 200, {
+      intent: 'chat',
+      confidence: 0.96,
+      recommended_template: null,
+      recommended_tier: null,
+      estimated_token_budget: null,
+      estimated_cost_grade: null,
+      source: 'llm',
+      degraded: false,
+      reason: '日常寒暄/常识类输入，无需多源研究'
+    })
+    return
+  }
+
+  const hasResearchHint = RESEARCH_HINTS.some((hint) => text.includes(hint))
+  sendJson(res, 200, {
+    intent: hasResearchHint ? 'research' : 'uncertain',
+    confidence: hasResearchHint ? 0.9 : 0.55,
+    recommended_template: 'generic',
+    recommended_tier: hasResearchHint ? 'standard' : 'quick',
+    estimated_token_budget: hasResearchHint ? TIER_BUDGET.standard : TIER_BUDGET.quick,
+    estimated_cost_grade: hasResearchHint ? 'standard' : 'quick',
+    source: 'llm',
+    degraded: false,
+    reason: hasResearchHint ? '含可检索实体与研究意图，建议多源核验' : '意图不够明确，保守按深度研究准备'
+  })
+})
+
+// ─── 全局助手闲聊（M2-1：POST /assistant/chat，SSE 流式，无服务端会话）───
+
+function sendSse(res: ServerResponse, event: string | null, data: string): void {
+  res.write(event ? `event: ${event}\ndata: ${data}\n\n` : `data: ${data}\n\n`)
+}
+
+route('POST', '/api/v1/assistant/chat', async (req, res) => {
+  const user = authenticate(req, res)
+  if (!user) return
+  const body = await parseBody(req)
+  const message = typeof body.message === 'string' ? body.message.trim() : ''
+  if (!message || message.length > 2000) {
+    sendValidationError(res, [{ loc: ['body', 'message'], msg: message ? 'String should have at most 2000 characters' : 'Field required', type: message ? 'string_too_long' : 'missing' }])
+    return
+  }
+  const history = Array.isArray(body.history) ? body.history : []
+  if (history.length > 20) {
+    sendValidationError(res, [{ loc: ['body', 'history'], msg: 'List should have at most 20 items', type: 'too_long' }])
+    return
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': '*'
+  })
+
+  // mock 固定回答：按片段流式吐出，模拟真实增量粒度
+  const answer = `这是 mock 闲聊通道的回答。你刚才说的是：「${message}」。mock 模式不联网检索；需要多源核验的问题，请回首页发起深度研究。`
+  const chunks = answer.match(/.{1,12}/g) ?? [answer]
+  for (const chunk of chunks) {
+    sendSse(res, null, JSON.stringify({ delta: chunk }))
+    await new Promise((resolve) => setTimeout(resolve, 60))
+  }
+  sendSse(res, null, '[DONE]')
+  res.end()
+  void user
+})
+
 // ─── 事件归约：把 WS 事件更新到 run 内存态，终态时落报告 ───
 
 function applyEventToRun(runId: string, env: RealtimeEnvelope): void {
