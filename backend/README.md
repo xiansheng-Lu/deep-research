@@ -5,7 +5,7 @@
 - 语言/运行时：Python 3.11 - 3.12（要求 >=3.11,<3.13）
 - 包管理：[uv](https://docs.astral.sh/uv/)（锁定文件见 `uv.lock`）
 - Web 框架：FastAPI + Uvicorn（异步）
-- 当前里程碑：**M1 已完成**（最小链路端到端 demo；五条验收准则经双方共同回归全部闭合，2026-09-12 关闭，详见「里程碑与当前状态」）
+- 当前里程碑：**M2 进行中**（M1 已于 2026-09-12 关闭；M2-1 意图路由与闲聊接口已完成，详见「里程碑与当前状态」）
 
 ---
 
@@ -337,6 +337,15 @@ Web 检索（WEB_SEARCH_PROVIDER 选择博查 / Tavily）→ 指纹去重 → �
 
 access token 默认有效期 30 分钟，refresh token 默认 7 天（见 `JWT_*` 配置）。
 
+### 意图路由与闲聊（M2-1 已实现）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/v1/intent/classify` | 判别意图（chat / research / uncertain）+ 推荐模板/档位与预算；支持 `force` 手动强制；LLM 不可用/超时时保守降级为 research（`degraded=true`） |
+| POST | `/api/v1/assistant/chat` | 闲聊直答，SSE 流式（`data: {"delta":...}` 增量帧 + `data: [DONE]` 结束帧）；不检索、不落项目数据；历史由客户端随请求携带（最近 10 轮），服务端不存会话 |
+
+意图判别温度固定 0；研究路径召回离线评估证据见 `tests/eval/`（评估集与结果，脚本 `scripts/eval_intent.py`，不进 CI）。
+
 ### 项目与研究执行（M1 已实现）
 
 | 方法 | 路径 | 说明 |
@@ -493,7 +502,7 @@ docker run --rm -p 8000:8000 --env-file .env deep-research-backend:dev
 | --- | --- | --- | --- |
 | M0 | 项目基础设施 + 底座 | 项目脚手架与配置体系、多租户基线（租户/用户/项目三层数据模型与鉴权中间件）、模型调用层抽象（主备配对、熔断、token 计量点）、LangGraph 编排引擎骨架、任务追踪与审计雏形 | 已完成 |
 | M1 | 最小链路端到端 demo | 六阶段最简链路（clarify → decompose → retrieve → standardize → critique → report）、Researcher×N 拓扑分层并行与单实例失败隔离、公域检索（博查/Tavily）接入与指纹去重、四段 Markdown 报告、节点级日志与逐阶段 WS 事件、成本闸门自动挂起；支撑工程：ORM 与迁移、鉴权、项目/运行/报告 API、编排执行器、WebSocket、OpenAPI M1 契约冻结 | 已完成（2026-09-12） |
-| M2 | 能力补齐与工程化 | 意图路由 classify 接口、批判收敛与分歧 API、透明看板数据接口、Orchestrator 补齐（依赖检测、回溯、降级、暂停接口）、实时成本计量与审计决策留档完整版、信源元数据抽取、数据点级溯源落库、Postgres checkpointer 与 HITL 恢复闭环、Celery 接管长任务 | 未开始 |
+| M2 | 能力补齐与工程化 | 意图路由 classify 接口、批判收敛与分歧 API、透明看板数据接口、Orchestrator 补齐（依赖检测、回溯、降级、暂停接口）、实时成本计量与审计决策留档完整版、信源元数据抽取、数据点级溯源落库、Postgres checkpointer 与 HITL 恢复闭环、Celery 接管长任务 | 进行中（M2-1 意图路由 + 闲聊 SSE 已完成，研究召回离线评估 100%） |
 | M3 | 核心 MVP | 档位参数化、领域模板、运营账号与反馈通道等后端接口，整合 M1+M2 能力支撑首批内部试用 | 未开始 |
 | M4 | 体验打磨 | 实时成本推送、暂停/追问/剔除证据等用户介入接口、报告精修与点击回溯、Word/PDF 导出、项目级角色权限 | 未开始 |
 | M5 | 私域能力 | 文档上传连接器（PDF/Word/Markdown/Excel 入库检索）、私域/公域信源区分标注、数据源级权限 | 未开始 |

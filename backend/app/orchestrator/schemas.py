@@ -6,7 +6,7 @@ LLD §6.5.2 / §6.5.3 / §6.5.5 / §6.5.6 等章节引用的 Schema 全部在此
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,7 +57,7 @@ class SubQuestionItem(BaseModel):
     """单条子问题（§6.5.3）。
 
     Attributes:
-        question: 子问题完整文本。
+        question: 子问题完整问题。
         depends_on: 依赖的上游子问题 ID（拓扑顺序执行用）。
         rationale: 拆解理由（仅用于审计，前端不展示）。
     """
@@ -77,9 +77,26 @@ class SubQuestionListSchema(BaseModel):
     sub_questions: list[SubQuestionItem] = Field(default_factory=list)
 
 
+class IntentClassification(BaseModel):
+    """意图路由 LLM 结构化输出（PRD 模块 G / 智能体协作规格 §3.1）。
+
+    Attributes:
+        intent: 意图类别——chat 闲聊直答 / research 深度研究 / uncertain 无法确定。
+        confidence: 模型置信度，0-1。
+        reason: 简短判定依据（仅排查用，前端不作为主文案）。
+    """
+
+    model_config = _LLM_OUTPUT_CONFIG
+
+    intent: Literal["chat", "research", "uncertain"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason: str = Field(default="", max_length=300)
+
+
 __all__ = [
     "ClarificationQuestion",
     "ClarificationSchema",
+    "IntentClassification",
     "SubQuestionItem",
     "SubQuestionListSchema",
 ]

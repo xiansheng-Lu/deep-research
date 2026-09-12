@@ -1,0 +1,58 @@
+{"text": "你好，在吗", "expected": "chat", "bucket": "chat_greeting"}
+{"text": "早上好呀，今天过得怎么样", "expected": "chat", "bucket": "chat_greeting"}
+{"text": "谢谢你的帮助", "expected": "chat", "bucket": "chat_greeting"}
+{"text": "哈哈这个挺有意思的", "expected": "chat", "bucket": "chat_greeting"}
+{"text": "周末愉快，再见", "expected": "chat", "bucket": "chat_greeting"}
+{"text": "帮我写一封请假两天的邮件，语气诚恳一点", "expected": "chat", "bucket": "chat_writing"}
+{"text": "把这段话改得更正式：我们觉得这个方案还行", "expected": "chat", "bucket": "chat_writing"}
+{"text": "帮我翻译一下：Knowledge retrieval augmented generation", "expected": "chat", "bucket": "chat_writing"}
+{"text": "给我起三个有科技感的产品名字，和向量数据库相关", "expected": "chat", "bucket": "chat_writing"}
+{"text": "帮我润色这段产品介绍文案，突出性价比", "expected": "chat", "bucket": "chat_writing"}
+{"text": "写一首关于秋天的七言绝句", "expected": "chat", "bucket": "chat_writing"}
+{"text": "帮我把这段文字总结成三句话：人工智能是计算机科学的一个分支", "expected": "chat", "bucket": "chat_writing"}
+{"text": "帮我写一个 Python 快排函数，加注释", "expected": "chat", "bucket": "chat_writing"}
+{"text": "Python 列表怎么去重，给个最简单的写法", "expected": "chat", "bucket": "chat_factual"}
+{"text": "SQL 里 inner join 和 left join 有什么区别", "expected": "chat", "bucket": "chat_factual"}
+{"text": "解释一下什么是闭包，用 JavaScript 举例", "expected": "chat", "bucket": "chat_factual"}
+{"text": "3 的平方根等于多少", "expected": "chat", "bucket": "chat_factual"}
+{"text": "水在标准大气压下的沸点是多少度", "expected": "chat", "bucket": "chat_factual"}
+{"text": "勾股定理的公式是什么", "expected": "chat", "bucket": "chat_factual"}
+{"text": "HTTP 状态码 404 和 500 分别代表什么", "expected": "chat", "bucket": "chat_factual"}
+{"text": "什么是递归？用计算阶乘举例说明", "expected": "chat", "bucket": "chat_factual"}
+{"text": "git rebase 和 merge 的区别，简单说一下", "expected": "chat", "bucket": "chat_factual"}
+{"text": "帮我解释下相对论里时间膨胀是什么意思", "expected": "chat", "bucket": "chat_factual"}
+{"text": "对比 PostgreSQL 与 MongoDB 在 JSON 文档查询场景下的索引机制差异", "expected": "research", "bucket": "research_compare"}
+{"text": "比亚迪和特斯拉的自动驾驶技术路线有什么不同，各自优劣如何", "expected": "research", "bucket": "research_compare"}
+{"text": "对比 Redis 和 Memcached 在缓存架构中的适用场景与选型建议", "expected": "research", "bucket": "research_compare"}
+{"text": "对比国产大模型 DeepSeek、通义千问和文心一言在代码生成上的表现", "expected": "research", "bucket": "research_compare"}
+{"text": "Snowflake 和 ClickHouse 在实时分析场景下的架构差异是什么", "expected": "research", "bucket": "research_compare"}
+{"text": "对比 RAG 与微调两种方案在企业知识库建设中的成本和效果", "expected": "research", "bucket": "research_compare"}
+{"text": "2024 至 2026 年 AI 编程助手领域的主要技术趋势和代表产品", "expected": "research", "bucket": "research_trend"}
+{"text": "最近向量数据库领域有哪些值得关注的进展和新发布", "expected": "research", "bucket": "research_trend"}
+{"text": "2026 年新能源汽车行业的最新政策动向是什么", "expected": "research", "bucket": "research_trend"}
+{"text": "近一年大模型推理加速技术的演进趋势如何", "expected": "research", "bucket": "research_trend"}
+{"text": "当前生成式 AI 在医疗影像领域的最新落地情况", "expected": "research", "bucket": "research_trend"}
+{"text": "2025 年以来欧洲 AI 监管法规的最新进展对企业有何影响", "expected": "research", "bucket": "research_trend"}
+{"text": "盘点国内主流的 RAG 开发平台及其能力差异", "expected": "research", "bucket": "research_survey"}
+{"text": "综述检索增强生成在金融行业的典型应用案例", "expected": "research", "bucket": "research_survey"}
+{"text": "企业做数据中台选型有哪些主流方案，各自适合什么规模", "expected": "research", "bucket": "research_survey"}
+{"text": "调研一下目前开源的可观测性组件，给出一套技术选型建议", "expected": "research", "bucket": "research_survey"}
+{"text": "梳理知识图谱在反诈风控中的落地方案与代表厂商", "expected": "research", "bucket": "research_survey"}
+{"text": "总结多智能体框架 LangGraph、AutoGen、CrewAI 的主要特性", "expected": "research", "bucket": "research_survey"}
+{"text": "2026 年中国光伏组件出口欧盟受 CBAM 影响的关税与合规成本分析", "expected": "research", "bucket": "research_domain"}
+{"text": "中国储能行业 2025 年新增装机量排名及市场格局", "expected": "research", "bucket": "research_domain"}
+{"text": "调研 AI 编程助手在国内中型软件团队的实际采纳率与提效数据", "expected": "research", "bucket": "research_domain"}
+{"text": "分析跨境电商独立站在东南亚市场的获客渠道与转化表现", "expected": "research", "bucket": "research_domain"}
+{"text": "低空经济产业链上有哪些关键环节和代表性上市公司", "expected": "research", "bucket": "research_domain"}
+{"text": "创新药出海授权交易在 2025 年的金额分布与热门靶点", "expected": "research", "bucket": "research_domain"}
+{"text": "国内商业银行落地大模型风控的真实案例与效果评估", "expected": "research", "bucket": "research_domain"}
+{"text": "固态电池量产时间表及主要玩家的技术路线对比", "expected": "research", "bucket": "research_domain"}
+{"text": "我想了解一下现在做企业私域知识库一般用什么架构比较好", "expected": "research", "bucket": "research_subtle"}
+{"text": "最近想评估下要不要上数据湖仓，想看看大家的实践情况", "expected": "research", "bucket": "research_subtle"}
+{"text": "帮我查查现在多模态大模型在质检场景用得多吗", "expected": "research", "bucket": "research_subtle"}
+{"text": "想知道 Agent 这个方向现在创业还有没有机会", "expected": "research", "bucket": "research_subtle"}
+{"text": "新能源", "expected": "uncertain", "bucket": "uncertain"}
+{"text": "人工智能", "expected": "uncertain", "bucket": "uncertain"}
+{"text": "数据库", "expected": "uncertain", "bucket": "uncertain"}
+{"text": "聊聊？", "expected": "uncertain", "bucket": "uncertain"}
+{"text": "帮我看看", "expected": "uncertain", "bucket": "uncertain"}
