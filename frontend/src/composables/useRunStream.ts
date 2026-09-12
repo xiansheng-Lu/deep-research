@@ -645,6 +645,18 @@ export function useRunStream(runId: string) {
 
   // ─── 初帧加载 ───
 
+  // 通道关闭态（succeeded/failed/cancelled/paused）不建 WS，但仍需 REST 对齐
+  // 子问题/冲突/成本等看板列表，否则终态后直接打开看板（或报告页）列表为空
+  function syncClosedSnapshot(): void {
+    void Promise.allSettled([
+      syncStages(),
+      syncSubQuestions(),
+      syncConflicts(),
+      syncCost(),
+      syncEvidence()
+    ])
+  }
+
   async function init(): Promise<void> {
     const disposedAfter = () => disposed
     state.loading = true
@@ -652,7 +664,11 @@ export function useRunStream(runId: string) {
       const run = await getRun(runId)
       if (disposedAfter()) return
       applyRun(run)
-      if (!TERMINAL_RUN_STATUSES.has(run.status)) connectStream()
+      if (!TERMINAL_RUN_STATUSES.has(run.status)) {
+        connectStream()
+      } else {
+        syncClosedSnapshot()
+      }
     } catch (err) {
       const apiError = err as ApiErrorLike
       if (apiError.status === 404) {
