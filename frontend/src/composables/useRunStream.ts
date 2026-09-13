@@ -381,7 +381,14 @@ export function useRunStream(runId: string) {
 
   async function syncCost(): Promise<void> {
     const snapshot: CostSnapshot = await getCostSnapshot(runId)
-    applyCost({ used: snapshot.used, budget: snapshot.budget, ratio: snapshot.ratio })
+    // M2-4：REST 快照携带 level，刷新/重连时与 WS cost.warning 帧同一口径恢复预警色，
+    // 避免终态前刷新页面丢失 70%/90% 变色
+    applyCost({
+      used: snapshot.used,
+      budget: snapshot.budget,
+      ratio: snapshot.ratio,
+      warningLevel: snapshot.level
+    })
   }
 
   // ─── 事件处理（§9.2 路由表）───

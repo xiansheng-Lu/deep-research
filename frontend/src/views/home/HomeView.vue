@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // 首页 · 意图路由单入口（[前端详细设计 §11.1 M2]，对齐 M2-1 交接单 §2.3 分流口径）
 // 输入 → classify：chat 跳 /assistant（不产生项目数据）；research/uncertain 展开确认层后跳向导。
-// 活跃研究卡片：M2-4 前无 run 列表端点，用本地 run 索引 + 逐 run GET 探测，标注"仅本设备"。
+// 活跃研究卡片：M2-4 起读 GET /runs 创建者维度列表；连接类故障时回退本地 run 索引，
+// 回退态标注"仅本设备"。
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import UiCard from '@/components/ui/UiCard.vue'
@@ -11,7 +12,8 @@ import UiTextarea from '@/components/ui/form/UiTextarea.vue'
 import { useIntent } from '@/composables/useIntent'
 import { useProjectStore } from '@/stores/project'
 import { listProjects } from '@/services/api/projects'
-import { getRun } from '@/services/api/runs'
+import { getRun, listMyRuns } from '@/services/api/runs'
+import { isRecoverableServerError } from '@/services/http/error'
 import type { RunResponse, RunTier } from '@/services/api/types'
 import { useRunHistory, type RunHistoryEntry } from '@/composables/useRunHistory'
 import { TIER_METAS } from '@/services/domain/tiers'
@@ -31,8 +33,11 @@ const selectedProjectId = ref<string | null>(null)
 const selectedTier = ref<RunTier>('quick')
 const projectsLoading = ref(true)
 
-// 活跃研究（本设备索引 + GET 探测）
+// 活跃研究：server=GET /runs；local=连接故障时本地索引兜底（卡片标注“仅本设备”）
 const activeRuns = ref<Array<{ projectId: string; projectName: string; run: RunResponse }>>([])
+const activeSource = ref<'server' | 'local'>('server')
+// 每个活跃状态拉一页：后端 status 仅支持单值，活跃 run 数量少，page_size=10 足够
+const ACTIVE_STATUSES = ['pending', 'running', 'paused'] as const
 
 const hasProjects = computed(() => projectStore.projects.length > 0)
 
@@ -65,13 +70,41 @@ async function ensureProjects(): Promise<void> {
 }
 
 async function refreshActiveRuns(): Promise<void> {
+  try {
+    const pages = await Promise.all(
+      ACTIVE_STATUSES.map((status) => listMyRuns({ status, page: 1, page_size: 10 }))
+    )
+    // created_at DESC 合并三状态结果（同秒时 id ASC 由后端保证，前端按时间排即可）
+    const runs = pages
+      .flatMap((page) => page.items)
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0))
+    const active: typeof activeRuns.value = []
+    for (const run of runs) {
+      const project = projectStore.getProject(run.project_id)
+      if (!project) continue
+      active.push({ projectId: run.project_id, projectName: project.name, run })
+    }
+    activeSource.value = 'server'
+    activeRuns.value = active
+  } catch (err) {
+    // 断网/5xx 才回退本地索引；401 等明确错误不兜底（守卫已处理鉴权态）
+    if (!isRecoverableServerError(err)) {
+      activeRuns.value = []
+      return
+    }
+    activeSource.value = 'local'
+    await refreshActiveRunsFromLocal()
+  }
+}
+
+// 离线兜底：本地 run 索引 + 逐 run GET 探测，仅最近 8 条避免请求放大
+async function refreshActiveRunsFromLocal(): Promise<void> {
   const entries: Array<RunHistoryEntry & { projectId: string }> = []
   for (const project of projectStore.projects) {
     for (const entry of history.listRuns(project.id)) {
       entries.push({ ...entry, projectId: project.id })
     }
   }
-  // 仅探测最近 8 条，避免过多请求
   const settled = await Promise.allSettled(
     entries.slice(0, 8).map(async (entry) => {
       const run = await getRun(entry.runId)
@@ -297,13 +330,16 @@ function backToInput(): void {
       </div>
     </UiCard>
 
-    <!-- 进行中研究（仅本设备索引，M2-4 列表端点后升级） -->
+    <!-- 进行中研究：M2-4 起读后端列表；仅连接故障回退本地索引时标注“仅本设备” -->
     <section
       v-if="activeRuns.length > 0"
       class="home-view__active"
     >
       <h2 class="home-view__section-title">
-        进行中的研究<span class="home-view__section-note">（仅本设备）</span>
+        进行中的研究<span
+          v-if="activeSource === 'local'"
+          class="home-view__section-note"
+        >（仅本设备）</span>
       </h2>
       <div class="home-view__active-list">
         <UiCard

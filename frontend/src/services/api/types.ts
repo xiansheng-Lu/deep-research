@@ -255,8 +255,18 @@ export interface CostSnapshot {
   used: number
   budget: number
   ratio: number
+  // M2-4：REST 快照预警级别，与 WS cost.warning 帧同源（<0.7 null / ≥0.7 warning / >0.9 danger）
+  level: 'warning' | 'danger' | null
   // 分模型用量明细（M2-3 推送时可能携带；看板成本卡预留不强依赖）
   model_breakdown?: Record<string, number>
+}
+
+// GET /runs 查询参数（M2-4 创建者维度列表；status 为六态单值）
+export interface RunListParams {
+  status?: RunStatus
+  project_id?: string
+  page?: number
+  page_size?: number
 }
 
 // ─── HITL：暂停/继续/取消/介入（契约草案 §6.1/§6.2，后端 M2-5 落地）───

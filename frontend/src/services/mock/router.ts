@@ -549,7 +549,9 @@ route('GET', '/api/v1/runs/{run_id}/cost/snapshot', (req, res, params) => {
   const run = loadOwnedRun(req, res, params.run_id)
   if (!run) return
   const ratio = run.token_budget ? Math.min(1, run.token_used / run.token_budget) : 0
-  sendJson(res, 200, { used: run.token_used, budget: run.token_budget, ratio })
+  // M2-4 对齐冻结契约：level 与 WS cost.warning 同源（<0.7 null / ≥0.7 warning / >0.9 danger）
+  const level = ratio > 0.9 ? 'danger' : ratio >= 0.7 ? 'warning' : null
+  sendJson(res, 200, { used: run.token_used, budget: run.token_budget, ratio, level })
 })
 
 // ─── M2 运行控制与用户介入（契约草案 §6.1/§6.2）───
