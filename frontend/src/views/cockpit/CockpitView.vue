@@ -30,6 +30,7 @@ import ConflictBlock from '@/components/business/ConflictBlock.vue'
 import InterventionDrawer, {
   type InterventionMode
 } from '@/components/business/InterventionDrawer.vue'
+import { track } from '@/services/telemetry/telemetry'
 
 // 软暂停后再次继续的确认时限：暂停超过此时长需用户二次确认（[前端详细设计 §11.3]）
 const RESUME_CONFIRM_AFTER_MS = 15 * 60 * 1000
@@ -51,6 +52,22 @@ const excludedList = useEvidenceList(runId, {
 const run = computed(() => state.run)
 const sqStats = derived.subQuestions
 const conflictStats = derived.conflicts
+
+// WP-18：看板介入埋点。action 为封闭枚举（pause/resume/followup/exclude/clarify），
+// 只记动作分类、成败与错误码，不记澄清答案/追问内容等敏感输入
+type InterveneTrackAction = 'pause' | 'resume' | 'followup' | 'exclude' | 'clarify'
+function trackIntervene(action: InterveneTrackAction, ok: boolean, err?: unknown): void {
+  const apiError = err as ApiError | undefined
+  track(
+    'cockpit.intervene',
+    {
+      action,
+      result: ok ? 'success' : 'fail',
+      error_code: !ok && apiError?.code ? apiError.code : undefined
+    },
+    runId
+  )
+}
 
 // ─── 顶栏派生：阶段序号 / 已用时长 ───
 
@@ -259,9 +276,11 @@ async function submitClarification(answers: Record<string, string>): Promise<voi
     await actions.submitAnswers(answers)
     drawerOpen.value = false
     toast.success('澄清答案已提交，研究继续推进')
+    trackIntervene('clarify', true)
     // resume 后 run 转 running：重取快照并重建实时通道，同时清掉旧 interrupt
     await reload()
   } catch (err) {
+    trackIntervene('clarify', false, err)
     toast.danger(interventionErrorTitle(err, '澄清答案提交失败'), {
       description: interventionErrorDescription(err)
     })
@@ -285,7 +304,9 @@ async function submitFollowup(payload: {
     })
     drawerOpen.value = false
     toast.success('追问已提交，将纳入后续检索与分析')
+    trackIntervene('followup', true)
   } catch (err) {
+    trackIntervene('followup', false, err)
     toast.danger(interventionErrorTitle(err, '追问提交失败'), {
       description: interventionErrorDescription(err)
     })
@@ -329,9 +350,11 @@ async function excludeEvidence(evidenceId: string): Promise<void> {
       payload: { evidence_id: evidenceId }
     })
     toast.success('证据已从研究中剔除', { description: '可在证据流底部「已剔除证据」中恢复' })
+    trackIntervene('exclude', true)
     // 主列表重拉收敛分页 total；可恢复列由 liveExcluded watch 统一驱动，避免重复拉取造成区块抖动
     await evidenceList.refresh()
   } catch (err) {
+    trackIntervene('exclude', false, err)
     toast.danger(interventionErrorTitle(err, '剔除证据失败'), {
       description: interventionErrorDescription(err)
     })
@@ -402,9 +425,11 @@ async function confirmPause(): Promise<void> {
     pauseDialogOpen.value = false
     pausedSince.value = Date.now()
     toast.success('研究已暂停，系统将在当前安全点停止推进')
+    trackIntervene('pause', true)
     // 立即重取快照收敛 paused 态（暂停后实时通道关闭）
     await reload()
   } catch (err) {
+    trackIntervene('pause', false, err)
     toast.danger(interventionErrorTitle(err, '暂停失败'), {
       description: interventionErrorDescription(err)
     })
@@ -431,8 +456,10 @@ async function confirmProceed(): Promise<void> {
     await actions.proceed()
     resumeDialogOpen.value = false
     toast.success('研究已继续推进')
+    trackIntervene('resume', true)
     await reload()
   } catch (err) {
+    trackIntervene('resume', false, err)
     toast.danger(interventionErrorTitle(err, '继续研究失败'), {
       description: interventionErrorDescription(err)
     })

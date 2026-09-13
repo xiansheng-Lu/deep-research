@@ -57,7 +57,7 @@ function scheduleClose(): void {
 function activate(): void {
   if (!interactive.value || !props.citation) return
   miniOpen.value = false
-  // WP-18 report.citation.open 埋点在此接入（点击与键盘开抽屉的唯一入口）
+  // WP-18 report.citation.open 埋点在唯一漏斗 useReportBlocks.openSource 处接入
   emit('open', props.citation.evidence_id)
 }
 

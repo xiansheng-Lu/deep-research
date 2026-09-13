@@ -3,6 +3,7 @@
 // 接口失败/超时按保守策略本地降级 research 并显式标注 degraded。
 import { ref } from 'vue'
 import { classifyIntent } from '@/services/api/intent'
+import { track } from '@/services/telemetry/telemetry'
 import type { ForceIntent, IntentClassifyResponse } from '@/services/api/types'
 
 // 交接单口径：判别等待 ≤2s；超过即按降级处理
@@ -32,6 +33,7 @@ export function useIntent() {
   // 判别：带 2s 竞速；任何失败（5xx/网络/超时）都收敛为保守 research
   async function classify(text: string, force?: ForceIntent): Promise<IntentClassifyResponse> {
     phase.value = 'classifying'
+    const startedAt = Date.now()
     try {
       const res = await Promise.race([
         classifyIntent({ text, force }),
@@ -41,11 +43,27 @@ export function useIntent() {
       ])
       result.value = res
       phase.value = 'result'
+      // WP-18：只记分类/枚举/耗时，不记问题原文；服务端保守降级归类为 service_fallback
+      track('intent.classify', {
+        intent: res.intent,
+        source: res.source,
+        degraded: res.degraded,
+        duration_ms: Date.now() - startedAt,
+        degrade_reason: res.degraded ? 'service_fallback' : undefined
+      })
       return res
-    } catch {
+    } catch (err) {
       const fallback = buildFallbackResult()
       result.value = fallback
       phase.value = 'result'
+      // WP-18：前端降级原因归一为枚举，超时与请求故障（网络/5xx）分开观测
+      track('intent.classify', {
+        intent: fallback.intent,
+        source: fallback.source,
+        degraded: true,
+        duration_ms: Date.now() - startedAt,
+        degrade_reason: err instanceof Error && err.message === 'INTENT_TIMEOUT' ? 'timeout' : 'request_error'
+      })
       return fallback
     }
   }

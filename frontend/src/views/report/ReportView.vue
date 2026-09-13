@@ -17,6 +17,8 @@ import type { ApiError } from '@/services/http/error'
 import { runStatusLabel, stageLabel, tierLabel, zhCN } from '@/services/i18n/zh-CN'
 import { formatDateTime, formatNumber, formatPublishedAt } from '@/utils/format'
 import { useReportBlocks } from '@/composables/useReportBlocks'
+// 本页已有表示渲染轨道的 ref track，埋点 track 以 trackEvent 别名导入
+import { track as trackEvent } from '@/services/telemetry/telemetry'
 import UiBadge from '@/components/ui/feedback/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiErrorState from '@/components/ui/feedback/UiErrorState.vue'
@@ -105,6 +107,13 @@ async function loadReport(): Promise<void> {
     await reportBlocks.load()
     track.value = reportBlocks.hasBlocks.value ? 'blocks' : 'markdown'
     phase.value = 'ready'
+    // WP-18：终稿首次可读记一次报告浏览（组件每次挂载独立计为一次浏览），
+    // 仅记轨道分类与是否含 blocks，不记报告正文
+    trackEvent(
+      'report.view',
+      { render_track: track.value, has_blocks: reportBlocks.hasBlocks.value ? 1 : 0 },
+      runId
+    )
   } catch (err) {
     const apiError = err as ApiError
     if (apiError.status === 422) {

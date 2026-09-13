@@ -718,6 +718,15 @@ route('POST', '/api/v1/assistant/chat', async (req, res) => {
 
 // ─── 埋点（WP-10/WP-18：POST /telemetry/batch，mock 累计计数供验收观测）───
 
+// mock 专用只读观测口：返回各事件累计计数，供 WP-18 验收；真实后端无此端点
+route('GET', '/api/v1/telemetry/counts', (req, res) => {
+  const user = authenticate(req, res)
+  if (!user) return
+  const counts: Record<string, number> = {}
+  for (const [event, count] of store.telemetryCounts) counts[event] = count
+  sendJson(res, 200, { counts })
+})
+
 route('POST', '/api/v1/telemetry/batch', async (req, res) => {
   const user = authenticate(req, res)
   if (!user) return

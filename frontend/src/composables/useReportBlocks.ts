@@ -5,6 +5,7 @@
 import { computed, ref } from 'vue'
 import { getReportCitations, getStructuredReport } from '@/services/api/reports'
 import { getRunConflicts } from '@/services/api/dashboard'
+import { track } from '@/services/telemetry/telemetry'
 import type { ApiError } from '@/services/http/error'
 import type {
   ConflictEvidenceSummary,
@@ -83,6 +84,9 @@ export function useReportBlocks(runId: string) {
   function openSource(evidenceId: string): void {
     activeEvidenceId.value = evidenceId
     sourcePanelOpen.value = true
+    // WP-18：点击/键盘开溯源抽屉的唯一漏斗（CitationMarker.activate → 本函数），
+    // props 只记证据 id 这一标识字段
+    track('report.citation.open', { evidence_id: evidenceId }, runId)
   }
 
   function closeSourcePanel(): void {
