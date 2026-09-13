@@ -24,6 +24,29 @@ export const zhCN = {
     submit: '提交',
     loading: '加载中…'
   },
+  // WP-16 结构化报告页（blocks 轨）文案
+  report: {
+    // 区块类型中文（目录 title 以外的辅助标签使用）
+    blockType: {
+      conclusion: '调研结论',
+      evidence: '证据引用',
+      dispute: '数据分歧',
+      limitation: '研究局限'
+    },
+    filterDisputesOnly: '只看分歧',
+    filterShowAll: '全部内容',
+    outlineTitle: '报告目录',
+    sourcePanelTitle: '信源溯源',
+    sourcePanelHint: '点击正文角标可定位到对应信源',
+    sourceEmpty: '本报告暂无信源索引',
+    citationIndexTitle: '信源索引',
+    limitationTitle: '研究局限与未决问题',
+    limitationEmpty: '本次研究未记录局限项',
+    viewSource: '查看来源',
+    evidenceSnippet: '原文片段',
+    publishedAt: '发布时间',
+    visitSource: '访问原文'
+  },
   // 领域枚举中文展示（与后端枚举值一一对应，未知值原样回显）
   domain: {
     role: {
@@ -193,6 +216,11 @@ export function credibilityLabel(credibility: string): string {
 
 export function claimConfidenceLabel(confidence: string): string {
   return labelOf(zhCN.domain.claimConfidence, confidence)
+}
+
+// WP-16 报告区块类型中文
+export function reportBlockLabel(type: string): string {
+  return labelOf(zhCN.report.blockType, type)
 }
 
 export function intentLabel(intent: string): string {

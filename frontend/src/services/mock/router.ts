@@ -9,7 +9,8 @@ import {
   issueTokenPair,
   TIER_TOKEN_BUDGET,
   type MockRun,
-  type MockReport
+  type MockReport,
+  type MockStructuredReport
 } from './store'
 import { buildHappyPathScript } from './fixtures/happy_path'
 import {
@@ -411,7 +412,11 @@ route('GET', '/api/v1/runs/{run_id}', (req, res, params) => {
 
 // ─── reports ───
 
-function loadOwnedReport(req: IncomingMessage, res: ServerResponse, runId: string): MockReport | null {
+// WP-16：demo_full 终稿另存结构化产物，报告路由返回 markdown+blocks 超集
+// （M2-6 契约冻结前的 mock 形态；无结构化产物的剧本仍只返回 markdown）
+type ReportResponseLike = MockReport & Partial<MockStructuredReport>
+
+function loadOwnedReport(req: IncomingMessage, res: ServerResponse, runId: string): ReportResponseLike | null {
   const user = authenticate(req, res)
   if (!user) return null
   const run = store.runs.get(runId)
@@ -425,7 +430,8 @@ function loadOwnedReport(req: IncomingMessage, res: ServerResponse, runId: strin
     sendAppError(res, 422, 'validation_error', '报告尚未生成')
     return null
   }
-  return report
+  const structured = store.structuredReportsByRunId.get(runId)
+  return structured ? { ...report, ...structured } : report
 }
 
 route('GET', '/api/v1/runs/{run_id}/report', (req, res, params) => {

@@ -408,6 +408,8 @@ export interface ReportBlock {
   text: string
   confidence?: ClaimConfidence
   citations?: ReportCitation[]
+  // dispute 区块关联的冲突 id；M2-6 契约冻结前仅 mock 产出，缺省时按纯文本分歧块渲染
+  conflict_id?: string
 }
 
 // GET /reports/{report_id} 结构化响应（M2-6 冻结后与 ReportResponse 并存或替代，待联调确认）
@@ -420,6 +422,10 @@ export interface StructuredReportResponse {
   token_used?: number
   created_at?: string
   updated_at?: string
+  // M2-6 冻结前 mock 在同一路由返回 markdown+blocks 超集，以下两字段随超集附带；
+  // 冻结后结构化终稿若不再回传 markdown，前端 markdown 终稿分支一并删除，此处随之清退
+  template_id?: string
+  content_md?: string
 }
 
 // GET /reports/{report_id}/citations 响应元素：引用 + 证据回溯所需元数据

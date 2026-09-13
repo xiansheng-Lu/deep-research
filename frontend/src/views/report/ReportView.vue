@@ -1,8 +1,11 @@
 <script setup lang="ts">
-// 报告阅读页（[前端详细设计 §11.4] M1 最简）：
-// 先 GET run 判定可展示性：未结束给状态卡与返回入口，failed 给错误信息；
-// succeeded 后 GET /runs/{id}/report，422（报告尚未生成）展示生成中态并 3 秒轮询；
-// 正文经 marked 解析、DOMPurify 白名单净化后 v-html 渲染，链接统一新窗口打开。
+// 报告阅读页（[前端详细设计 §11.4] M1 markdown 轨 / M2 blocks 轨双轨）：
+// 先 GET run 判定可展示性：未结束给状态卡，failed 给错误信息；
+// succeeded 后 GET /runs/{id}/report，422（报告尚未生成）展示生成中态并 3 秒轮询。
+// ready 后按终稿响应形态分流（WP-16 计划决策 1，客观阶段差异非旧版兼容）：
+// - 含非空 blocks（demo_full；M2-6/7 冻结后的目标形态）→ blocks 结构化轨道；
+// - 不含 blocks（happy_path 与当前真链）→ marked + DOMPurify 的 markdown 轨道。
+// M2-6/7 冻结、终稿全部结构化后，删除 markdown 终稿分支与 marked/DOMPurify 渲染。
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
@@ -11,12 +14,18 @@ import { getRun } from '@/services/api/runs'
 import { getRunReport } from '@/services/api/reports'
 import type { ReportResponse, RunResponse } from '@/services/api/types'
 import type { ApiError } from '@/services/http/error'
-import { runStatusLabel, stageLabel, tierLabel } from '@/services/i18n/zh-CN'
-import { formatDateTime, formatNumber } from '@/utils/format'
+import { runStatusLabel, stageLabel, tierLabel, zhCN } from '@/services/i18n/zh-CN'
+import { formatDateTime, formatNumber, formatPublishedAt } from '@/utils/format'
+import { useReportBlocks } from '@/composables/useReportBlocks'
 import UiBadge from '@/components/ui/feedback/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiErrorState from '@/components/ui/feedback/UiErrorState.vue'
 import UiSkeleton from '@/components/ui/feedback/UiSkeleton.vue'
+import ReportChrome from '@/components/business/ReportChrome.vue'
+import ReportBlockView from '@/components/business/ReportBlockView.vue'
+import SourcePanel from '@/components/business/SourcePanel.vue'
+import LimitationSummary from '@/components/business/LimitationSummary.vue'
+import SourceBadge from '@/components/business/SourceBadge.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -41,6 +50,10 @@ const report = ref<ReportResponse | null>(null)
 const reportError = ref<ApiError | null>(null)
 const renderedHtml = ref('')
 
+// blocks 轨取数与交互状态（WP-16）
+const reportBlocks = useReportBlocks(runId)
+const track = ref<'markdown' | 'blocks'>('markdown')
+
 const bodyRef = ref<HTMLElement | null>(null)
 
 const POLL_INTERVAL_MS = 3000
@@ -53,6 +66,9 @@ const activeStageText = computed(() => {
   if (!entity) return ''
   return entity.current_stage ? stageLabel(entity.current_stage) : '等待启动'
 })
+
+// blocks 轨就绪时工具条内自带返回链接，其余阶段使用页面级返回链接
+const showPageBack = computed(() => !(phase.value === 'ready' && track.value === 'blocks'))
 
 function stopPolling(): void {
   if (pollTimer !== undefined) {
@@ -80,6 +96,10 @@ async function loadReport(): Promise<void> {
     report.value = data
     const parsed = marked.parse(data.content_md, { async: false })
     renderedHtml.value = DOMPurify.sanitize(parsed)
+    // 结构化终稿增强：mock demo_full 返回 markdown+blocks 超集；
+    // 真链 M2-6 前仅回 markdown（或溯源端点未就绪导致增强失败），均留在 markdown 轨
+    await reportBlocks.load()
+    track.value = reportBlocks.hasBlocks.value ? 'blocks' : 'markdown'
     phase.value = 'ready'
   } catch (err) {
     const apiError = err as ApiError
@@ -101,6 +121,7 @@ async function init(): Promise<void> {
   phase.value = 'loading-run'
   report.value = null
   renderedHtml.value = ''
+  track.value = 'markdown'
   try {
     const entity = await getRun(runId)
     run.value = entity
@@ -126,6 +147,15 @@ function backToCockpit(): void {
 
 function backToProjects(): void {
   router.push('/projects')
+}
+
+// 溯源抽屉只能由内部 mask/Esc/关闭键请求关闭，打开入口只有正文角标
+function onSourcePanelOpenUpdate(value: boolean): void {
+  if (!value) reportBlocks.closeSourcePanel()
+}
+
+function setDisputesOnly(value: boolean): void {
+  reportBlocks.disputesOnly.value = value
 }
 
 // 正文渲染后统一为链接补新窗口与安全 opener 属性
@@ -166,6 +196,7 @@ void init()
 
     <template v-else>
       <RouterLink
+        v-if="showPageBack"
         :to="cockpitHref"
         class="report-view__back"
       >
@@ -256,29 +287,162 @@ void init()
       />
 
       <template v-else-if="phase === 'ready' && run && report">
-        <header class="report-head">
-          <h1
-            class="report-head__question"
-            :title="run.question"
-          >
-            {{ run.question }}
-          </h1>
-          <div class="report-head__meta">
-            <UiBadge variant="brand">
-              {{ tierLabel(run.tier) }}
-            </UiBadge>
-            <span>生成时间：{{ formatDateTime(report.created_at) }}</span>
-            <span>Token 用量：{{ formatNumber(report.token_used) }}</span>
-          </div>
-        </header>
+        <!-- ─── blocks 结构化轨道（WP-16） ─── -->
+        <template v-if="track === 'blocks'">
+          <ReportChrome
+            :back-href="cockpitHref"
+            :question="run.question"
+            :tier="run.tier"
+            :created-at="report.created_at"
+            :token-used="report.token_used"
+            :disputes-only="reportBlocks.disputesOnly.value"
+            @update:disputes-only="setDisputesOnly"
+          />
 
-        <!-- eslint-disable vue/no-v-html -- 正文为 marked 解析后经 DOMPurify 白名单净化的可信 HTML -->
-        <article
-          ref="bodyRef"
-          class="report-body"
-          v-html="renderedHtml"
-        />
-        <!-- eslint-enable vue/no-v-html -->
+          <!-- 窄屏目录：<1024px 折叠展示，≥1024px 由左侧粘性目录承接 -->
+          <details class="report-outline-compact">
+            <summary class="report-outline-compact__summary">
+              {{ zhCN.report.outlineTitle }}
+            </summary>
+            <nav>
+              <ol class="report-outline-compact__list">
+                <li
+                  v-for="(item, outlineIndex) in reportBlocks.outline.value"
+                  :key="item.id"
+                >
+                  <button
+                    type="button"
+                    class="report-outline-compact__item"
+                    @click="reportBlocks.locateOutline(item.type, outlineIndex)"
+                  >
+                    {{ item.title }}
+                  </button>
+                </li>
+              </ol>
+            </nav>
+          </details>
+
+          <div class="report-blocks__layout">
+            <aside class="report-outline">
+              <h2 class="report-outline__title">
+                {{ zhCN.report.outlineTitle }}
+              </h2>
+              <nav>
+                <ol class="report-outline__list">
+                  <li
+                    v-for="(item, outlineIndex) in reportBlocks.outline.value"
+                    :key="item.id"
+                  >
+                    <button
+                      type="button"
+                      class="report-outline__item"
+                      @click="reportBlocks.locateOutline(item.type, outlineIndex)"
+                    >
+                      {{ item.title }}
+                    </button>
+                  </li>
+                </ol>
+              </nav>
+            </aside>
+
+            <div class="report-blocks__main">
+              <div class="report-blocks__list">
+                <ReportBlockView
+                  v-for="(block, blockIndex) in reportBlocks.blocks.value"
+                  :key="block.id ?? `block-${blockIndex}`"
+                  v-bind="reportBlocks.disputeOf(block)"
+                  :block="block"
+                  :index="blockIndex"
+                  :dimmed="reportBlocks.isBlockDimmed(block)"
+                  :citation-by-marker="reportBlocks.citationByMarker.value"
+                  @open-source="reportBlocks.openSource"
+                />
+              </div>
+
+              <!-- 底部信源索引区（完整溯源索引，链接新窗口打开） -->
+              <section class="report-citation-index">
+                <h2 class="report-citation-index__title">
+                  {{ zhCN.report.citationIndexTitle }}
+                </h2>
+                <ol class="report-citation-index__list">
+                  <li
+                    v-for="item in reportBlocks.sortedCitations.value"
+                    :key="item.evidence_id"
+                    class="report-citation-index__item"
+                  >
+                    <span
+                      class="report-citation-index__marker"
+                      aria-hidden="true"
+                    >{{ item.marker }}</span>
+                    <div class="report-citation-index__body">
+                      <a
+                        :href="item.url"
+                        class="report-citation-index__name"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        :title="item.title"
+                      >
+                        {{ item.title }}
+                      </a>
+                      <SourceBadge
+                        v-if="item.source_type && item.credibility"
+                        :domain="item.domain ?? ''"
+                        :source-type="item.source_type"
+                        :source-level="item.source_level"
+                        :credibility="item.credibility"
+                      />
+                      <p class="report-citation-index__snippet">
+                        {{ item.snippet }}
+                      </p>
+                      <span
+                        v-if="item.published_at"
+                        class="report-citation-index__published"
+                      >
+                        {{ zhCN.report.publishedAt }}：{{ formatPublishedAt(item.published_at) }}
+                      </span>
+                    </div>
+                  </li>
+                </ol>
+              </section>
+
+              <LimitationSummary :blocks="reportBlocks.limitationBlocks.value" />
+            </div>
+          </div>
+
+          <SourcePanel
+            :open="reportBlocks.sourcePanelOpen.value"
+            :citations="reportBlocks.sortedCitations.value"
+            :active-evidence-id="reportBlocks.activeEvidenceId.value"
+            @update:open="onSourcePanelOpenUpdate"
+          />
+        </template>
+
+        <!-- ─── markdown 轨道（M1 既有形态，M2-6/7 冻结后清退） ─── -->
+        <template v-else>
+          <header class="report-head">
+            <h1
+              class="report-head__question"
+              :title="run.question"
+            >
+              {{ run.question }}
+            </h1>
+            <div class="report-head__meta">
+              <UiBadge variant="brand">
+                {{ tierLabel(run.tier) }}
+              </UiBadge>
+              <span>生成时间：{{ formatDateTime(report.created_at) }}</span>
+              <span>Token 用量：{{ formatNumber(report.token_used) }}</span>
+            </div>
+          </header>
+
+          <!-- eslint-disable vue/no-v-html -- 正文为 marked 解析后经 DOMPurify 白名单净化的可信 HTML -->
+          <article
+            ref="bodyRef"
+            class="report-body"
+            v-html="renderedHtml"
+          />
+          <!-- eslint-enable vue/no-v-html -->
+        </template>
       </template>
     </template>
   </section>
@@ -346,6 +510,159 @@ void init()
   background: var(--brand-500);
   animation: report-pulse 1.6s ease-in-out infinite;
 }
+
+/* ─── blocks 轨道布局 ─── */
+
+.report-outline-compact {
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: var(--space-2) var(--space-4);
+}
+
+.report-outline-compact__summary {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--color-text-strong);
+  cursor: pointer;
+}
+
+.report-outline-compact__list,
+.report-outline__list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.report-outline-compact__item,
+.report-outline__item {
+  border: none;
+  background: transparent;
+  padding: var(--space-1) 0;
+  text-align: left;
+  font-size: var(--font-xs);
+  line-height: 1.5;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.report-outline-compact__item:hover,
+.report-outline__item:hover {
+  color: var(--brand-700);
+}
+
+.report-outline {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .report-outline-compact {
+    display: none;
+  }
+
+  .report-blocks__layout {
+    display: grid;
+    grid-template-columns: 168px minmax(0, 1fr);
+    gap: var(--space-8);
+    align-items: start;
+  }
+
+  .report-outline {
+    display: block;
+    position: sticky;
+    top: var(--space-8);
+  }
+}
+
+.report-outline__title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.report-blocks__main {
+  min-width: 0;
+}
+
+/* 底部信源索引区 */
+.report-citation-index {
+  margin-top: var(--space-8);
+}
+
+.report-citation-index__title {
+  margin: 0 0 var(--space-4);
+  font-size: var(--font-base);
+  font-weight: 600;
+  color: var(--color-text-strong);
+}
+
+.report-citation-index__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.report-citation-index__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.report-citation-index__marker {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: var(--brand-50);
+  color: var(--brand-700);
+  font-size: var(--font-xs);
+}
+
+.report-citation-index__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.report-citation-index__name {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--brand-700);
+  word-break: break-word;
+}
+
+.report-citation-index__snippet {
+  margin: 0;
+  font-size: var(--font-xs);
+  line-height: 1.6;
+  color: var(--color-text);
+}
+
+.report-citation-index__published {
+  font-size: var(--font-xs);
+  color: var(--color-text-muted);
+}
+
+/* ─── markdown 轨道（M1 既有样式） ─── */
 
 .report-head {
   margin-bottom: var(--space-8);
