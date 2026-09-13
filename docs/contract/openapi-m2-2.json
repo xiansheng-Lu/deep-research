@@ -1,9 +1,9 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "AI 研究者助手 · M2-2 冲突审视接口契约（冻结）",
+    "title": "AI 研究者助手 · M2-2 累积接口契约冻结（M1 + M2-1 + M2-2）",
     "version": "0.1.0",
-    "description": "本 schema 为 M2-2（批判收敛与人机裁决）后端冻结契约。\n在 M1 子集之上新增分歧三端点：run 下分歧列表（创建者归属，401/404）、分歧详情（内嵌双方证据八项摘要）、提交裁决（409 重复裁决/422 枚举与非空校验）；冲突 type 四值 factual/methodological/temporal/perspective，severity 三值 low/medium/high。\nWebSocket 帧 conflict.detected/conflict.verdicts 不在 OpenAPI paths 中，其载荷契约见 M2-2 阶段技术方案。"
+    "description": "本 schema 为截至 M2-2（批判收敛与人机裁决）后端冻结契约的累积快照，包含 M1 端点 + M2-1 意图路由与闲聊 + M2-2 分歧三端点。\nM2-1：POST /intent/classify 判别意图（chat/research/uncertain，force 手动强制，故障保守降级 research）；POST /assistant/chat 闲聊 SSE 流式直答（不检索、不落项目数据）。\nM2-2：run 下分歧列表（创建者归属，401/404）、分歧详情（内嵌双方证据八项摘要）、提交裁决（409 重复裁决/422 枚举与非空校验）；冲突 type 四值 factual/methodological/temporal/perspective，severity 三值 low/medium/high。\nWebSocket 帧 conflict.detected/conflict.verdicts 不在 OpenAPI paths 中，其载荷契约见 M2-2 阶段技术方案。"
   },
   "paths": {
     "/healthz": {
@@ -386,6 +386,98 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/intent/classify": {
+      "post": {
+        "tags": [
+          "intent"
+        ],
+        "summary": "判别用户输入意图",
+        "description": "判别闲聊 / 研究 / 不确定；LLM 不可用时保守降级为研究。",
+        "operationId": "classify_api_v1_intent_classify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntentClassifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntentClassifyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/assistant/chat": {
+      "post": {
+        "tags": [
+          "assistant"
+        ],
+        "summary": "闲聊直答（SSE 流式）",
+        "description": "通用 LLM 流式直答；LLM 未配置时返回 503。",
+        "operationId": "chat_api_v1_assistant_chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/api/v1/runs/{run_id}/conflicts": {

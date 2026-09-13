@@ -6,7 +6,8 @@
 
 M1 快照（openapi-m1.json）为历史冻结文件，默认不覆盖：随里程碑演进，应用的
 components.schemas 会持续增加，重生成会让 M1 文件产生与端点无关的噪音 diff。
-M2-2 快照（openapi-m2-2.json，M1 子集 + conflicts 三端点）为当前导出品。
+M2-2 快照（openapi-m2-2.json，M1 子集 + M2-1 意图/闲聊 + conflicts 三端点）为当前导出品；
+快照为累积超集，每个里程碑批次必须把已交付端点全部纳入，禁止选择性白名单。
 
 环境变量需与 conftest.py 的 _REQUIRED_ENV 对齐（测试环境最小变量集）。
 """
@@ -50,9 +51,13 @@ _M1_ENDPOINTS = frozenset(
     }
 )
 
-# M2-2 在 M1 之上新增的冲突审视三端点（FR-6/7/8）
+# M2 阶段在 M1 之上新增的端点（累积快照：含已交付的全部里程碑，禁止选择性白名单）
+# - M2-1 意图路由与闲聊：/intent/classify、/assistant/chat（SSE 流，路径仍纳入 OpenAPI）
+# - M2-2 批判收敛与人机裁决：分歧三端点（FR-6/7/8）
 _M22_ENDPOINTS = frozenset(
     {
+        "/api/v1/intent/classify",
+        "/api/v1/assistant/chat",
         "/api/v1/runs/{run_id}/conflicts",
         "/api/v1/conflicts/{conflict_id}",
         "/api/v1/conflicts/{conflict_id}/verdict",
@@ -60,11 +65,13 @@ _M22_ENDPOINTS = frozenset(
 )
 
 _M22_DESCRIPTION = (
-    "本 schema 为 M2-2（批判收敛与人机裁决）后端冻结契约。\n"
-    "在 M1 子集之上新增分歧三端点：run 下分歧列表（创建者归属，401/404）、"
-    "分歧详情（内嵌双方证据八项摘要）、提交裁决（409 重复裁决/422 枚举与非空校验）；"
-    "冲突 type 四值 factual/methodological/temporal/perspective，"
-    "severity 三值 low/medium/high。\n"
+    "本 schema 为截至 M2-2（批判收敛与人机裁决）后端冻结契约的累积快照，"
+    "包含 M1 端点 + M2-1 意图路由与闲聊 + M2-2 分歧三端点。\n"
+    "M2-1：POST /intent/classify 判别意图（chat/research/uncertain，force 手动强制，"
+    "故障保守降级 research）；POST /assistant/chat 闲聊 SSE 流式直答（不检索、不落项目数据）。\n"
+    "M2-2：run 下分歧列表（创建者归属，401/404）、分歧详情（内嵌双方证据八项摘要）、"
+    "提交裁决（409 重复裁决/422 枚举与非空校验）；冲突 type 四值 "
+    "factual/methodological/temporal/perspective，severity 三值 low/medium/high。\n"
     "WebSocket 帧 conflict.detected/conflict.verdicts 不在 OpenAPI paths 中，"
     "其载荷契约见 M2-2 阶段技术方案。"
 )
@@ -144,7 +151,7 @@ def main() -> None:
         schema,
         m22_paths,
         filename="openapi-m2-2.json",
-        title="AI 研究者助手 · M2-2 冲突审视接口契约（冻结）",
+        title="AI 研究者助手 · M2-2 累积接口契约冻结（M1 + M2-1 + M2-2）",
         description=_M22_DESCRIPTION,
         output_dir=output_dir,
     )

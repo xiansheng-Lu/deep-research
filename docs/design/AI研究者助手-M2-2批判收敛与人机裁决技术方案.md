@@ -14,7 +14,7 @@ M1 Critic 为纯启发式（title+snippet 字集合 Jaccard 0.4 且可信度不�
 4. 应用级 AsyncPostgresSaver，裁决清零后自动从检查点恢复续跑；
 5. 报告显式呈现未消解分歧（both 并存 / reject 双弃）。
 
-验收项（`.trae/specs/m2-2-critic-convergence/spec.md` AC-1~AC-16）全部由自动化测试或离线评估覆盖。
+验收项 AC-1~AC-17 全部由自动化测试或离线评估覆盖，完整基线见本文 §11 附录（原工作稿位于 `.trae/specs/m2-2-critic-convergence/spec.md`，该目录不入库，§11 为其入库快照与团队可见基线）。
 
 ## 2. 组件与代码落位
 
@@ -117,3 +117,69 @@ M1 Critic 为纯启发式（title+snippet 字集合 Jaccard 0.4 且可信度不�
 - 集成测试独立 schema（m22_task5/7/8）真隔离：conftest.create_all_in_schema 显式在目标 schema 建表，规避 Inspector 默认查 public 同名表跳过建表的陷阱。
 
 TR-10.3（与 LLD/契约草案一致性 rubric）待独立评审签署。
+
+## 11. 附录：FR / NFR / AC 验收基线（入库快照）
+
+> 本节为工作稿 `.trae/specs/m2-2-critic-convergence/spec.md` 的入库快照（2026-09-13 并入；`.trae/` 目录不进仓库，团队可见基线以本节为准）。工作稿中的 Background/Goals/Non-Goals/Constraints 已由本方案 §1-§2 承接，不重复搬运；以下仅保留验收所需的 FR/NFR/AC 原文要点。
+
+### 11.1 功能需求（FR-1 ~ FR-16）
+
+| 编号 | 要点 |
+| --- | --- |
+| FR-1 | LLM 语义冲突检测：对「论断+两两证据」输出严格 JSON（议题/四类型/三严重度/一句中文依据），温度 0，单批硬超时 8 秒 |
+| FR-2 | 保守降级：LLM 未配置/失败/超时/脏 JSON 四类故障回退 M1 Jaccard 启发式，标记 critic_degraded，主链不中断 |
+| FR-3 | 自动收敛：low/medium 按可信度权威收敛（平局保留先出现者），落库 resolved、无 Verdict、不挂起 |
+| FR-4 | 挂起门控：high 置 awaiting_human 并落库；同轮有待裁决冲突时 run=paused@critique 并发 run.finished(status=paused) |
+| FR-5 | 实时事件：每条 high 一帧 conflict.detected（字段嵌套 payload）；裁决恢复时推 conflict.verdicts |
+| FR-6 | GET /runs/{id}/conflicts：全量分歧按创建时间升序；登录 + 创建者，否则 404 |
+| FR-7 | GET /conflicts/{id}：内嵌双方证据摘要**八项**（id/title/url/domain/snippet/credibility/source_type/published_at）；404 归属保护 |
+| FR-8 | POST /conflicts/{id}/verdict：{choice, reason, additional_note?}，reason 非空、choice 强枚举；写 Verdict 与 Conflict resolved/resolved_at，返回三字段 |
+| FR-9 | 裁决状态机：终态重复裁决 409；非法枚举/空 reason 422；不存在/不归属 404 |
+| FR-10 | 自动恢复：剩余 awaiting_human>0 保持 paused；=0 时经 AsyncPostgresSaver Command(resume=...) 恢复，回流 critic 直至报告 |
+| FR-11 | 四值语义：evidence_a/b 取一、both 并存标分歧、reject 双弃；被舍弃 claim 不得进入结论段 |
+| FR-12 | 过程数据落库：sub_questions/evidence 生产路径写 Postgres（ULID 与 state 一致，保证外键），落库失败不静默 |
+| FR-13 | 报告显式分歧：「冲突与不确定性」段陈述议题、双方口径与来源、裁决理由/备注，不隐藏、不写成定论 |
+| FR-14 | Checkpointer 切换：应用级单例 AsyncPostgresSaver（thread_id=run_id，启动建表）；澄清/裁决两类挂起跨请求可恢复，M1 行为不回退 |
+| FR-15 | 离线评估：约 20 条样本集 + 复跑脚本（真实密钥，不进 CI），输出语义检测 vs 词面启发式的召回/误报对照 |
+| FR-16 | 契约同步：导出含本批端点的机读 OpenAPI（累积快照）到 docs/contract/，与前端 types.ts 完成字段核对；本方案与代码同 PR |
+
+### 11.2 非功能需求（NFR-1 ~ NFR-6）
+
+| 编号 | 要点 |
+| --- | --- |
+| NFR-1 | 批判阶段消耗 ≤ 档位 token 预算 30%（CRITIC_BUDGET_RATIO=0.30），触顶即停 |
+| NFR-2 | 单 run 批判迭代 ≤ 3 轮（MAX_CRITIC_ITERATIONS） |
+| NFR-3 | 判定温度固定 0，同输入同模型结果稳定 |
+| NFR-4 | 既有测试全部通过 + 新增分支覆盖；mypy/ruff 零新增告警 |
+| NFR-5 | Alembic 迁移可 upgrade/downgrade；checkpointer 自建表不纳入业务迁移 |
+| NFR-6 | WS 鉴权、run.finished 终态帧、paused 语义、M1 既有端点行为不回退 |
+
+### 11.3 验收标准（AC-1 ~ AC-17）
+
+| 编号 | 类型 | 判定要点 | 证据 |
+| --- | --- | --- | --- |
+| AC-1 | rule | high 冲突检出后四件事同时成立：Conflict 落 awaiting_human、run paused@critique、WS conflict.detected、随后 run.finished(status=paused) | 新增单测 |
+| AC-2 | rule | 抛错/超时/脏 JSON 三类注入下降级启发式，日志有 degraded，run 不 failed | pytest 用例 |
+| AC-3 | rule | low/medium 自动收敛：高可信 claim 保留；Conflict resolved/resolved_at、无 Verdict、run 不挂起 | pytest + DB 断言 |
+| AC-4 | rule | 分歧列表：创建者 200 按时间排序；非创建者 404；无 token 401 | API 测试 |
+| AC-5 | rule | 分歧详情：双方证据**八项**摘要齐备（注：早期工作稿写「七项」为笔误，以 FR-7 与机读契约八项为准）；不存在 id 返回 404 | API 测试 |
+| AC-6 | rule | 合法裁决 200 三字段且 Verdict 含 additional_note；非法 choice/空 reason → 422；重复裁决 → 409 | API 测试 |
+| AC-7 | rule | 2 条 high：第一条裁决后仍 paused，第二条后自动恢复至 succeeded，报告含未消解分歧议题与双方来源 | 集成测试 |
+| AC-8 | rule | 四值裁决后 report_claims 正确：a/b 取一、both 并存带标注、reject 双弃 | 参数化单测 |
+| AC-9 | rule | 新图实例/新请求下 clarify 与 critique 两类挂起均可凭 thread_id 跨请求恢复 | 集成测试 |
+| AC-10 | rule | 0001→最新→0001 迁移重放退出码 0；verdicts.additional_note 随迁移增删；checkpoint 表不在迁移内 | 迁移测试 |
+| AC-11 | rule | 挂起时 sub_questions/evidence 表行数与 state 一致、ID 对应、外键有效、excluded_by_user 默认值正确 | 集成测试 |
+| AC-12 | rule | 全量 pytest（M2-2 为 410）+ mypy + ruff 退出码 0、零新增告警 | 命令输出 |
+| AC-13 | rule | 约 20 条样本真实 DeepSeek 评估跑通并产出对照文件（tests/eval/，不进 CI）；语义召回不低于启发式 | eval 资产 |
+| AC-14 | rule | openapi-m2-2.json 三端点路径/请求/响应/枚举与前端 types.ts 核对，破坏性差异 0 或有联调反馈记录 | 契约 + 核对记录 |
+| AC-15 | rubric | LLM 判定结构化稳定性与合理性（1-5，阈值 ≥4）：严格 JSON 稳定、四类型/严重度合理、依据可读 | 样本逐条记录 |
+| AC-16 | rubric | 报告分歧表达质量（1-5，阈值 ≥4）：议题/双方口径与来源/裁决备注层次清晰，结论段不夹带被舍弃 claim | 真实冒烟报告 |
+| AC-17 | rubric | 与 LLD §4.2.6/§6.5.6/§6.5.10/§6.6、契约草案 §6.2/§6.3 的架构一致性（1-5，阈值 ≥4）；偏离点须在本方案显式说明（见 §7） | 独立评审对照 |
+
+### 11.4 开放问题关闭情况
+
+| 工作稿 Open Question | 关闭情况 |
+| --- | --- |
+| 联调排期与前端切换窗口 | 已关闭：《M2-2批判收敛与人机裁决接口交接》单已发出，状态待前端回归 |
+| mock 非法枚举 performance_data | 已关闭：交接单 §3.5 要求替换为 perspective，前端回归时执行（本工作包不改前端 mock） |
+| 评估集数量与分布 | 已关闭：实际落 20 条（12 冲突 + 8 负例），结果见 §8 与 backend/tests/eval/conflict_result.json |

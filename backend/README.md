@@ -50,7 +50,7 @@
 
 1. **Python 3.11 或 3.12**（建议由 uv 自动管理，无需系统预装）
 2. **uv**（依赖与虚拟环境管理）
-3. **Docker Desktop**（用于本地一键启动 PostgreSQL、Redis、MinIO）
+3. **Docker 运行时**（本机实际为 WSL2 Ubuntu 内 Docker Engine，不装 Docker Desktop；详见环境手册 §3/§4）
 4. Windows / macOS / Linux 均可，本仓库开发环境以 Windows 为主
 
 安装 uv（Windows PowerShell）：
@@ -67,28 +67,16 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 ### 1. 启动基础设施
 
-本地依赖栈（PostgreSQL 16 + pgvector、Redis 7、MinIO）通过 Docker Compose 一键启动：
+本地依赖栈（PostgreSQL + pgvector / Redis / MinIO）通过 Docker Compose 启动；本项目实际环境为 **WSL2 Ubuntu 内 Docker（不装 Docker Desktop）**，完整拓扑、端口、凭据、WSL 资源配额、镜像加速与保活机制以《本地开发环境手册》（`docs/ops/本地开发环境手册.md`，以下简称「环境手册」）为唯一事实源，此处不复制。
 
 ```powershell
+# 在 WSL（Ubuntu）内执行；完整栈（环境手册 §5）
 docker compose -f docker-compose.dev.yml up -d
-```
-
-启动后的服务与端口：
-
-| 服务 | 地址 | 凭据 |
-| --- | --- | --- |
-| PostgreSQL（含 pgvector） | `localhost:5432` | 库/用户/密码均为 `deep_research` |
-| Redis | `localhost:6379` | 无 |
-| MinIO API | `http://localhost:9000` | `minioadmin / minioadmin` |
-| MinIO Console | `http://localhost:9001` | `minioadmin / minioadmin` |
-
-低内存机器（如 16GB 且常驻 IDE/浏览器）可改用精简栈，只起 M1 联调唯一硬依赖 PostgreSQL（容器限额 384MB），并参考 `.wslconfig.example` 将 WSL2 虚拟机限制在 2GB：
-
-```powershell
+# 低内存精简栈：仅 PostgreSQL（M1/M2 联调硬依赖），见环境手册 §1/§5
 docker compose -f docker-compose.min.yml up -d
 ```
 
-说明：MinIO 桶不会自动创建，请在 Console 中手动创建名为 `deep-research` 的桶（或使用 `mc mb` 命令）。
+注意：MinIO 桶 `deep-research` 不自动创建（建桶命令见环境手册 §7）；联调期间建议用 `wsl -d Ubuntu -e sleep infinity` 后台保活，避免 WSL 空闲回收导致接口间歇故障（环境手册 §8 方法 3）。
 
 ### 2. 配置环境变量
 
@@ -394,7 +382,7 @@ high 冲突挂起 `paused@critique`；末条 awaiting_human 冲突裁决后经 A
 uv run python -m app.export_openapi
 ```
 
-脚本导出当前里程碑快照到仓库根目录 `docs/contract/`：M2-2 快照 `openapi-m2-2.json`（M1 端点 + 分歧三端点）。M1 历史快照 `openapi-m1.json` 默认冻结不覆盖，如需重写加 `--refresh-m1`。前端可用 openapi-generator（typescript-fetch）生成客户端与类型。
+脚本导出当前里程碑快照到仓库根目录 `docs/contract/`：M2-2 快照 `openapi-m2-2.json` 为累积超集（15 端点 = M1 十端点 + M2-1 意图/闲聊两端点 + M2-2 分歧三端点）。M1 历史快照 `openapi-m1.json` 默认冻结不覆盖，如需重写加 `--refresh-m1`。前端可用 openapi-generator（typescript-fetch）生成客户端与类型。
 
 ---
 

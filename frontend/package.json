@@ -1,7 +1,7 @@
 {
   "name": "ai-research-assistant-frontend",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "AI 研究者助手前端工程",
   "scripts": {

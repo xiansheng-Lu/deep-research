@@ -28,7 +28,7 @@ export interface ChannelConfig {
   maxBackoffMs?: number
   // 鉴权注入方式：query=M1 现状（URL 带 token）；subprotocol=Sec-WebSocket-Protocol（M2 与后端同窗口切换）
   authMode?: 'query' | 'subprotocol'
-  // subprotocol 模式使用的协议名（契约草案 §5.3：bearer.jwt.v1）
+  // subprotocol 模式使用的协议名（契约草案 §5.3：bearer，握手头为 Sec-WebSocket-Protocol: bearer, <jwt>）
   authProtocol?: string
 }
 
@@ -87,7 +87,7 @@ export class WsChannel {
     this.id = id
     this.url = config.url
     this.authMode = config.authMode ?? 'query'
-    this.authProtocol = config.authProtocol ?? 'bearer.jwt.v1'
+    this.authProtocol = config.authProtocol ?? 'bearer'
     // 客户端兜底心跳 25s（[§8.3]，另响应服务端 30s ping 回 pong）
     this.clientHeartbeatIntervalMs = config.clientHeartbeatIntervalMs ?? 25_000
     this.connectTimeoutMs = config.connectTimeoutMs ?? 10_000

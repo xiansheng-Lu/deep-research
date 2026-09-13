@@ -363,7 +363,7 @@ frontend/
 |---|---|---|
 | `UiButton` | `variant=primary/secondary/danger/ghost`、`size=sm/md/lg`、`loading`、`disabled`、`icon` | M0 |
 | `UiInput` / `UiTextarea` | `modelValue`、`error`、`label`、`hint`、`autofocus` | M0 |
-| `UiSelect` | 浮层列表、`searchable`、键盘导航 | M0 |
+| （无独立 UiSelect） | 下拉选择由 `UiDropdown` 承担（浮层列表 + 键盘导航；带搜索的模板选择器在其上封装），M0 起即不单列 UiSelect 组件 | M0 |
 | `UiTabs` | 下划线样式，受控/非受控 | M0 |
 | `UiDialog` | 模态，`size`，遮罩点击/ESC 关闭，焦点困于面板 | M0 |
 | `UiDrawer` | 右侧抽屉（`RightDrawer` 抽象复用），`--shadow-drawer` | M0 |
@@ -375,7 +375,7 @@ frontend/
 | `UiBadge` / `UiTag` | 状态/信源/里程碑标签 | M0 |
 | `UiCard` | 边框卡片（不用阴影区分层级） | M0 |
 | `UiSkeleton` / `UiEmpty` / `UiErrorState` | 加载≤3s 骨架屏、空状态、错误+重试 | M0 |
-| `AvatarStack` | 协作者头像堆叠 | M1 |
+| `AvatarStack` | 协作者头像堆叠（M1 规划，实际未实现，顺延至 M3/M4 协作能力窗口，不占 M2 范围） | M3 |
 | `Kbd` | 快捷键提示（命令面板） | M3 |
 
 ### 6.2 通用组件约定（对全部基础组件生效）
@@ -1173,7 +1173,7 @@ export type ReportAnchor =
 | 3 | SSE `report/stream` data | 草案 §4.3：data 为完整 envelope JSON | §8 报告流解析按统一 envelope 处理 |
 | 4 | `/auth/refresh`、`/runs/{id}/pause`、`cancel` | 草案 §5.1/§6.1 | §13 会话模块按 refresh+logout 接入；§11 暂停/取消 UI 按 reason/note 接入 |
 | 5 | verdict `additional_note` | 草案 §6.3：choice/reason 必填，additional_note 仅展示 | §5 裁决表单字段与语义锁定 |
-| 6 | WS 鉴权通道 | 草案 §5.3：Sec-WebSocket-Protocol `bearer.jwt.v1` 子协议 | §14.2 WS 客户端按子协议注入 token，URL 不带 token |
+| 6 | WS 鉴权通道 | 草案 §5.3：Sec-WebSocket-Protocol `bearer, <jwt>`（协议名固定 `bearer`，服务端回显 `bearer`） | §14.2 WS 客户端按子协议注入 token，URL 不带 token |
 | 7 | 批注/@/导出/knowledge-search/audit schema | 草案 §7/§9/§11/§13/§18.1 | §6 批注/导出/§10 知识库/§15 审计页按 schema 接入 |
 | 8 | 通知服务端点 | 草案 §12 | §12 通知中心按 kind/link 接入 |
 | 9 | stage 失败重试/回溯通道 | 草案 §6.4：intervene.action 增补 `retry_stage`（待产品确认） | §11.3 失败入口不预造按钮；后端提供 `retry_stage` 时再开放 UI |

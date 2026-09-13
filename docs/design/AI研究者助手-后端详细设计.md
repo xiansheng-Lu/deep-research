@@ -3,7 +3,7 @@
 > 版本: v2.0 · 起草日期: 2026-09-09 · 适用范围: M1-M2 · 定稿日期: 2026-09-10
 > 状态: 已定稿
 > 定稿说明: 编排契约（§6.2 ResearchState / §6.3 状态图 / §6.5 节点）为权威实现基线；M0 编排层代码（state/graph/edges/nodes）已按本契约对齐
-> 进度: M0 后端脚手架已落地（commit d9e0531 / 1d706d7），§3 已按实际代码结构同步
+> 进度口径: 本文为 M1-M2 设计基线，**当前实现进度与各里程碑关闭状态以《软件开发计划》§3 与 backend/README「里程碑与当前状态」为唯一事实源**（M1 已于 2026-09-12 关闭，M2-1/M2-2 已完成）；本文 §3.2 为 M0 快照不随实现滚动，已落地代码与本文不一致处以代码 + 冻结契约（docs/contract/openapi-m2-2.json）+ 阶段技术方案偏离点章节为准
 > 上游文档: [PRD](./AI研究者助手-软件需求规格说明书.md) · [HLD·智能体协作规格](./AI研究者助手-智能体协作规格说明.md) · [架构设计概要](./AI研究者助手-架构设计概要.md) · [SDP](./AI研究者助手-软件开发计划.md)
 > 平级文档: 前端详细设计 · 数据模型详细设计 · 部署运维手册
 > 读者: 后端工程师 · 平台架构师 · 数据工程师
@@ -268,6 +268,8 @@ backend/
 
 ### 3.2 模块实现状态（M0 快照）
 
+> 本表冻结于 M0，仅记录当时的脚手架状态，**不随实现滚动更新**；M1/M2 实际落地情况以代码目录与 backend/README 里程碑表为准。
+
 | 模块 | M0 已落地 | M1 规划填充 |
 |---|---|---|
 | core | Settings、AppError 异常体系、structlog、trace_id 中间件 | 分页、i18n、RFC 7807 problem 响应完整化 |
@@ -402,7 +404,7 @@ app = create_app()
 
 **POST `/auth/logout`**（与契约草案 §5.2 对齐）：撤销 `refresh_token`，单设备登出；可选 `{"everywhere": true}` 全设备撤销；服务端清 Redis 会话键并落审计条目。
 
-**WS 鉴权通道**（与契约草案 §5.3 对齐）：采用 **Sec-WebSocket-Protocol 子协议**（推荐值：`bearer.jwt.v1`）承载 access_token，不在 URL 查询串中带 token，避免被网关日志/Nginx access log 落盘泄露。子协议协商失败直接 401。查询参数方案作为后端评审兜底保留。
+**WS 鉴权通道**（与契约草案 §5.3 对齐）：采用 **Sec-WebSocket-Protocol 子协议**承载 access_token，客户端握手头发送 `Sec-WebSocket-Protocol: bearer, <jwt>`（协议名固定 `bearer`，jwt 作为第二协议位），服务端校验后回显 `bearer`；不在 URL 查询串中带 token，避免被网关日志/Nginx access log 落盘泄露。子协议协商失败直接 401。M1/M2-2 现网仍为查询参数方案，切换由前后端同分支窗口完成（当前未启用子协议）。
 
 > **会话并发与标签页策略**（契约草案 §5.4）：同一用户允许多设备 + 多标签页；同一 run 的 WS 多订阅者共享推送（Redis Pub/Sub 扇出）。单 run 操作类指令（pause/cancel/intervene/verdict）以 `Idempotency-Key` 为准，重复提交返回上一次结果，避免多标签页重复触发。
 
@@ -472,12 +474,12 @@ app = create_app()
 
 - **场景 A（一次成型）**：问题本身充分、Clarifier 判定 `requires_user_input=false` → 请求**可省略** `clarification_answers`，Clarifier 自动产出 `structured_question` 作为 `state.clarification`。
 - **场景 B（前置澄清）**：前端已通过澄清卡片收集答案 → `clarification_answers` 传入后，服务层在初始化 state 时直接合并 `{"defaults": {}, "structured_question": {…}}` 写入 `ResearchState.clarification`，并置 `clarification.needs_user_input=false`，使 Clarifier 节点跳过追问直接进入 decompose。
-- **结构对齐**：`clarification_answers[i].key` 与 [§6.5.2 `ClarificationQuestion.key`](file:///d:/trae/product/pm/AI研究者助手-后端详细设计.md#L1378-L1383) 为同一命名空间；服务层透传时不做 key 改写。
+- **结构对齐**：`clarification_answers[i].key` 与本文 §6.5.2 `ClarificationQuestion.key` 为同一命名空间；服务层透传时不做 key 改写。
 - 若既无 `clarification_answers` 又判定需追问：图在 `await_human` 挂起（LangGraph interrupt，见 §6.5.2/§6.3），服务端经 WS `interrupt.requested`（§4.3.1）向前端推送澄清题；`research_runs.status` 保持 `running`、`current_stage="clarify"`（状态取值见 §5.3.4，无独立"待澄清"枚举，前端以该事件 + `current_stage` 呈现等待态）。用户经 `POST /runs/{id}/resume` 提交答案后继续。
 
 > **resume / intervene 载荷归一**：`POST /runs/{id}/resume` 与 `POST /runs/{id}/intervene` 的请求体在 API 层统一转换为 `state.human_input` 后由 Orchestrator 恢复图（§6.6）：流程判定挂起（澄清/裁决）传 `{"answers": {...}}`；主动介入传 `{"action": "ask_followup|exclude_evidence|revert_stage", "payload": {...}}`（§6.5.9 消费）。intervene 的 `type` 字段映射为 `human_input.action`。
 
-**响应 202**（异步）
+**响应 201**（异步创建；与冻结契约 docs/contract/openapi-m1.json 及实现一致。早期草案曾写 202，已废弃）
 
 ```jsonc
 {
@@ -544,7 +546,10 @@ app = create_app()
     { "key": "geo", "value": "全球" }
   ]
 }
-// 形态 B：裁决场景（action）
+// 形态 B：裁决场景（action）—— 设计预案，M2-2 实现未采用本通道
+// 实际实现：冲突裁决统一走 POST /api/v1/conflicts/{conflict_id}/verdict（见 §4.2.6），
+// 末条 awaiting_human 冲突裁决后由服务层自动构造 human_input 恢复图，不存在独立「继续」接口；
+// /runs/{id}/resume 实际只承载澄清答案回流。恢复时序以《M2-2 批判收敛与人机裁决技术方案》§3.2 为准。
 {
   "kind": "verdict",
   "action": "evidence_a",              // evidence_a | evidence_b | both | reject
@@ -836,7 +841,7 @@ action 命名空间（契约草案 §13.3）：`<domain>.<verb>`，例如 `run.s
 | `sub_question.finished` | 即时 | sub_question_id, evidence_count |
 | `evidence.fetched` | 500ms | evidence |
 | `interrupt.requested` | 即时 | 见 §4.3.3（沿用契约草案 §4.1：reason/questions[]/defaults/expires_in_seconds） |
-| `conflict.detected` | 即时 | conflict |
+| `conflict.detected` | 即时 | 冲突对象**嵌套在 payload 内**（payload 含 id/run_id/claim/evidence_a_id/evidence_b_id/type/severity/status），避免与帧 type 同名覆盖；M2-2 已冻结，见《M2-2 批判收敛与人机裁决技术方案》§5 |
 | `token.usage.update` | 1s | used, budget, model_breakdown |
 | `report.chunk` | 即时 | chunk_id, delta, position |
 | `report.finished` | 即时 | report_id, summary |
@@ -844,6 +849,8 @@ action 命名空间（契约草案 §13.3）：`<domain>.<verb>`，例如 `run.s
 | `report.replace` | 即时 | 见 §4.3.3（沿用契约草案 §4.4：reason/previous_report_id/new_report_id/changed_claim_ids） |
 | `annotation.created` `annotation.updated` `annotation.deleted` | 即时 | 沿用契约草案 §4.5（是否启用由后端评审决定，前端两侧均兼容） |
 | `run.finished` | 即时 | status, summary |
+
+> **事件实现状态（2026-09-13 核对）**：M1/M2-2 实际推送的帧为 stage.started、run.finished（含 status=paused 语义）、conflict.detected、conflict.verdicts；表中 stage.finished/failed、sub_question.*、evidence.fetched、token.usage.update、cost.warning、report.chunk/report.finished 为 M2-3~M2-6 设计目标，尚未实现，以各阶段技术方案与届时冻结契约为准。其中 **report.chunk 报告流 SSE 未进入 M1 冻结契约、M2 不实现**（见 §4.4 状态说明）。
 
 **客户端发送**（受控消息）：
 
@@ -890,7 +897,9 @@ action 命名空间（契约草案 §13.3）：`<domain>.<verb>`，例如 `run.s
 
 ### 4.4 SSE 端点
 
-#### 4.4.1 `/runs/{run_id}/report/stream`
+> **实现状态（2026-09-13）**：报告流 SSE **未进入 M1 冻结契约，M1/M2-2 均未实现**（M1 契约对齐时已移除；前端 M1 同步移除 SSE 报告通道，生成中以 run 状态 + WS 驱动、终稿一次性拉取）。本节保留为设计预案：M2-6 结构化报告落地时再评审是否恢复，若恢复须重新冻结契约并同步前端，不得直接按本节开发。已实现的 SSE 仅 M2-1 闲聊 `/api/v1/assistant/chat`（帧形态见冻结契约与《M2-1意图路由与闲聊接口交接》§3.2）。
+
+#### 4.4.1 `/runs/{run_id}/report/stream`（设计预案，未实现）
 
 - 鉴权：JWT（Bearer）
 - 方向：单向（服务端 → 客户端）
@@ -919,7 +928,7 @@ data: {"v":"1.0","event_id":"evt_01HZ...","ts":1736486400000,"run_id":"run_...",
 
 ### 4.5 OpenAPI 导出
 
-FastAPI 自动生成 OpenAPI 3.1 规范。前端通过 `openapi-generator-cli generate -i openapi.json -g typescript-fetch` 生成 TypeScript 客户端类型与请求封装。
+FastAPI 自动生成 OpenAPI 3.1 规范，由 `backend/app/export_openapi.py` 导出里程碑冻结快照到 `docs/contract/openapi-*.json`（累积超集：M1 快照 `openapi-m1.json` 历史冻结，当前 `openapi-m2-2.json` 含 M1 + M2-1 + M2-2 共 15 端点；快照必须随里程碑批次累积，禁止选择性白名单）。前端通过 `openapi-generator-cli generate -i docs/contract/openapi-m2-2.json -g typescript-fetch` 生成 TypeScript 客户端类型与请求封装（切换清单见 frontend/README「M2-9 生成客户端切换清单」）。
 
 ---
 
@@ -1890,8 +1899,10 @@ async def await_human_node(state: ResearchState, *, deps: NodeDeps) -> dict:
 
 ### 6.6 Orchestrator 服务入口
 
+> 实现落位：服务入口实际为 `backend/app/orchestrator/executor.py`（`run_research_async` / `resume_research_async`），checkpointer 工厂在 `app/orchestrator/checkpoint.py`；下方为设计期骨架，函数签名以代码为准。
+
 ```python
-# backend/app/orchestrator/runner.py
+# backend/app/orchestrator/executor.py（设计期文件名 runner.py，已更名）
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 from app.orchestrator.graph import build_graph
@@ -2095,11 +2106,13 @@ class AnthropicProvider:
 
 ### 7.4 主备切换、熔断与用量归集
 
+> 实现落位：主备配对装配实际在 `backend/app/provider/registry.py`（`_ProviderRegistry.build_pair`，由 `lifespan` 注入）；熔断在 `app/provider/circuit_breaker.py`，用量归集在 `app/provider/usage.py`（无独立 observability 包）。
+
 ```python
-# backend/app/provider/factory.py
+# backend/app/provider/registry.py（设计期文件名 factory.py，已更名）
 from langchain_core.runnables import Runnable, RunnableConfig
-from app.observability.usage import UsageTracker
-from app.observability.cb import CircuitBreaker
+from app.provider.usage import UsageTracker
+from app.provider.circuit_breaker import CircuitBreaker
 from app.provider.client import LLMClient
 
 class ProviderFactory:
@@ -2273,7 +2286,7 @@ async def llm_structured(deps: NodeDeps, *, schema, messages, tags=None):
 ### 7.7 Token 计量与可观测
 
 ```python
-# backend/app/observability/usage.py
+# backend/app/provider/usage.py（设计期规划为 app/observability/usage.py，实际归入 provider 包）
 from langchain_core.callbacks import BaseCallbackHandler
 from prometheus_client import Counter
 
@@ -2355,9 +2368,11 @@ class EventEnvelope(BaseModel):
 
 ### 8.3 WebSocket Hub
 
+> 实现落位：进程内 Hub 实际为 `backend/app/realtime/hub.py`（`RealtimeHub`，频道键 `runs:{run_id}`）；WS 端点在 `app/realtime/ws.py`，另有 `app/realtime/sse.py` 备用。
+
 ```python
-# backend/app/realtime/ws_hub.py
-class WSHub:
+# backend/app/realtime/hub.py（设计期文件名 ws_hub.py，已更名；类名 RealtimeHub）
+class RealtimeHub:
     def __init__(self):
         self._connections: dict[str, set[WebSocket]] = {}  # run_id -> sockets
         self._lock = asyncio.Lock()
@@ -2455,8 +2470,10 @@ Refresh token 撤销：维护 Redis 黑名单 `revoked_refresh:{jti}`，TTL = to
 
 ### 9.2 配额与限流
 
+> 实现落位：档位定义在 `backend/app/quota/tiers.py`（quick/standard/deep/extreme 四档预算，环境变量 `QUOTA_TIER_*` 可调）；预算闸门为编排节点 `app/orchestrator/nodes/cost_checkpoint.py`（超 90% 挂起 user_intervention）。设计期的 `QuotaTracker` 类未单独实现，M2-3 实时成本推送前不建该模块。
+
 ```python
-# backend/app/quota/tracker.py
+# backend/app/quota/tiers.py + app/orchestrator/nodes/cost_checkpoint.py（设计期规划为 quota/tracker.py）
 class QuotaTracker:
     """按租户 + 时间窗 + 档位追踪 token 消耗；超阈值阻断研究。"""
 
@@ -2557,8 +2574,10 @@ class Connector(Protocol):
 
 ### 10.2 凭证加密
 
+> 实现状态（2026-09-13）：连接器为 M5 能力，`app/core/crypto.py` **当前不存在**；仅有配置位 `app/core/config.py` 的 `ENCRYPTION_KEY`（默认空）。下方 Fernet 实现随 M5 连接器落地时在 `app/core/security.py` 或新模块中实现，M1-M2 不提前开发。
+
 ```python
-# backend/app/core/crypto.py（M1-M2）
+# 计划落位：backend/app/core/security.py（M5 随连接器落地；设计期路径 core/crypto.py 不采用）
 from cryptography.fernet import Fernet
 
 def encrypt_credential(plain: str) -> bytes:
@@ -2585,7 +2604,7 @@ M3+ 切到 KMS（见 HLD §9.2.1）：`CryptoAdapter` 接口保留，注入实�
 ### 11.1 异常体系
 
 ```python
-# backend/app/errors.py
+# backend/app/core/exceptions.py（设计期文件名 app/errors.py，实际归入 core 包）
 class AppError(Exception):
     code: str
     status: int
@@ -2902,8 +2921,10 @@ Trace ID 通过 `traceparent` Header 跨服务传递，前端可从响应 Header
 
 ### 14.1 本地开发（docker-compose）
 
+> 实际编排文件为 `backend/docker-compose.dev.yml`（完整栈：PostgreSQL+pgvector/Redis/MinIO）与 `backend/docker-compose.min.yml`（低内存精简栈，仅 PostgreSQL）；环境拓扑、端口、凭据与保活机制以《本地开发环境手册》（docs/ops/）为唯一事实源。下方为设计期多服务编排节选，当前本地开发不启 api/worker 容器（前后端进程跑在宿主侧）。
+
 ```yaml
-# deploy/docker-compose.yml（核心节选）
+# backend/docker-compose.dev.yml（设计期路径 deploy/docker-compose.yml，已调整；下为多服务编排预案）
 version: "3.9"
 services:
   api:
@@ -2997,7 +3018,7 @@ K8s 探针：`livenessProbe` 走 `/healthz`，`readinessProbe` 走 `/readyz`，�
 
 | # | 任务 | 关键产出 |
 |---|---|---|
-| M2-1 | 意图路由 | classify 接口 + 离线评估 ≥ 85% 召回 |
+| M2-1 | 意图路由 | classify 接口 + 离线评估门禁 ≥ 85% 召回（工作包离线门禁；PRD A11/A12 的 MVP 验收召回为 ≥ 95%，两层口径以 SDP §5.1 为准；2026-09-12 实测研究召回/闲聊精确率均 100%） |
 | M2-2 | 批判收敛 | Critic 节点完整实现 + 分歧 API |
 | M2-3 | 实时成本展示 | Pushgateway + Metrics Exporter + WS 推送链路 ≤ 3s |
 | M2-4 | 看板数据接口 | stages/sub_questions/evidence/cost/snapshot 完整 |
