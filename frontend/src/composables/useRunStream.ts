@@ -47,6 +47,7 @@ import {
 } from '@/services/realtime/types'
 import { useSessionStore } from '@/stores/session'
 import { RESEARCH_STAGES } from '@/services/domain/stages'
+import type { ApiError } from '@/services/http/error'
 
 // 终态：不再产生任何事件
 const TERMINAL_ONLY_STATUSES: ReadonlySet<RunStatus> = new Set(['succeeded', 'failed', 'cancelled'])
@@ -135,14 +136,8 @@ export interface RunStreamState {
   channelState: ChannelState
   loading: boolean
   notFound: boolean
-  error: ApiErrorLike | null
-}
-
-interface ApiErrorLike {
-  status: number
-  code: string
-  title: string
-  detail?: string
+  // WP-17：统一使用 ApiError（含 kind/traceId），供错误卡自动重试与技术详情折叠
+  error: ApiError | null
 }
 
 function createInitialCost(run?: RunResponse | null): CostState {
@@ -735,6 +730,8 @@ export function useRunStream(runId: string) {
     try {
       const run = await getRun(runId)
       if (disposedAfter()) return
+      // WP-17：重试成功后清除错误卡（重试期间不清，承载自动重试倒计时）
+      state.error = null
       applyRun(run)
       // 澄清已被提交/运行已恢复时，清掉模块缓存中可能残留的上一次 interrupt 帧，
       // 避免重新进入看板后仍弹出已失效的澄清卡
@@ -749,7 +746,7 @@ export function useRunStream(runId: string) {
         connectStream()
       }
     } catch (err) {
-      const apiError = err as ApiErrorLike
+      const apiError = err as ApiError
       if (apiError.status === 404) {
         state.notFound = true
       } else {

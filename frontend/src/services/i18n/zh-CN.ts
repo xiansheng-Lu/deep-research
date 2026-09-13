@@ -4,8 +4,14 @@ export const zhCN = {
   errors: {
     unknown: '未知错误（请稍后重试）',
     notFound: '资源不存在或无权访问',
-    network: '网络异常，请检查连接',
-    unauthorized: '会话已过期，请重新登录'
+    network: '无法连接服务器，请检查网络后重试',
+    unauthorized: '会话已过期，请重新登录',
+    // WP-17：5xx 与错误态自动重试文案
+    server: '服务暂时不可用，请稍后重试',
+    serverDetail: '服务器处理请求时出现异常，我们会尽快恢复',
+    badGateway: '网关异常，无法连接到后端服务',
+    autoRetryHint: '秒后自动重试',
+    autoRetryGiveUp: '自动重试未成功，请手动重试'
   },
   // HITL 介入动作错误码 → 中文短标题（WP-15；详细原因仍取 ApiError.detail 展示）
   interventionErrors: {

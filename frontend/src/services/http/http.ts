@@ -3,6 +3,7 @@
 //       401 时 single-flight 刷新 access token 并重放原请求。
 // 鉴权状态不直接依赖 pinia store（避免循环依赖），由应用启动时注册 AuthProvider。
 import type { ApiError } from './error'
+import { zhCN } from '@/services/i18n/zh-CN'
 
 // API 基址：开发环境由 Vite 代理 / mock 网关插件拦截 /api 前缀，
 // 生产环境前后端同源部署，由反向网关转发，故统一使用同源相对路径。
@@ -79,7 +80,15 @@ async function request(
     headers.set('Authorization', `Bearer ${token}`)
   }
 
-  const response = await fetch(`${API_BASE}${input}`, { ...init, headers })
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE}${input}`, { ...init, headers })
+  } catch (err) {
+    // WP-17：请求未获得任何响应（断网、DNS 失败、连接被拒、CORS 等）。
+    // 调用方主动取消（AbortController）不视为网络故障，原样抛出由调用方处理。
+    if (err instanceof DOMException && err.name === 'AbortError') throw err
+    throw toNetworkError()
+  }
 
   if (!response.ok) {
     // 401：非鉴权接口自身的失败时，尝试刷新一次并重放原请求
@@ -95,6 +104,25 @@ async function request(
   return response
 }
 
+// 网络层故障（无 HTTP 响应）：status 固定 0，会话层与错误态据此走“保留会话+自动重试”
+function toNetworkError(): ApiError {
+  return {
+    status: 0,
+    code: 'network_error',
+    title: zhCN.errors.network,
+    kind: 'network'
+  }
+}
+
+// 无业务错误体时按状态码给中文兜底标题，避免直接向用户暴露英文 statusText
+function fallbackTitle(status: number): string {
+  if (status === 401) return zhCN.errors.unauthorized
+  if (status === 404) return zhCN.errors.notFound
+  if (status === 502 || status === 503 || status === 504) return zhCN.errors.badGateway
+  if (status >= 500) return zhCN.errors.server
+  return zhCN.errors.unknown
+}
+
 async function toApiError(response: Response): Promise<ApiError> {
   // 后端错误体：业务异常 {code, message, details}（main.py AppError handler）；
   // FastAPI 校验错误 {detail: [...]}；按字段存在性归一为 ApiError
@@ -102,7 +130,7 @@ async function toApiError(response: Response): Promise<ApiError> {
   try {
     body = (await response.json()) as Record<string, unknown>
   } catch {
-    // 响应体非 JSON 时保留 status 用于回退
+    // 响应体非 JSON（网关 HTML 错误页等）时按状态码走中文兜底
   }
   const detail =
     typeof body.detail === 'string'
@@ -111,12 +139,16 @@ async function toApiError(response: Response): Promise<ApiError> {
         ? body.message
         : Array.isArray(body.detail)
           ? JSON.stringify(body.detail)
-          : ''
+          : response.status >= 500
+            ? zhCN.errors.serverDetail
+            : ''
   return {
     status: response.status,
     code: typeof body.code === 'string' ? body.code : `HTTP_${response.status}`,
-    title: typeof body.title === 'string' ? body.title : response.statusText,
+    title: typeof body.title === 'string' ? body.title : fallbackTitle(response.status),
     detail,
-    traceId: typeof body.trace_id === 'string' ? body.trace_id : response.headers.get('x-trace-id') ?? undefined
+    traceId:
+      typeof body.trace_id === 'string' ? body.trace_id : response.headers.get('x-trace-id') ?? undefined,
+    kind: 'http'
   }
 }

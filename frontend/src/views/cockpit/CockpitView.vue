@@ -468,6 +468,7 @@ function openReport(): void {
     <UiErrorState
       v-else-if="state.error && !run"
       :error="state.error"
+      auto-retry
       @retry="reload"
     />
 

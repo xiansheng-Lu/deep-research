@@ -48,6 +48,8 @@ const phase = ref<Phase>('loading-run')
 const run = ref<RunResponse | null>(null)
 const report = ref<ReportResponse | null>(null)
 const reportError = ref<ApiError | null>(null)
+// run 初态判定失败（404 除外）：网络/5xx 时错误卡自动重试恢复
+const runError = ref<ApiError | null>(null)
 const renderedHtml = ref('')
 
 // blocks 轨取数与交互状态（WP-16）
@@ -86,13 +88,15 @@ function startPolling(): void {
 
 // 拉取报告；422 进入生成中轮询，其余错误就地展示
 async function loadReport(): Promise<void> {
-  if (phase.value !== 'generating') {
+  // WP-17：report-error 自动重试期间保留错误卡倒计时，不回退 loading 态
+  if (phase.value !== 'generating' && phase.value !== 'report-error') {
     reportError.value = null
     if (report.value === null) phase.value = 'loading-report'
   }
   try {
     const data = await getRunReport(runId)
     stopPolling()
+    reportError.value = null
     report.value = data
     const parsed = marked.parse(data.content_md, { async: false })
     renderedHtml.value = DOMPurify.sanitize(parsed)
@@ -118,7 +122,11 @@ async function loadReport(): Promise<void> {
 // 入口：先判定 run 状态，再决定是否取报告
 async function init(): Promise<void> {
   stopPolling()
-  phase.value = 'loading-run'
+  // WP-17：run-error 自动重试期间保留错误卡倒计时，不回退 loading 态
+  if (phase.value !== 'run-error') {
+    phase.value = 'loading-run'
+    runError.value = null
+  }
   report.value = null
   renderedHtml.value = ''
   track.value = 'markdown'
@@ -137,7 +145,12 @@ async function init(): Promise<void> {
     phase.value = 'active'
   } catch (err) {
     const apiError = err as ApiError
-    phase.value = apiError.status === 404 ? 'not-found' : 'run-error'
+    if (apiError.status === 404) {
+      phase.value = 'not-found'
+      return
+    }
+    runError.value = apiError
+    phase.value = 'run-error'
   }
 }
 
@@ -191,6 +204,8 @@ void init()
 
     <UiErrorState
       v-else-if="phase === 'run-error'"
+      :error="runError"
+      auto-retry
       @retry="init"
     />
 
@@ -281,6 +296,7 @@ void init()
       <UiErrorState
         v-else-if="phase === 'report-error'"
         :error="reportError"
+        auto-retry
         show-back
         @retry="loadReport"
         @back="backToCockpit"

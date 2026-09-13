@@ -28,10 +28,13 @@ const loading = ref(false)
 const loadError = ref<ApiError | null>(null)
 
 async function load(): Promise<void> {
-  loading.value = true
-  loadError.value = null
+  // WP-17：错误卡自动重试期间保留旧错误与倒计时，不回退骨架屏，
+  // 避免卡片被卸载重建导致退避计数归零；成功后再清错渲染列表
+  const retrying = loadError.value !== null
+  if (!retrying) loading.value = true
   try {
     projectStore.setProjects(await listProjects())
+    loadError.value = null
   } catch (err) {
     loadError.value = err as ApiError
   } finally {
@@ -107,6 +110,7 @@ function openTasks(projectId: string): void {
     <UiErrorState
       v-if="loadError"
       :error="loadError"
+      auto-retry
       @retry="load"
     />
 
