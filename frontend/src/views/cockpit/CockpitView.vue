@@ -11,8 +11,9 @@ import { useEvidenceList } from '@/composables/useEvidenceList'
 import { RESEARCH_STAGES, STAGE_DESCRIPTIONS } from '@/services/domain/stages'
 import { runStatusLabel, runStatusVariant, stageLabel, tierLabel, zhCN } from '@/services/i18n/zh-CN'
 import { formatDuration } from '@/utils/format'
+import { getConflict } from '@/services/api/dashboard'
 import type { ApiError } from '@/services/http/error'
-import type { EvidenceResponse } from '@/services/api/types'
+import type { ConflictDetailResponse, EvidenceResponse } from '@/services/api/types'
 import { toast } from '@/services/toast/toast'
 import UiBadge from '@/components/ui/feedback/UiBadge.vue'
 import UiButton from '@/components/ui/UiButton.vue'
@@ -121,6 +122,54 @@ const evidenceMap = computed(() => {
   return map
 })
 
+// 分歧详情懒加载（M2-2 交接单推荐路径）：展开冲突时按 id 拉一次，
+// 内嵌 evidence_a/evidence_b 摘要不依赖证据池是否已加载（真实后端 M2-4 前证据端点可能缺）
+const conflictDetails = ref<Record<string, ConflictDetailResponse>>({})
+const conflictDetailLoading = ref<Set<string>>(new Set())
+
+async function ensureConflictDetail(conflictId: string): Promise<void> {
+  if (conflictDetails.value[conflictId] || conflictDetailLoading.value.has(conflictId)) return
+  conflictDetailLoading.value = new Set(conflictDetailLoading.value).add(conflictId)
+  try {
+    const detail = await getConflict(conflictId)
+    conflictDetails.value = { ...conflictDetails.value, [conflictId]: detail }
+  } catch {
+    // 详情失败不阻断：冲突卡仍展示 claim 与证据 id 兜底
+  } finally {
+    const next = new Set(conflictDetailLoading.value)
+    next.delete(conflictId)
+    conflictDetailLoading.value = next
+  }
+}
+
+// 展开中的分歧（ConflictBlock 内部维护展开态，页面同步 id 以触发详情拉取）
+const expandedConflictIds = ref<Set<string>>(new Set())
+
+function onConflictToggle(conflictId: string, expanded: boolean): void {
+  const next = new Set(expandedConflictIds.value)
+  if (expanded) {
+    next.add(conflictId)
+    void ensureConflictDetail(conflictId)
+  } else {
+    next.delete(conflictId)
+  }
+  expandedConflictIds.value = next
+}
+
+// 冲突一方证据：证据池完整行优先，缺失时回退详情内嵌摘要
+function conflictEvidence(
+  conflictId: string,
+  evidenceId: string
+): EvidenceResponse | ConflictDetailResponse['evidence_a'] | null {
+  const pooled = evidenceMap.value.get(evidenceId)
+  if (pooled) return pooled
+  const detail = conflictDetails.value[conflictId]
+  if (!detail) return null
+  if (detail.evidence_a.id === evidenceId) return detail.evidence_a
+  if (detail.evidence_b.id === evidenceId) return detail.evidence_b
+  return null
+}
+
 // 成本卡滞后口径：仅 retrying 标「可能滞后」；connecting 首帧前展示的是 REST 快照
 const costStale = computed(() => state.channelState === 'retrying')
 
@@ -132,6 +181,17 @@ const awaitingClarification = computed(
 )
 const pausedStageName = computed(
   () => state.interrupt?.stage ?? run.value?.current_stage ?? 'clarify'
+)
+
+// 裁决挂起：paused 且存在待人工裁决的冲突（M2-2；末条裁决后后端自动恢复，无「继续」接口）
+const awaitingVerdict = computed(
+  () =>
+    run.value?.status === 'paused' &&
+    state.conflicts.some((item) => item.status === 'awaiting_human')
+)
+// 软暂停（非澄清、非裁决挂起）才提供继续入口
+const canProceed = computed(
+  () => run.value?.status === 'paused' && !awaitingClarification.value && !awaitingVerdict.value
 )
 
 // 介入可操作窗口：研究进行中或安全点暂停（澄清挂起除外，其时仅可回答澄清）
@@ -461,7 +521,7 @@ function openReport(): void {
               暂停
             </UiButton>
             <UiButton
-              v-if="run.status === 'paused' && !awaitingClarification"
+              v-if="canProceed"
               size="sm"
               :loading="resumeSubmitting"
               @click="onProceedClick"
@@ -530,6 +590,14 @@ function openReport(): void {
                 系统在「{{ stageLabel(pausedStageName) }}」阶段需要补充信息后才能继续。
               </p>
             </template>
+            <template v-else-if="awaitingVerdict">
+              <p class="cockpit-paused__title">
+                研究已暂停：等待冲突裁决
+              </p>
+              <p class="cockpit-paused__message">
+                交叉审校发现需要人工裁决的冲突，完成裁决后系统将自动继续，无需手动恢复。
+              </p>
+            </template>
             <template v-else>
               <p class="cockpit-paused__title">
                 研究已暂停
@@ -541,14 +609,14 @@ function openReport(): void {
           </div>
           <div class="cockpit-paused__actions">
             <UiButton
-              v-if="awaitingClarification"
+              v-if="awaitingClarification && state.interrupt"
               size="sm"
               @click="openClarifyDrawer"
             >
               回答澄清问题
             </UiButton>
             <UiButton
-              v-else-if="!awaitingClarification"
+              v-else-if="canProceed"
               size="sm"
               :loading="resumeSubmitting"
               @click="onProceedClick"
@@ -599,8 +667,9 @@ function openReport(): void {
                   v-for="conflict in state.conflicts"
                   :key="conflict.id"
                   :conflict="conflict"
-                  :evidence-a="evidenceMap.get(conflict.evidence_a_id) ?? null"
-                  :evidence-b="evidenceMap.get(conflict.evidence_b_id) ?? null"
+                  :evidence-a="conflictEvidence(conflict.id, conflict.evidence_a_id)"
+                  :evidence-b="conflictEvidence(conflict.id, conflict.evidence_b_id)"
+                  @toggle="onConflictToggle"
                 />
               </div>
             </UiCard>

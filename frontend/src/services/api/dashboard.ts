@@ -2,13 +2,16 @@
 // 指挥舱实时看板的 REST 补齐数据源；高频增量走 WS，这些端点用于初帧与重连补齐。
 import { http } from '../http/http'
 import type {
+  ConflictDetailResponse,
   ConflictResponse,
   CostSnapshot,
   EvidenceListParams,
   EvidenceResponse,
   PageEnvelope,
   StageResponse,
-  SubQuestionResponse
+  SubQuestionResponse,
+  VerdictRequest,
+  VerdictResponse
 } from './types'
 
 // GET /runs/{id}/stages：6 阶段执行记录
@@ -52,9 +55,22 @@ export function getRunConflicts(runId: string): Promise<ConflictResponse[]> {
   return http<ConflictResponse[]>(`/runs/${encodeURIComponent(runId)}/conflicts`)
 }
 
-// GET /conflicts/{id}：分歧详情（含双方证据，M2 只读呈现用）
-export function getConflict(conflictId: string): Promise<ConflictResponse> {
-  return http<ConflictResponse>(`/conflicts/${encodeURIComponent(conflictId)}`)
+// GET /conflicts/{id}：分歧详情（内嵌双方证据八项摘要，M2-2 冻结）
+export function getConflict(conflictId: string): Promise<ConflictDetailResponse> {
+  return http<ConflictDetailResponse>(`/conflicts/${encodeURIComponent(conflictId)}`)
+}
+
+// POST /conflicts/{id}/verdict：提交分歧裁决（M2-2）
+// 409 code=conflict 表示该分歧已 resolved/abandoned；422 为 choice 非法或 reason 纯空白。
+// M2 仅落地 API 层（可先行联调），裁决面板 UI 在 M3；末条 awaiting_human 裁决后后端自动续跑，无「继续」接口。
+export function submitConflictVerdict(
+  conflictId: string,
+  body: VerdictRequest
+): Promise<VerdictResponse> {
+  return http<VerdictResponse>(`/conflicts/${encodeURIComponent(conflictId)}/verdict`, {
+    method: 'POST',
+    body: JSON.stringify(body)
+  })
 }
 
 // GET /runs/{id}/cost/snapshot：成本快照（WS 断连补齐用）

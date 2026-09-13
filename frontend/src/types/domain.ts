@@ -51,6 +51,9 @@ export type ConflictStatus = 'detected' | 'awaiting_human' | 'resolved' | 'aband
 // 冲突严重度（conflict.severity）
 export type ConflictSeverity = 'low' | 'medium' | 'high'
 
+// 冲突类型（conflicts.type；critic 四分类，与后端 schemas/conflicts.py 一致，M2-2 冻结）
+export type ConflictType = 'factual' | 'methodological' | 'temporal' | 'perspective'
+
 // 裁决选择（契约草案 §6.3；M2 仅类型对齐，裁决 UI 在 M3）
 export type VerdictChoice = 'evidence_a' | 'evidence_b' | 'both' | 'reject'
 

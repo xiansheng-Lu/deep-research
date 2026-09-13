@@ -11,7 +11,8 @@ import type {
   RunTier,
   SourceLevel,
   SourceType,
-  SubQuestionStatus
+  SubQuestionStatus,
+  VerdictChoice
 } from '../api/types'
 
 // 心跳：服务端每 30s 发送 ping，客户端须 60s 内回 pong（[§8.3 §9.3]）
@@ -44,6 +45,8 @@ export const REALTIME_EVENT = {
   EVIDENCE_FETCHED: 'evidence.fetched',
   INTERRUPT_REQUESTED: 'interrupt.requested',
   CONFLICT_DETECTED: 'conflict.detected',
+  // M2-2：await_human 冲突被裁决、后台恢复图时广播
+  CONFLICT_VERDICTS: 'conflict.verdicts',
   TOKEN_USAGE_UPDATE: 'token.usage.update',
   COST_WARNING: 'cost.warning',
   REPORT_CHUNK: 'report.chunk',
@@ -126,6 +129,11 @@ export type ConflictDetectedPayload = Pick<
   'id' | 'claim' | 'evidence_a_id' | 'evidence_b_id' | 'type' | 'severity' | 'status'
 >
 
+// conflict.verdicts（M2-2）：末条 awaiting_human 冲突裁决、run 自动恢复前广播
+export interface ConflictVerdictsPayload {
+  verdicts: Array<{ conflict_id: string; choice: VerdictChoice }>
+}
+
 // token.usage.update（服务端 1s 节流，§9.2/§9.4）
 export interface TokenUsagePayload {
   used: number
@@ -167,6 +175,7 @@ export interface RealtimePayloadMap {
   [REALTIME_EVENT.EVIDENCE_FETCHED]: EvidenceFetchedPayload
   [REALTIME_EVENT.INTERRUPT_REQUESTED]: InterruptRequestedPayload
   [REALTIME_EVENT.CONFLICT_DETECTED]: ConflictDetectedPayload
+  [REALTIME_EVENT.CONFLICT_VERDICTS]: ConflictVerdictsPayload
   [REALTIME_EVENT.TOKEN_USAGE_UPDATE]: TokenUsagePayload
   [REALTIME_EVENT.COST_WARNING]: CostWarningPayload
   [REALTIME_EVENT.REPORT_CHUNK]: { chunk_id?: string; delta?: string; position?: number }

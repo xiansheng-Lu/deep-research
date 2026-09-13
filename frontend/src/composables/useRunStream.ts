@@ -35,6 +35,7 @@ import {
   REALTIME_EVENT,
   type ClarificationQuestion,
   type ConflictDetectedPayload,
+  type ConflictVerdictsPayload,
   type CostWarningPayload,
   type EvidenceFetchedPayload,
   type InterruptRequestedPayload,
@@ -47,14 +48,19 @@ import {
 import { useSessionStore } from '@/stores/session'
 import { RESEARCH_STAGES } from '@/services/domain/stages'
 
-// run 进入通道关闭后不再产生实时事件：succeeded/failed/cancelled 终态 + paused 澄清挂起
-// （paused 的恢复在 M2 HITL，恢复前不建 WS 也不轮询，避免无意义流量）
-const STREAM_CLOSED_STATUSES: ReadonlySet<RunStatus> = new Set([
-  'succeeded',
-  'failed',
-  'cancelled',
-  'paused'
-])
+// 终态：不再产生任何事件
+const TERMINAL_ONLY_STATUSES: ReadonlySet<RunStatus> = new Set(['succeeded', 'failed', 'cancelled'])
+
+// 通道是否关闭：终态一律关闭；paused 需区分性质——
+// - 澄清挂起（clarify）：恢复只能由本页提交答案触发，提交后 reload 重建通道，挂起期间不建 WS；
+// - 裁决挂起（critique 等）：后端在最后一条 verdict 后【自动】恢复并广播 conflict.verdicts/
+//   run.finished，看板是主要观察者，必须保持订阅，否则只能刷新才收敛（M2-2 真链实测结论）。
+function isStreamClosed(run: RunResponse | null): boolean {
+  if (!run) return false
+  if (TERMINAL_ONLY_STATUSES.has(run.status)) return true
+  if (run.status === 'paused') return run.current_stage === 'clarify'
+  return false
+}
 
 // 非关闭态兜底 REST 轮询间隔（M2 WP-13：仅通道 retrying 时启用，避免 live 期间高频重复拉取）
 const REST_POLL_INTERVAL_MS = 4000
@@ -138,8 +144,6 @@ interface ApiErrorLike {
   title: string
   detail?: string
 }
-
-const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = STREAM_CLOSED_STATUSES
 
 function createInitialCost(run?: RunResponse | null): CostState {
   return {
@@ -311,7 +315,7 @@ export function useRunStream(runId: string) {
       budget: run.token_budget,
       ratio: run.token_budget ? Math.min(1, run.token_used / run.token_budget) : state.cost.ratio
     })
-    if (STREAM_CLOSED_STATUSES.has(run.status)) {
+    if (isStreamClosed(run)) {
       detach('destroy')
     }
   }
@@ -320,7 +324,7 @@ export function useRunStream(runId: string) {
   async function alignWithRest(): Promise<void> {
     try {
       applyRun(await getRun(runId))
-      if (STREAM_CLOSED_STATUSES.has(state.run!.status)) return
+      if (isStreamClosed(state.run)) return
       // M2-4 看板端点未上线前这些请求可能 404：各自独立静默，端点就绪后自动生效
       await Promise.allSettled([
         syncStages(),
@@ -401,7 +405,11 @@ export function useRunStream(runId: string) {
     })
     if (state.run) {
       state.run.current_stage = stage as ResearchStageName
-      if (state.run.status === 'pending') state.run.status = 'running'
+      // pending 首帧升级；裁决挂起后后端自动恢复时同样先广播 stage.started，
+      // 此时 paused→running 需同步升级，否则顶栏停在「已暂停」直到终态
+      if (state.run.status === 'pending' || state.run.status === 'paused') {
+        state.run.status = 'running'
+      }
     }
   }
 
@@ -514,6 +522,23 @@ export function useRunStream(runId: string) {
     state.conflicts = mergeConflicts(state.conflicts, [next])
   }
 
+  // M2-2：await_human 冲突被裁决后广播；本地即时标记 resolved，
+  // run 的最终收敛仍以随后的 run.finished(succeeded) 为准（后台自动续跑，无「继续」接口）
+  function handleConflictVerdicts(env: RealtimeEnvelope): void {
+    const payload = env.payload as ConflictVerdictsPayload
+    const verdicts = payload?.verdicts
+    if (!Array.isArray(verdicts) || verdicts.length === 0) return
+    const ids = new Set(
+      verdicts
+        .map((item) => item?.conflict_id)
+        .filter((id): id is string => typeof id === 'string')
+    )
+    if (ids.size === 0) return
+    state.conflicts = state.conflicts.map((item) =>
+      ids.has(item.id) ? { ...item, status: 'resolved' } : item
+    )
+  }
+
   function handleTokenUsage(env: RealtimeEnvelope): void {
     const payload = env.payload as TokenUsagePayload
     applyCost({
@@ -557,7 +582,8 @@ export function useRunStream(runId: string) {
     if (payload.error_code !== undefined) run.error_code = payload.error_code
     if (payload.error_message !== undefined) run.error_message = payload.error_message
     state.stages = mapStages(run, state.stages)
-    detach('destroy')
+    // 终态/澄清挂起关闭通道；裁决挂起保持订阅，等待 verdict 后的自动恢复广播
+    if (isStreamClosed(run)) detach('destroy')
   }
 
   function handleRunFinished(env: RealtimeEnvelope): void {
@@ -572,12 +598,23 @@ export function useRunStream(runId: string) {
 
   // ─── 实时通道与轮询 ───
 
+  // 裁决挂起保活重连计时器（见 verdictHoldReconnect）
+  let verdictReconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+  function clearVerdictReconnect(): void {
+    if (verdictReconnectTimer !== null) {
+      clearTimeout(verdictReconnectTimer)
+      verdictReconnectTimer = null
+    }
+  }
+
   // 本实例解绑：release=仅释放引用（跨页共享，RealtimeClient 延迟 5s 断开）；
   // destroy=终态/异常立即关闭（不等待引用归零）
   function detach(mode: 'release' | 'destroy'): void {
     for (const off of unsubscribe) off()
     unsubscribe.length = 0
     stopPolling()
+    clearVerdictReconnect()
     if (evidenceRafId !== null && typeof cancelAnimationFrame === 'function') {
       cancelAnimationFrame(evidenceRafId)
     }
@@ -616,6 +653,7 @@ export function useRunStream(runId: string) {
     unsubscribe.push(channel.on(REALTIME_EVENT.EVIDENCE_FETCHED, queueEvidence))
     unsubscribe.push(channel.on(REALTIME_EVENT.INTERRUPT_REQUESTED, handleInterrupt))
     unsubscribe.push(channel.on(REALTIME_EVENT.CONFLICT_DETECTED, handleConflict))
+    unsubscribe.push(channel.on(REALTIME_EVENT.CONFLICT_VERDICTS, handleConflictVerdicts))
     unsubscribe.push(channel.on(REALTIME_EVENT.TOKEN_USAGE_UPDATE, handleTokenUsage))
     unsubscribe.push(channel.on(REALTIME_EVENT.COST_WARNING, handleCostWarning))
     unsubscribe.push(channel.on(REALTIME_EVENT.RUN_FINISHED, handleRunFinished))
@@ -626,12 +664,34 @@ export function useRunStream(runId: string) {
     syncPollingWithChannel(state.channelState)
   }
 
+  // 是否处于裁决挂起保活期：paused 且非澄清阶段
+  function holdingVerdict(): boolean {
+    const entity = state.run
+    return !!entity && entity.status === 'paused' && entity.current_stage !== 'clarify'
+  }
+
+  // 裁决挂起保活：后端在广播 run.finished(paused) 后以 1000 关闭本条流，
+  // 但暂停期间接受新订阅，末条裁决后会在新流上推 conflict.verdicts/run.finished。
+  // 因此 idle 关闭后延迟重连一次，直到裁决完成自动续跑；终态/澄清不重连。
+  function scheduleVerdictReconnect(): void {
+    if (verdictReconnectTimer !== null) return
+    verdictReconnectTimer = setTimeout(() => {
+      verdictReconnectTimer = null
+      if (holdingVerdict()) connectStream()
+    }, 800)
+  }
+
   // WP-13 轮询策略：仅 retrying（WS 退避重连中）才定时轮询快照，
   // live 后一次性补帧即停轮询，避免高频重复拉取（M1 为无条件 4s 轮询）
   function handleChannelState(next: ChannelState): void {
     state.channelState = next
     syncPollingWithChannel(next)
-    if (next === 'live') void alignWithRest()
+    if (next === 'live') {
+      clearVerdictReconnect()
+      void alignWithRest()
+    } else if (next === 'idle' && holdingVerdict()) {
+      scheduleVerdictReconnect()
+    }
   }
 
   function syncPollingWithChannel(channelState: ChannelState): void {
@@ -679,10 +739,14 @@ export function useRunStream(runId: string) {
       // 澄清已被提交/运行已恢复时，清掉模块缓存中可能残留的上一次 interrupt 帧，
       // 避免重新进入看板后仍弹出已失效的澄清卡
       if (run.status !== 'paused') state.interrupt = null
-      if (!TERMINAL_RUN_STATUSES.has(run.status)) {
-        connectStream()
-      } else {
+      if (isStreamClosed(run)) {
+        // 终态/澄清挂起：不建 WS，仅 REST 对齐列表
         syncClosedSnapshot()
+      } else {
+        // running 与裁决挂起（paused@critique）：保持实时订阅等待恢复广播，
+        // 同时 REST 补齐冲突等列表（M2-4 前部分端点 404 会被静默）
+        void syncClosedSnapshot()
+        connectStream()
       }
     } catch (err) {
       const apiError = err as ApiErrorLike

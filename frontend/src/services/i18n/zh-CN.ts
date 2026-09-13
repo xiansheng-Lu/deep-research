@@ -14,7 +14,9 @@ export const zhCN = {
     RUN_NOT_RESUMABLE: '当前状态无法继续研究',
     INTERVENE_NOT_ALLOWED: '当前研究状态不允许该操作',
     INVALID_ACTION_PAYLOAD: '介入请求内容不完整',
-    UNSUPPORTED_ACTION: '暂不支持该介入操作'
+    UNSUPPORTED_ACTION: '暂不支持该介入操作',
+    // M2-2 裁决：分歧已 resolved/abandoned 后重复提交
+    conflict: '该分歧已裁决'
   } as Record<string, string>,
   common: {
     confirm: '确认',
@@ -84,6 +86,13 @@ export const zhCN = {
       low: '轻微',
       medium: '中等',
       high: '严重'
+    },
+    // M2-2 critic 冲突四分类（与后端 schemas/conflicts.py 用词一致）
+    conflictType: {
+      factual: '事实性冲突',
+      methodological: '口径/方法冲突',
+      temporal: '时间错配',
+      perspective: '观点分歧'
     },
     // M2-7 信源元数据
     sourceType: {
@@ -164,6 +173,10 @@ export function conflictStatusLabel(status: string): string {
 
 export function conflictSeverityLabel(severity: string): string {
   return labelOf(zhCN.domain.conflictSeverity, severity)
+}
+
+export function conflictTypeLabel(type: string): string {
+  return labelOf(zhCN.domain.conflictType, type)
 }
 
 export function sourceTypeLabel(sourceType: string): string {

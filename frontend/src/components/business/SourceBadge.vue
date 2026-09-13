@@ -13,12 +13,13 @@ withDefaults(
   defineProps<{
     domain: string
     sourceType: SourceType
-    sourceLevel: SourceLevel
+    // M2-2 分歧详情内嵌摘要（FR-7 八项）不含 source_level，缺省时不渲染层级
+    sourceLevel?: SourceLevel
     credibility: Credibility
     // 是否展示域名（冲突块等窄空间可关）
     showDomain?: boolean
   }>(),
-  { showDomain: true }
+  { showDomain: true, sourceLevel: undefined }
 )
 </script>
 
@@ -33,7 +34,10 @@ withDefaults(
       aria-hidden="true"
     >{{ credibility }}</span>
     <span class="source-badge__type">{{ sourceTypeLabel(sourceType) }}</span>
-    <span class="source-badge__level">· {{ sourceLevelLabel(sourceLevel) }}</span>
+    <span
+      v-if="sourceLevel"
+      class="source-badge__level"
+    >· {{ sourceLevelLabel(sourceLevel) }}</span>
     <span
       v-if="showDomain"
       class="source-badge__domain"

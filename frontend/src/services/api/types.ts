@@ -8,6 +8,7 @@ import type {
   ClassifySource,
   ConflictSeverity,
   ConflictStatus,
+  ConflictType,
   CostWarningLevel,
   Credibility,
   ForceIntent,
@@ -35,6 +36,7 @@ export type {
   ClassifySource,
   ConflictSeverity,
   ConflictStatus,
+  ConflictType,
   CostWarningLevel,
   Credibility,
   ForceIntent,
@@ -215,18 +217,37 @@ export interface EvidenceListParams {
   include_excluded?: boolean
 }
 
-// GET /runs/{id}/conflicts、GET /conflicts/{id} 响应元素（conflicts 表）
+// GET /runs/{id}/conflicts 响应元素（conflicts 表）
 export interface ConflictResponse {
   id: string
   run_id: string
   claim: string
   evidence_a_id: string
   evidence_b_id: string
-  type: string
+  // M2-2 收窄为 critic 四值强枚举（后端 Pydantic Literal；非法值会在标签映射缺键）
+  type: ConflictType
   severity: ConflictSeverity
   status: ConflictStatus
   created_at?: string
   updated_at?: string
+}
+
+// GET /conflicts/{id} 内嵌的一方证据摘要（后端 FR-7 八项，M2-2 冻结）
+export interface ConflictEvidenceSummary {
+  id: string
+  title: string
+  url: string
+  domain: string
+  snippet: string
+  credibility: Credibility
+  source_type: SourceType
+  published_at?: string | null
+}
+
+// GET /conflicts/{id} 响应：列表项字段 + 双方证据内嵌
+export interface ConflictDetailResponse extends ConflictResponse {
+  evidence_a: ConflictEvidenceSummary
+  evidence_b: ConflictEvidenceSummary
 }
 
 // GET /runs/{id}/cost/snapshot 响应（字段对齐 cost.warning payload，契约草案 §4.2）

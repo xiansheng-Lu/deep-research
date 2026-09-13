@@ -28,6 +28,15 @@ import {
 import { buildReportMarkdown } from './fixtures/happy_path'
 import { TERMINAL_EVENT_TYPES, REALTIME_PROTOCOL_VERSION } from '../realtime/types'
 import type { RealtimeEnvelope } from '../realtime/types'
+import type { ConflictType } from '../../types/domain'
+
+// 冲突四值枚举白名单（M2-2 强枚举）：归约时非法 type 不静默落库
+const CONFLICT_TYPES: readonly ConflictType[] = ['factual', 'methodological', 'temporal', 'perspective']
+function asConflictType(value: unknown, fallback: ConflictType): ConflictType {
+  return typeof value === 'string' && CONFLICT_TYPES.includes(value as ConflictType)
+    ? (value as ConflictType)
+    : fallback
+}
 
 // 控制动作结果：成功携带 RunControlResponse 形态；失败携带 HTTP 状态与错误信封
 export type ControlResult =
@@ -405,7 +414,7 @@ function applyEvent(runId: string, env: RealtimeEnvelope): void {
       if (existing) {
         Object.assign(existing, {
           claim: stringField(payload.claim, existing.claim),
-          type: stringField(payload.type, existing.type),
+          type: asConflictType(payload.type, existing.type),
           severity: payload.severity as MockConflict['severity'],
           status: payload.status as MockConflict['status'],
           updated_at: ts
@@ -417,7 +426,7 @@ function applyEvent(runId: string, env: RealtimeEnvelope): void {
           claim: stringField(payload.claim, ''),
           evidence_a_id: stringField(payload.evidence_a_id, ''),
           evidence_b_id: stringField(payload.evidence_b_id, ''),
-          type: stringField(payload.type, 'unknown'),
+          type: asConflictType(payload.type, 'perspective'),
           severity: (payload.severity as MockConflict['severity']) ?? 'medium',
           status: (payload.status as MockConflict['status']) ?? 'detected',
           created_at: ts,

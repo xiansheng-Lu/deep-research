@@ -166,8 +166,9 @@ export function buildDemoConflict(runId: string, evidence: MockEvidence[]): Mock
     claim: '向量检索在千万级以上数据规模下的 QPS 与召回能否同时保持高水平',
     evidence_a_id: ev05?.id ?? 'ev05',
     evidence_b_id: ev12?.id ?? 'ev12',
-    // type 为后端冲突分类键，mock 使用可读的性能数据类
-    type: 'performance_data',
+    // type 为 critic 四值强枚举之一（M2-2 冻结：factual/methodological/temporal/perspective）；
+    // 本议题是 QPS 与召回能否兼得的对立判断，归观点分歧
+    type: 'perspective',
     severity: 'high',
     status: 'detected',
     created_at: '2026-09-12T08:01:00Z',
@@ -341,7 +342,7 @@ export function buildDemoResumeScript(run: MockRun, _answers: Record<string, str
     // 交叉审校：检测到高严重度冲突；越过 90%：danger 预警
     emit({ type: 'stage.started', run_id: run.id, stage: 'critique', attempt: 1 }),
     wait(600),
-    // 冲突字段嵌套在 payload 中：其内 type 是冲突分类键（performance_data），
+    // 冲突字段嵌套在 payload 中：其内 type 是冲突分类键（perspective），
     // 不能与事件帧 type=conflict.detected 平铺，否则展开时互相覆盖
     emit({
       type: 'conflict.detected',
@@ -404,7 +405,7 @@ function pickConflictShape(): Record<string, unknown> {
     claim: '向量检索在千万级以上数据规模下的 QPS 与召回能否同时保持高水平',
     evidence_a_id: 'ev05',
     evidence_b_id: 'ev12',
-    type: 'performance_data',
+    type: 'perspective',
     severity: 'high',
     status: 'detected'
   }

@@ -1,5 +1,7 @@
 // Mock 网关内存态（对齐 docs/contract/openapi-m1.json 冻结契约）
 // 仅 dev 模式使用，关闭 dev server 即丢弃；时间字段统一为 ISO 8601 字符串
+// 本文件随 mock 网关在 vite.config 的 Node 上下文加载，类型引用用相对路径，禁止 @/ 别名
+import type { ConflictType } from '../../types/domain'
 
 // 档位 token 预算（与后端 core.config 默认值一致）
 export const TIER_TOKEN_BUDGET: Record<'quick' | 'standard' | 'deep' | 'extreme', number> = {
@@ -117,14 +119,14 @@ export interface MockEvidence {
   updated_at?: string
 }
 
-// 冲突（对齐 ConflictResponse）
+// 冲突（对齐 ConflictResponse；M2-2 起 type 为 critic 四值强枚举）
 export interface MockConflict {
   id: string
   run_id: string
   claim: string
   evidence_a_id: string
   evidence_b_id: string
-  type: string
+  type: ConflictType
   severity: 'low' | 'medium' | 'high'
   status: 'detected' | 'awaiting_human' | 'resolved' | 'abandoned'
   created_at?: string

@@ -3,22 +3,26 @@
 // M2 口径：只读呈现与提示——红点摘要可展开查看双方证据立场，不提供任何裁决操作
 // （裁决面板 VerdictPanel 与分歧工作台入口在 M3，本组件不预埋按钮）。
 import { ref } from 'vue'
-import type { ConflictResponse, EvidenceResponse } from '@/services/api/types'
+import type { ConflictDetailResponse, ConflictResponse, EvidenceResponse } from '@/services/api/types'
+
+// 证据来源：证据池完整行，或 M2-2 分歧详情内嵌的摘要（无 source_level 等字段）
+type ConflictEvidenceLike = EvidenceResponse | ConflictDetailResponse['evidence_a']
 import {
   conflictSeverityLabel,
   conflictSeverityVariant,
   conflictStatusLabel,
-  conflictStatusVariant
+  conflictStatusVariant,
+  conflictTypeLabel
 } from '@/services/i18n/zh-CN'
 import UiBadge from '@/components/ui/feedback/UiBadge.vue'
 import SourceBadge from '@/components/business/SourceBadge.vue'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     conflict: ConflictResponse
-    // 双方证据（页面从证据池按 evidence_a_id/evidence_b_id 反查；缺失时只显示 id）
-    evidenceA?: EvidenceResponse | null
-    evidenceB?: EvidenceResponse | null
+    // 双方证据：优先证据池完整行，缺失时由页面按分歧详情内嵌摘要兜底
+    evidenceA?: ConflictEvidenceLike | null
+    evidenceB?: ConflictEvidenceLike | null
     defaultExpanded?: boolean
   }>(),
   {
@@ -28,10 +32,16 @@ withDefaults(
   }
 )
 
+const emit = defineEmits<{
+  // 展开态变化：页面据此懒加载分歧详情
+  (e: 'toggle', conflictId: string, expanded: boolean): void
+}>()
+
 const expanded = ref(false)
 
 function toggle(): void {
   expanded.value = !expanded.value
+  emit('toggle', props.conflict.id, expanded.value)
 }
 </script>
 
@@ -53,6 +63,9 @@ function toggle(): void {
           :title="conflict.claim"
         >{{ conflict.claim }}</span>
         <span class="conflict-block__badges">
+          <UiBadge variant="neutral">
+            {{ conflictTypeLabel(conflict.type) }}
+          </UiBadge>
           <UiBadge :variant="conflictSeverityVariant(conflict.severity)">
             {{ conflictSeverityLabel(conflict.severity) }}
           </UiBadge>
@@ -84,9 +97,6 @@ function toggle(): void {
       v-if="expanded || defaultExpanded"
       class="conflict-block__detail"
     >
-      <p class="conflict-block__type">
-        冲突分类：<code>{{ conflict.type }}</code>
-      </p>
       <div class="conflict-block__sides">
         <div class="conflict-block__side">
           <p class="conflict-block__side-label">
@@ -99,7 +109,7 @@ function toggle(): void {
             <SourceBadge
               :domain="evidenceA.domain"
               :source-type="evidenceA.source_type"
-              :source-level="evidenceA.source_level"
+              :source-level="'source_level' in evidenceA ? evidenceA.source_level : undefined"
               :credibility="evidenceA.credibility"
             />
           </template>
@@ -121,7 +131,7 @@ function toggle(): void {
             <SourceBadge
               :domain="evidenceB.domain"
               :source-type="evidenceB.source_type"
-              :source-level="evidenceB.source_level"
+              :source-level="'source_level' in evidenceB ? evidenceB.source_level : undefined"
               :credibility="evidenceB.credibility"
             />
           </template>
@@ -214,17 +224,6 @@ function toggle(): void {
 
 .conflict-block__detail {
   padding: 0 var(--space-4) var(--space-3) calc(var(--space-4) + 26px);
-}
-
-.conflict-block__type {
-  margin: 0 0 var(--space-3);
-  font-size: var(--font-xs);
-  color: var(--color-text-muted);
-}
-
-.conflict-block__type code {
-  font-family: ui-monospace, monospace;
-  color: var(--color-text);
 }
 
 .conflict-block__sides {
