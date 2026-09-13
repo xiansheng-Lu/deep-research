@@ -30,11 +30,12 @@ from langgraph.types import Command
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.context import bind_run_context
 from app.core.logging import get_logger
 from app.db.base import new_ulid
 from app.db.models.project import Project
 from app.db.models.report import Report
-from app.db.models.run import ResearchRun
+from app.db.models.run import ResearchRun, Stage
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.edges import (
     decide_after_await_human,
@@ -54,7 +55,9 @@ from app.orchestrator.nodes import (
     sub_questioner,
     user_intervention,
 )
+from app.orchestrator.persistence import apply_stage_transition, ensure_stage_rows
 from app.orchestrator.state import ResearchStage, ResearchState
+from app.quota.emitter import RunCostEmitter
 from app.realtime.hub import RealtimeHub
 
 log = get_logger("orchestrator.executor")
@@ -201,22 +204,87 @@ async def _load_run(session: AsyncSession, run_id: str) -> ResearchRun | None:
     return await session.scalar(select(ResearchRun).where(ResearchRun.id == run_id))
 
 
+def _stage_duration_ms(row: Stage) -> int:
+    """阶段行起止时间差（毫秒）；缺任一时间戳返回 0。"""
+    if row.started_at is None or row.finished_at is None:
+        return 0
+    return max(0, int((row.finished_at - row.started_at).total_seconds() * 1000))
+
+
+async def _publish_stage_finished(
+    hub: RealtimeHub,
+    run_id: str,
+    *,
+    row: Stage,
+    token_used: int,
+) -> None:
+    """阶段收口帧（succeeded）；payload 对齐前端 StageFinishedPayload 超集。"""
+    await _publish_event(
+        hub,
+        run_id,
+        {
+            "type": "stage.finished",
+            "stage": row.name,
+            "payload": {
+                "stage": row.name,
+                "attempt": int(row.attempt),
+                "status": "succeeded",
+                "duration_ms": _stage_duration_ms(row),
+                "token_used": int(token_used),
+            },
+        },
+    )
+
+
+async def _publish_stage_failed(
+    hub: RealtimeHub,
+    run_id: str,
+    *,
+    stage: str,
+    attempt: int,
+    error_code: str | None,
+    error_message: str | None,
+) -> None:
+    """run 失败终态帧：定位到 current_stage（M2-4 §7）。"""
+    await _publish_event(
+        hub,
+        run_id,
+        {
+            "type": "stage.failed",
+            "stage": stage,
+            "payload": {
+                "stage": stage,
+                "attempt": int(attempt),
+                "status": "failed",
+                "error_code": error_code,
+                "error_message": error_message,
+                "retryable": False,
+            },
+        },
+    )
+
+
 async def _astream_and_publish(
     graph: Any,
-    initial_state: ResearchState,
+    initial_state: ResearchState | Command[Any],
     thread_config: dict[str, Any],
     *,
     run: ResearchRun,
     session: AsyncSession,
     hub: RealtimeHub,
     run_id: str,
+    stage_rows: dict[str, Stage],
+    cost_emitter: RunCostEmitter,
 ) -> ResearchState | None:
-    """流式执行图：逐 super-step 推送 ``stage.started`` 并同步 DB 阶段字段。
+    """流式执行图：逐 super-step 推进阶段行/帧、发射成本帧并做中间提交。
 
     - 使用 LangGraph ``astream``（values 模式）：每个 super-step 产出一份完整
-      state 快照；仅当 ``current_stage`` 切换时推送一次阶段事件。
-    - 同步把 ``ResearchRun.current_stage`` 落库并 flush，保证 WS 事件、DB
-      轮询（GET /runs/{id}）与重连后的 GET 初帧三处阶段状态一致。
+      state 快照；``current_stage`` 切换时收口旧阶段（行置 succeeded +
+      ``stage.finished`` 帧）并打开新阶段（行置 running + ``stage.started`` 帧）。
+    - 每份快照交给 ``RunCostEmitter.observe``：写穿 ``run.token_used``、
+      节流发 ``token.usage.update``、边沿发 ``cost.warning``。
+    - 每个 super-step 处理完后 ``session.commit()``：看板 REST 与 WS 订阅者
+      使用不同 DB 连接，运行中即可读到阶段/子问题/证据/成本（M2-4 §5.1）。
 
     Returns:
         最终（或挂起前最后一份）state 快照；图执行异常时向上抛出。
@@ -236,26 +304,45 @@ async def _astream_and_publish(
         # 统一归一化为字符串，保证去重比对与 WS 载荷均为纯字符串契约。
         raw_stage = snapshot.get("current_stage")
         stage = raw_stage.value if isinstance(raw_stage, ResearchStage) else raw_stage
-        if not isinstance(stage, str) or stage == last_stage:
-            continue
-        last_stage = stage
-        run.current_stage = stage
-        await session.flush()
-        attempts = snapshot.get("stage_attempts") or {}
-        await _publish_event(
-            hub,
-            run_id,
-            {
-                "type": "stage.started",
-                "stage": stage,
-                "current_stage": stage,
-                "payload": {
+        used = int(snapshot.get("token_used") or 0)
+        if isinstance(stage, str) and stage != last_stage:
+            attempts = snapshot.get("stage_attempts") or {}
+            if last_stage is not None:
+                old_row = stage_rows.get(last_stage)
+                if old_row is not None:
+                    apply_stage_transition(
+                        old_row,
+                        status="succeeded",
+                        token_used=used,
+                        finished=True,
+                    )
+                    await _publish_stage_finished(hub, run_id, row=old_row, token_used=used)
+            attempt = int(attempts.get(stage) or 1)
+            new_row = stage_rows.get(stage)
+            if new_row is not None:
+                apply_stage_transition(new_row, status="running", attempt=attempt)
+            last_stage = stage
+            run.current_stage = stage
+            # 更新指标上下文：下一 super-step 节点任务在 gather 创建时继承
+            bind_run_context(stage=stage)
+            await _publish_event(
+                hub,
+                run_id,
+                {
+                    "type": "stage.started",
                     "stage": stage,
-                    "attempt": int(attempts.get(stage) or 1),
-                    "token_used": int(snapshot.get("token_used") or 0),
+                    "current_stage": stage,
+                    "payload": {
+                        "stage": stage,
+                        "attempt": attempt,
+                        "token_used": used,
+                    },
                 },
-            },
-        )
+            )
+        # 成本：写穿 run.token_used + 节流/边沿帧（不依赖事务提交）
+        await cost_emitter.observe(used)
+        # super-step 中间提交：运行中看板 REST 即可读到本步落库数据
+        await session.commit()
     return final_state
 
 
@@ -266,16 +353,28 @@ async def _mark_succeeded(
     final_state: ResearchState,
     report_markdown: str,
     template_id: str,
+    stage_rows: dict[str, Stage],
 ) -> None:
-    """把 ResearchRun 标记为 succeeded 并新建 Report 行。"""
+    """把 ResearchRun 标记为 succeeded、收口 report 阶段行并新建 Report 行。"""
     now = datetime.now(tz=UTC)
+    used = int(final_state.get("token_used") or 0)
     run.status = "succeeded"
     run.current_stage = ResearchStage.REPORT.value
     run.started_at = run.started_at or now
     run.finished_at = now
-    run.token_used = int(final_state.get("token_used") or 0)
+    run.token_used = used
     run.error_code = None
     run.error_message = None
+
+    report_row = stage_rows.get(ResearchStage.REPORT.value)
+    if report_row is not None:
+        apply_stage_transition(
+            report_row,
+            status="succeeded",
+            attempt=int(report_row.attempt or 1),
+            token_used=used,
+            finished=True,
+        )
 
     report = Report(
         id=new_ulid(),
@@ -288,7 +387,7 @@ async def _mark_succeeded(
             "conflicts": list(final_state.get("conflicts") or []),
             "outline": list(final_state.get("report_outline") or []),
         },
-        token_used=int(final_state.get("token_used") or 0),
+        token_used=used,
     )
     session.add(report)
 
@@ -300,18 +399,45 @@ async def _mark_failed(
     error_code: str,
     error_message: str,
     partial_state: ResearchState | None,
+    stage_rows: dict[str, Stage] | None = None,
 ) -> None:
-    """把 ResearchRun 标记为 failed 并写入错误码。"""
+    """把 ResearchRun 标记为 failed，并把 current_stage 阶段行置 failed。"""
     now = datetime.now(tz=UTC)
     run.status = "failed"
     run.finished_at = now
     run.error_code = error_code
     run.error_message = error_message
+    cur_stage: str | None = None
+    used = 0
+    attempts: dict[str, Any] = {}
     if partial_state is not None:
-        run.token_used = int(partial_state.get("token_used") or 0)
-        cur_stage = partial_state.get("current_stage")
+        used = int(partial_state.get("token_used") or 0)
+        run.token_used = used
+        raw_stage = partial_state.get("current_stage")
+        cur_stage = raw_stage.value if isinstance(raw_stage, ResearchStage) else raw_stage
         if isinstance(cur_stage, str):
             run.current_stage = cur_stage
+        raw_attempts = partial_state.get("stage_attempts")
+        if isinstance(raw_attempts, dict):
+            attempts = raw_attempts
+    # 首份快照前即异常：沿用启动时写入的 current_stage（首次执行为 clarify，
+    # 恢复路径为挂起阶段），保证当前阶段行一定收口为 failed
+    if cur_stage is None and isinstance(run.current_stage, str):
+        cur_stage = run.current_stage
+    # 列默认值在 flush/insert 时才生效，尚未经过任何快照时实例属性仍为 None
+    if run.token_used is None:
+        run.token_used = 0
+    if isinstance(cur_stage, str) and stage_rows is not None:
+        row = stage_rows.get(cur_stage)
+        if row is not None:
+            apply_stage_transition(
+                row,
+                status="failed",
+                attempt=int(attempts.get(cur_stage) or row.attempt or 1),
+                token_used=used,
+                finished=True,
+                error_code=error_code,
+            )
 
 
 async def run_research_async(
@@ -383,10 +509,11 @@ async def run_research_async(
             )
             return
 
-        # 标记运行中
+        # 标记运行中并补齐六阶段行（5 pending + clarify 由首个快照置 running）
         run.status = "running"
         run.started_at = datetime.now(tz=UTC)
         run.current_stage = ResearchStage.CLARIFY.value
+        stage_rows = await ensure_stage_rows(session, run_id=run_id)
         await session.flush()
 
         graph = _compile_for_deps(deps, checkpointer)
@@ -399,6 +526,7 @@ async def run_research_async(
             hub=hub,
             deps=deps,
             fallback_state=initial_state,
+            stage_rows=stage_rows,
         )
 
 
@@ -412,18 +540,30 @@ async def _drive_to_terminal(
     hub: RealtimeHub,
     deps: NodeDeps,
     fallback_state: ResearchState | None,
+    stage_rows: dict[str, Stage],
 ) -> ResearchState | None:
     """驱动图执行到终态并完成落库与终态事件推送（首次执行/恢复共用）。
 
-    - 节点依赖会话与执行器会话共享：节点侧落库与 run 状态写在同一事务边界；
-    - 成功有报告 → succeeded + Report(draft)；无报告（HITL 挂起）→ paused；
-      异常 → failed；三种终态统一提交后推送恰好一条 ``run.finished``。
+    - 节点依赖会话与执行器会话共享：节点侧落库与 run 状态在同一事务边界，
+      每个 super-step 中间提交一次（M2-4 §5.1）；
+    - 成功有报告 → succeeded + Report(draft) + report 阶段收口帧；
+      无报告（HITL 挂起）→ paused（当前阶段行保持 running）；
+      异常 → failed + 当前阶段行 failed + ``stage.failed`` 帧；
+    - 三种结局统一提交后补发强制收尾 token 帧，再推恰好一条 ``run.finished``。
     """
     run_id = run.id
     deps.db_session = session
     deps.hub = hub
     thread_config: dict[str, Any] = {"configurable": {"thread_id": run_id}}
 
+    # 绑定指标上下文：LLMClient 打点时据此带 model/stage/run_id 标签；
+    # 新 run 在标记 running 时 current_stage 已是 clarify，恢复 run 为挂起阶段
+    bind_run_context(
+        run_id=run_id,
+        stage=run.current_stage if isinstance(run.current_stage, str) else ResearchStage.CLARIFY.value,
+    )
+
+    cost_emitter = RunCostEmitter(hub=hub, run=run)
     final_state: ResearchState | None = None
     try:
         final_state = await _astream_and_publish(
@@ -434,6 +574,8 @@ async def _drive_to_terminal(
             session=session,
             hub=hub,
             run_id=run_id,
+            stage_rows=stage_rows,
+            cost_emitter=cost_emitter,
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("graph.astream 执行失败", extra={"run_id": run_id})
@@ -443,6 +585,7 @@ async def _drive_to_terminal(
             error_code=exc.__class__.__name__,
             error_message=repr(exc),
             partial_state=final_state,
+            stage_rows=stage_rows,
         )
     else:
         # 未抛异常时 astream 必返回最后一份快照（空图才可能为 None，此处不会发生）
@@ -455,9 +598,11 @@ async def _drive_to_terminal(
                 final_state=final_state,
                 report_markdown=report_md,
                 template_id=template_id,
+                stage_rows=stage_rows,
             )
         else:
-            # 无产出（如仍挂起在 HITL）→ 标记 paused
+            # 无产出（如仍挂起在 HITL）→ 标记 paused；当前阶段行保持 running，
+            # 暂停语义由 research_runs.status=paused 承载（Stage 枚举无 paused）
             run.status = "paused"
             # 挂起同样回写真实 token 用量：成本闸门触发时前端/轮询需看到
             # 已消耗量，否则预算治理在 paused 态失去可观测性
@@ -469,13 +614,34 @@ async def _drive_to_terminal(
 
     await session.commit()
 
+    # 终态阶段帧（提交后发出，帧内实体与 REST 快照此时已同源）
+    if run.status == "succeeded":
+        report_row = stage_rows.get(ResearchStage.REPORT.value)
+        if report_row is not None:
+            await _publish_stage_finished(hub, run_id, row=report_row, token_used=int(run.token_used))
+    elif run.status == "failed":
+        failed_stage = run.current_stage if isinstance(run.current_stage, str) else None
+        failed_row = stage_rows.get(failed_stage) if failed_stage is not None else None
+        await _publish_stage_failed(
+            hub,
+            run_id,
+            stage=failed_stage or "",
+            attempt=int(failed_row.attempt) if failed_row is not None else 1,
+            error_code=run.error_code,
+            error_message=run.error_message,
+        )
+
+    # 终态/挂起点强制补发一帧 token.usage.update，保证收尾数字与 run 行一致
+    final_used = int(run.token_used or 0)
+    await cost_emitter.observe(final_used, force=True)
+
     finished_state = final_state if final_state is not None else (fallback_state or {})
     finished_event: dict[str, Any] = {
         "type": "run.finished",
         "run_id": run_id,
         "status": run.status,
         "current_stage": run.current_stage,
-        "token_used": int(finished_state.get("token_used") or run.token_used),
+        "token_used": int(finished_state.get("token_used") or final_used),
         "occurred_at": _utcnow_iso(),
     }
     if run.status == "failed":
@@ -542,6 +708,8 @@ async def resume_research_async(
             run.error_code = None
             run.error_message = None
             run.finished_at = None
+            # 恢复路径同样补齐六阶段行（幂等取回既有行，succeeded 不回退）
+            stage_rows = await ensure_stage_rows(session, run_id=run_id)
             await session.flush()
 
             await _drive_to_terminal(
@@ -553,6 +721,7 @@ async def resume_research_async(
                 hub=hub,
                 deps=deps,
                 fallback_state=None,
+                stage_rows=stage_rows,
             )
         except Exception as exc:  # noqa: BLE001 - 恢复护栏：任何异常都落 failed + 终态帧（TR-8.3）
             log.exception("HITL 恢复执行失败", extra={"run_id": run_id})

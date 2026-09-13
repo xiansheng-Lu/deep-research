@@ -11,6 +11,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 from app.core.exceptions import ProviderUnavailableError
+from app.observability.metrics import record_llm_usage
 from app.provider.base import ChatMessage, ChatRequest, ChatResponse, LLMProvider
 from app.provider.circuit_breaker import CircuitBreaker
 from app.provider.registry import default_registry
@@ -145,10 +146,14 @@ class LLMClient:
             payload = json.loads(content) if content else {}
             parsed = schema.model_validate(payload)
         except Exception as exc:  # noqa: BLE001 - 解析/校验统一收敛
-            raise ProviderUnavailableError(
-                f"结构化输出解析失败：{exc!r}（raw={content[:200]!r}）"
-            ) from exc
+            raise ProviderUnavailableError(f"结构化输出解析失败：{exc!r}（raw={content[:200]!r}）") from exc
 
+        # Prometheus：结构化调用实际 token 用量（model/stage/run_id 标签由
+        # 打点函数从 ContextVar 读取，非图上下文缺失标 unknown）
+        record_llm_usage(
+            model=chat_response.model,
+            total_tokens=int(chat_response.usage.get("total_tokens", 0)),
+        )
         return StructuredCompletion(
             parsed=parsed,
             usage=chat_response.usage,

@@ -22,6 +22,7 @@ from jose import JWTError
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.core.security import decode_token
+from app.observability.metrics import ws_active_connections
 from app.realtime.hub import RealtimeHub, get_hub
 
 log = get_logger("realtime.ws")
@@ -88,6 +89,7 @@ async def stream_run_events(
     log.info("WS 连接建立", extra={"run_id": run_id, "user_id": user_id})
 
     await websocket.accept()
+    ws_active_connections.inc()
 
     hub: RealtimeHub = get_hub()
     channel = f"runs:{run_id}"
@@ -120,9 +122,7 @@ async def stream_run_events(
         """
         while not finished.is_set():
             try:
-                msg = await asyncio.wait_for(
-                    websocket.receive_json(), timeout=_PONG_TIMEOUT
-                )
+                msg = await asyncio.wait_for(websocket.receive_json(), timeout=_PONG_TIMEOUT)
             except TimeoutError:
                 log.warning("WS pong 超时，断开连接", extra={"run_id": run_id})
                 finished.set()
@@ -150,6 +150,7 @@ async def stream_run_events(
             task.cancel()
         # 等待取消完成，避免协程泄漏
         await asyncio.gather(forward_task, heartbeat_task, receive_task, return_exceptions=True)
+        ws_active_connections.dec()
         with contextlib.suppress(Exception):  # 连接可能已关闭
             await websocket.close()
         log.info("WS 连接关闭", extra={"run_id": run_id, "user_id": user_id})

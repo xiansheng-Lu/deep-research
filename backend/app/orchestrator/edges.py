@@ -3,6 +3,7 @@
 from typing import Literal
 
 from app.orchestrator.state import ResearchState
+from app.quota.tiers import cost_danger_ratio
 
 
 def decide_after_clarify(state: ResearchState) -> Literal["await_human", "decompose"]:
@@ -37,9 +38,13 @@ def decide_after_await_human(state: ResearchState) -> Literal["clarify", "critiq
 
 
 def decide_after_cost_checkpoint(state: ResearchState) -> Literal["user_intervention", "report"]:
-    """成本闸门：token 用量超预算 90% 触发用户介入，否则进入报告生成。"""
+    """成本闸门：token 用量超 danger 阈值（默认 90%）触发用户介入，否则进入报告生成。
+
+    阈值与 WS ``cost.warning`` 发射器共用 ``app.quota.tiers.cost_danger_ratio``，
+    保证前端成本卡变红与本挂起路由同源（M2-4 §5.2）。
+    """
     used = state.get("token_used", 0)
     budget = state.get("token_budget", 0)
-    if used > budget * 0.9:
+    if used > budget * cost_danger_ratio():
         return "user_intervention"
     return "report"

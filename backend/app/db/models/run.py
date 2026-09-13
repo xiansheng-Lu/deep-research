@@ -5,7 +5,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, Text
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, IdMixin, TimestampMixin
@@ -20,33 +28,23 @@ class ResearchRun(Base, IdMixin, TimestampMixin):
 
     __tablename__ = "research_runs"
 
-    project_id: Mapped[str] = mapped_column(
-        String(26), ForeignKey("projects.id"), nullable=False, index=True
-    )
-    creator_id: Mapped[str] = mapped_column(
-        String(26), ForeignKey("users.id"), nullable=False
-    )
+    project_id: Mapped[str] = mapped_column(String(26), ForeignKey("projects.id"), nullable=False, index=True)
+    creator_id: Mapped[str] = mapped_column(String(26), ForeignKey("users.id"), nullable=False)
     template_id: Mapped[str] = mapped_column(String(26), nullable=False)
-    tier: Mapped[Literal["quick", "standard", "deep", "extreme"]] = mapped_column(
-        String(16), nullable=False
-    )
+    tier: Mapped[Literal["quick", "standard", "deep", "extreme"]] = mapped_column(String(16), nullable=False)
     question: Mapped[str] = mapped_column(Text, nullable=False)
     clarification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    status: Mapped[Literal[
-        "pending", "running", "paused", "succeeded", "failed", "cancelled"
-    ]] = mapped_column(String(16), nullable=False, default="pending")
+    status: Mapped[Literal["pending", "running", "paused", "succeeded", "failed", "cancelled"]] = (
+        mapped_column(String(16), nullable=False, default="pending")
+    )
     current_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
     orchestrator_state: Mapped[dict | None] = mapped_column(
         JSON, nullable=True, comment="LangGraph checkpoint 引用"
     )
     token_used: Mapped[int] = mapped_column(nullable=False, default=0)
     token_budget: Mapped[int] = mapped_column(nullable=False)
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -69,24 +67,25 @@ class Stage(Base, IdMixin, TimestampMixin):
     run_id: Mapped[str] = mapped_column(
         String(26), ForeignKey("research_runs.id"), nullable=False, index=True
     )
-    name: Mapped[Literal[
-        "clarify", "decompose", "retrieve", "standardize", "critique", "report"
-    ]] = mapped_column(String(16), nullable=False)
-    status: Mapped[Literal["pending", "running", "succeeded", "failed", "skipped"]] = (
-        mapped_column(String(16), nullable=False, default="pending")
+    name: Mapped[Literal["clarify", "decompose", "retrieve", "standardize", "critique", "report"]] = (
+        mapped_column(String(16), nullable=False)
+    )
+    status: Mapped[Literal["pending", "running", "succeeded", "failed", "skipped"]] = mapped_column(
+        String(16), nullable=False, default="pending"
     )
     attempt: Mapped[int] = mapped_column(nullable=False, default=1)
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_used: Mapped[int] = mapped_column(nullable=False, default=0)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     output: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     run: Mapped[ResearchRun] = relationship(back_populates="stages")
+
+    __table_args__ = (
+        # M2-4：同一 run 下阶段名唯一，作为阶段行 upsert 幂等与恢复重放的前置
+        UniqueConstraint("run_id", "name", name="uq_stages_run_name"),
+    )
 
 
 class SubQuestion(Base, IdMixin, TimestampMixin):
@@ -99,9 +98,9 @@ class SubQuestion(Base, IdMixin, TimestampMixin):
     )
     question: Mapped[str] = mapped_column(Text, nullable=False)
     depends_on: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    status: Mapped[Literal[
-        "pending", "queued", "running", "succeeded", "failed", "evidence_short"
-    ]] = mapped_column(String(16), nullable=False, default="pending")
+    status: Mapped[Literal["pending", "queued", "running", "succeeded", "failed", "evidence_short"]] = (
+        mapped_column(String(16), nullable=False, default="pending")
+    )
     evidence_count: Mapped[int] = mapped_column(nullable=False, default=0)
 
     run: Mapped[ResearchRun] = relationship(back_populates="sub_questions")

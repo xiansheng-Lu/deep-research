@@ -31,9 +31,7 @@ class Settings(BaseSettings):
     app_name: str = Field(default="deep-research-api", alias="APP_NAME")
     app_host: str = Field(default="0.0.0.0", alias="APP_HOST")
     app_port: int = Field(default=8000, alias="APP_PORT")
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
-        default="INFO", alias="LOG_LEVEL"
-    )
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO", alias="LOG_LEVEL")
     log_json: bool = Field(default=True, alias="LOG_JSON")
     log_collector_endpoint: str = Field(default="", alias="LOG_COLLECTOR_ENDPOINT")
 
@@ -82,9 +80,7 @@ class Settings(BaseSettings):
 
     # ===== 检索 =====
     # 公域检索供应方选择：bocha（国内）/ tavily（海外）
-    web_search_provider: Literal["bocha", "tavily"] = Field(
-        default="bocha", alias="WEB_SEARCH_PROVIDER"
-    )
+    web_search_provider: Literal["bocha", "tavily"] = Field(default="bocha", alias="WEB_SEARCH_PROVIDER")
     tavily_api_key: SecretStr = Field(default=SecretStr(""), alias="TAVILY_API_KEY")
     bocha_api_key: SecretStr = Field(default=SecretStr(""), alias="BOCHA_API_KEY")
     bocha_base_url: str = Field(default="https://api.bochaai.com/v1", alias="BOCHA_BASE_URL")
@@ -98,13 +94,20 @@ class Settings(BaseSettings):
     quota_tier_standard_tokens: int = Field(default=150_000, alias="QUOTA_TIER_STANDARD_TOKENS")
     quota_tier_deep_tokens: int = Field(default=400_000, alias="QUOTA_TIER_DEEP_TOKENS")
     quota_tier_extreme_tokens: int = Field(default=1_000_000, alias="QUOTA_TIER_EXTREME_TOKENS")
+    # M2-3 实时成本：token.usage.update 最小帧间隔（毫秒）与预警阈值；
+    # danger 阈值同时是成本挂起闸门的唯一事实源（edges 经 quota.tiers 读取）
+    cost_update_interval_ms: int = Field(default=1000, alias="COST_UPDATE_INTERVAL_MS")
+    cost_warning_ratio: float = Field(default=0.70, alias="COST_WARNING_RATIO")
+    cost_danger_ratio: float = Field(default=0.90, alias="COST_DANGER_RATIO")
+
+    # ===== 运维可观测 =====
+    # M2-3 Prometheus 指标端点开关：false 时不注册 GET /metrics
+    metrics_enabled: bool = Field(default=True, alias="METRICS_ENABLED")
 
     # ===== 种子账号（仅 dev/staging 联调，prod 下脚本拒绝执行） =====
     seed_team_name: str = Field(default="默认团队", alias="SEED_TEAM_NAME")
     seed_user_email: str = Field(default="dev@example.com", alias="SEED_USER_EMAIL")
-    seed_user_password: SecretStr = Field(
-        default=SecretStr("Dev@123456"), alias="SEED_USER_PASSWORD"
-    )
+    seed_user_password: SecretStr = Field(default=SecretStr("Dev@123456"), alias="SEED_USER_PASSWORD")
     seed_user_display_name: str = Field(default="联调开发者", alias="SEED_USER_DISPLAY_NAME")
 
     # ===== 实时通信 =====

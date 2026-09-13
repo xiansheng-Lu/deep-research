@@ -27,11 +27,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from app.core.logging import get_logger
 from app.db.base import new_ulid
+from app.observability.metrics import record_evidence_fetch
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.nodes._base import instrument
 from app.orchestrator.persistence import persist_sub_questions
@@ -45,6 +46,9 @@ from app.quota.tiers import Tier
 from app.retrieval.base import RetrievalRequest, RetrievalSource
 from app.retrieval.client import RetrievalClient, get_default_client
 from app.retrieval.dedup import fingerprint
+
+if TYPE_CHECKING:
+    from app.realtime.hub import RealtimeHub
 
 log = get_logger("orchestrator.researcher_fan_out")
 
@@ -245,6 +249,42 @@ async def _research_one(
     )
 
 
+async def _publish_sub_question_event(
+    hub: RealtimeHub | None,
+    *,
+    run_id: str,
+    event_type: str,
+    sq: SubQuestionDict,
+) -> None:
+    """推送子问题生命周期帧（retrieve 阶段）。
+
+    - ``sub_question.started``：每层调度前，status=running；
+    - ``sub_question.finished``：层结果落库后，带终态 status 与 evidence_count，
+      succeeded/failed/evidence_short 均如实携带（M2-4 §7）。
+    """
+    if hub is None:
+        return
+    payload: dict[str, Any] = {
+        "sub_question_id": sq["id"],
+        "status": sq.get("status") or "pending",
+    }
+    if event_type == "sub_question.finished":
+        payload["evidence_count"] = len(sq.get("evidence_ids") or [])
+    event = {
+        "type": event_type,
+        "stage": ResearchStage.RETRIEVE.value,
+        "payload": payload,
+    }
+    try:
+        await hub.publish(f"runs:{run_id}", event)
+    except Exception as exc:  # noqa: BLE001 - 实时事件失败不阻断主链路
+        log.warning(
+            "%s 推送失败",
+            event_type,
+            extra={"run_id": run_id, "sub_question_id": sq["id"], "error": repr(exc)},
+        )
+
+
 @instrument(ResearchStage.RETRIEVE)
 async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str, Any]:
     """检索节点入口。
@@ -262,6 +302,7 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
 
     retrieval = _resolve_retrieval(deps)
     db_session = getattr(deps, "db_session", None) if deps is not None else None
+    hub: RealtimeHub | None = getattr(deps, "hub", None) if deps is not None else None
     run_id = str(state.get("run_id") or "")
     if retrieval is None:
         log.warning("researcher_fan_out 未获取到检索客户端，全部子问题标记 failed")
@@ -271,6 +312,10 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
         if db_session is not None:
             # 失败状态同样落库，保证看板/恢复链路可见终态
             await persist_sub_questions(db_session, run_id=run_id, items=list(by_id.values()))
+        # 未实际调度：只发终态帧，前端看板据此把行收敛到 failed
+        for f in failed:
+            record_evidence_fetch(source_type="web", status="failed")
+            await _publish_sub_question_event(hub, run_id=run_id, event_type="sub_question.finished", sq=f)
         return {"evidence": list(state.get("evidence") or []), "sub_questions": list(by_id.values())}
 
     top_k = top_k_for_tier(state.get("tier"))
@@ -280,6 +325,14 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
     all_evidence: list[EvidenceDict] = list(state.get("evidence") or [])
 
     for layer in layers:
+        # 调度前逐条发 started（status 固定 running，表示进入检索执行）
+        for sq in layer:
+            await _publish_sub_question_event(
+                hub,
+                run_id=run_id,
+                event_type="sub_question.started",
+                sq={**sq, "status": "running"},
+            )
         results = await asyncio.gather(
             *[_research_one(sq, retrieval=retrieval, run_id=run_id, top_k=top_k) for sq in layer],
             return_exceptions=False,
@@ -292,6 +345,12 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
         if db_session is not None and updated_sqs:
             # 仅回写子问题执行状态；证据统一在 standardize 分类后落库
             await persist_sub_questions(db_session, run_id=run_id, items=updated_sqs)
+        # 落库后逐条发 finished（帧在提交前的毫秒级竞态由前端 REST 对齐补偿）
+        for updated_sq in updated_sqs:
+            record_evidence_fetch(source_type="web", status=str(updated_sq.get("status") or "failed"))
+            await _publish_sub_question_event(
+                hub, run_id=run_id, event_type="sub_question.finished", sq=updated_sq
+            )
 
     return {
         "evidence": all_evidence,

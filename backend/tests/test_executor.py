@@ -308,9 +308,158 @@ async def test_run_research_async_success_marks_succeeded() -> None:
     assert [e["stage"] for e in stage_events] == [s.value for s in stage_sequence]
     assert stage_events[0]["payload"]["stage"] == "clarify"
     assert stage_events[-1]["payload"]["token_used"] == 500
+
+    # AC-13：阶段收口帧——切换时前五阶段各一条 succeeded，终态再补发 report
+    stage_finished = [e for e in events if e["type"] == "stage.finished"]
+    assert [e["stage"] for e in stage_finished] == [s.value for s in stage_sequence]
+    assert all(e["payload"]["status"] == "succeeded" for e in stage_finished)
+    assert all(e["payload"]["attempt"] == 1 for e in stage_finished)
+    assert all(isinstance(e["payload"]["duration_ms"], int) for e in stage_finished)
+    assert stage_finished[-1]["payload"]["token_used"] == 500
+    # 成功路径不发 stage.failed
+    assert not [e for e in events if e["type"] == "stage.failed"]
+    # 收尾顺序：report 收口 → 强制 token 帧 → run.finished
+    assert events[-3]["type"] == "stage.finished"
+    assert events[-3]["stage"] == "report"
+    assert events[-2]["type"] == "token.usage.update"
     finished_events = [e for e in events if e["type"] == "run.finished"]
     assert len(finished_events) == 1
     assert finished_events[0]["status"] == "succeeded"
+
+
+class _BoomAfterFirstGraphStream:
+    """首份快照（clarify）后抛错的假图，覆盖异常终态路径。"""
+
+    def astream(self, initial_state: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ARG002
+        assert kwargs.get("stream_mode") == "values"
+
+        class _Iterator:
+            def __init__(self) -> None:
+                self._done = False
+
+            def __aiter__(self) -> _Iterator:
+                return self
+
+            async def __anext__(self) -> dict[str, Any]:
+                if self._done:
+                    raise StopAsyncIteration
+                self._done = True
+                return {
+                    "run_id": "test-run-graph-error",
+                    "current_stage": ResearchStage.CLARIFY,
+                    "token_used": 50,
+                    "stage_attempts": {},
+                    "report_draft": "",
+                    "report_claims": [],
+                    "conflicts": [],
+                    "report_outline": [],
+                }
+
+        return _Iterator()
+
+
+@pytest.mark.asyncio
+async def test_run_research_async_graph_raises_publishes_stage_failed() -> None:
+    """AC-13：图执行异常 → 当前阶段行 failed + stage.failed + run.finished(failed)。"""
+
+    class _RaisingStream(_BoomAfterFirstGraphStream):
+        def astream(self, initial_state: Any, config: Any = None, **kwargs: Any) -> Any:
+            assert kwargs.get("stream_mode") == "values"
+            inner = super().astream(initial_state, config, **kwargs)
+
+            class _Iterator:
+                def __aiter__(self) -> Any:
+                    return self
+
+                async def __anext__(self) -> dict[str, Any]:
+                    await inner.__anext__()  # 消费首份 clarify 快照后立即炸
+                    raise RuntimeError("图执行炸了")
+
+            return _Iterator()
+
+    run = ResearchRun(
+        id="test-run-graph-error",
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="standard",
+        question="测试问题",
+        status="pending",
+        token_budget=150_000,
+    )
+
+    mock_session = AsyncMock()
+    mock_session.scalar.return_value = run
+    mock_session.add = MagicMock()
+    mock_session.flush = AsyncMock()
+    mock_session.commit = AsyncMock()
+    _scalars_result = MagicMock()
+    _scalars_result.all.return_value = []
+    mock_session.scalars = AsyncMock(return_value=_scalars_result)
+
+    mock_factory = MagicMock()
+    mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    hub = RealtimeHub()
+    events: list[dict[str, Any]] = []
+
+    async def _collect() -> None:
+        async for event in hub.subscribe("runs:test-run-graph-error"):
+            events.append(event)
+            if event.get("type") == "run.finished":
+                break
+
+    collect_task = asyncio.create_task(_collect())
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(
+            "app.orchestrator.executor._compile_for_deps",
+            lambda deps, checkpointer=None: _RaisingStream(),
+        )
+        await run_research_async(
+            run_id="test-run-graph-error",
+            project_id="proj-001",
+            template_id="generic",
+            tier="standard",
+            question="测试问题",
+            token_budget=150_000,
+            clarification=None,
+            team_id="team-001",
+            creator_id="user-001",
+            trace_id="trace-001",
+            session_factory=mock_factory,
+            llm=None,
+            retrieval_client=None,
+            hub=hub,
+        )
+
+    await asyncio.sleep(0.05)
+    collect_task.cancel()
+
+    assert run.status == "failed"
+    assert run.error_code == "RuntimeError"
+    # 当前阶段行（clarify）已置 failed 并记录错误码
+    stage_rows = [c.args[0] for c in mock_session.add.call_args_list]
+    clarify = next(r for r in stage_rows if getattr(r, "name", None) == "clarify")
+    assert clarify.status == "failed"
+    assert clarify.error_code == "RuntimeError"
+
+    stage_failed = [e for e in events if e["type"] == "stage.failed"]
+    assert len(stage_failed) == 1
+    payload = stage_failed[0]["payload"]
+    assert payload == {
+        "stage": "clarify",
+        "attempt": 1,
+        "status": "failed",
+        "error_code": "RuntimeError",
+        "error_message": "RuntimeError('图执行炸了')",
+        "retryable": False,
+    }
+    finished = [e for e in events if e["type"] == "run.finished"]
+    assert len(finished) == 1
+    assert finished[0]["status"] == "failed"
+    assert finished[0]["error_code"] == "RuntimeError"
 
 
 @pytest.mark.asyncio
@@ -546,6 +695,15 @@ async def test_run_research_async_budget_exceeded_pauses_before_report() -> None
         "standardize",
         "critique",
     ]
+    # paused 语义：已切过的四阶段正常收口；当前 critique 保持 running 不发终态帧
+    stage_finished = [e for e in events if e["type"] == "stage.finished"]
+    assert [e["stage"] for e in stage_finished] == [
+        "clarify",
+        "decompose",
+        "retrieve",
+        "standardize",
+    ]
+    assert not [e for e in events if e["type"] == "stage.failed"]
     finished_events = [e for e in events if e["type"] == "run.finished"]
     assert len(finished_events) == 1
     assert finished_events[0]["status"] == "paused"

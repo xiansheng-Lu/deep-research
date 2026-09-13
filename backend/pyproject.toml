@@ -48,6 +48,8 @@ dependencies = [
     "opentelemetry-api>=1.27,<2.0",
     "opentelemetry-sdk>=1.27,<2.0",
     "opentelemetry-instrumentation-fastapi>=0.48b0",
+    # 运维指标（M2-3）
+    "prometheus-client>=0.21,<1.0",
     # 文档处理
     "python-docx>=1.1,<2.0",
     "openpyxl>=3.1,<4.0",

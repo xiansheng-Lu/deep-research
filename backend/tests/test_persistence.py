@@ -7,17 +7,23 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.base import new_ulid
 from app.db.models.conflict import Conflict
 from app.db.models.evidence import Evidence
-from app.db.models.run import SubQuestion
+from app.db.models.run import Stage, SubQuestion
 from app.orchestrator.persistence import (
+    STAGE_ORDER,
+    apply_stage_transition,
+    ensure_stage_rows,
     persist_conflicts,
     persist_evidence,
+    persist_stage_transition,
     persist_sub_questions,
 )
 
@@ -44,14 +50,18 @@ class _FakeSession:
         existing_subs: list[SubQuestion] | None = None,
         existing_evidence_ids: set[str] | None = None,
         existing_conflict_ids: set[str] | None = None,
+        existing_stages: list[Stage] | None = None,
     ) -> None:
         self.added: list[Any] = []
         self._subs: dict[str, SubQuestion] = {s.id: s for s in (existing_subs or [])}
         self._evidence_ids: set[str] = set(existing_evidence_ids or set())
         self._conflict_ids: set[str] = set(existing_conflict_ids or set())
+        self._stages: dict[str, Stage] = {s.name: s for s in (existing_stages or [])}
 
     async def scalars(self, statement: Any) -> _FakeScalars:
         sql = str(statement)
+        if "FROM stages" in sql:
+            return _FakeScalars(list(self._stages.values()))
         if "FROM sub_questions" in sql:
             return _FakeScalars(list(self._subs.values()))
         if "FROM evidence" in sql:
@@ -59,6 +69,10 @@ class _FakeSession:
         if "FROM conflicts" in sql:
             return _FakeScalars(sorted(self._conflict_ids))
         raise AssertionError(f"未预期的查询: {sql}")
+
+    async def scalar(self, statement: Any) -> Stage | None:  # noqa: ARG002
+        """persist_stage_transition 的单行查询：假会话统一走缺行插入路径。"""
+        return None
 
     def add(self, obj: Any) -> None:
         self.added.append(obj)
@@ -68,6 +82,8 @@ class _FakeSession:
             self._evidence_ids.add(obj.id)
         elif isinstance(obj, Conflict):
             self._conflict_ids.add(obj.id)
+        elif isinstance(obj, Stage):
+            self._stages[obj.name] = obj
 
 
 def _sq(sq_id: str, *, status: str = "pending", evidence_ids: list[str] | None = None) -> dict[str, Any]:
@@ -154,8 +170,8 @@ async def test_persist_evidence_is_idempotent_and_complete() -> None:
 
     added_first = await persist_evidence(_as_session(session), run_id="run-1", items=items)
     added_second = await persist_evidence(_as_session(session), run_id="run-1", items=items)
-    assert added_first == 2
-    assert added_second == 0
+    assert [r.id for r in added_first] == ["ev-1", "ev-2"]
+    assert added_second == []
     rows = [o for o in session.added if isinstance(o, Evidence)]
     assert len(rows) == 2
 
@@ -283,3 +299,103 @@ async def test_persist_conflicts_empty_is_noop() -> None:
     session = _FakeSession()
     assert await persist_conflicts(_as_session(session), run_id="run-1", items=[]) == 0
     assert session.added == []
+
+
+# ---------------------------------------------------------------------------
+# 阶段行（M2-4 T1）
+# ---------------------------------------------------------------------------
+
+
+def _stage(name: str, *, status: str = "pending") -> Stage:
+    now = datetime.now(tz=UTC)
+    return Stage(
+        id=new_ulid(),
+        run_id="run-1",
+        name=name,
+        status=status,
+        attempt=1,
+        token_used=0,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_stage_rows_inserts_six_then_idempotent() -> None:
+    """AC-1：首次补齐六行 pending；再次调用取回既有行不新增、不重置。"""
+    session = _FakeSession()
+
+    rows = await ensure_stage_rows(_as_session(session), run_id="run-1")
+    assert list(rows.keys()) == list(STAGE_ORDER)
+    added = [o for o in session.added if isinstance(o, Stage)]
+    assert len(added) == 6
+    assert all(r.status == "pending" and r.attempt == 1 for r in added)
+
+    # 第二次：假会话已持有六行，不再 add；返回映射同名同行
+    session.added.clear()
+    again = await ensure_stage_rows(_as_session(session), run_id="run-1")
+    assert session.added == []
+    assert again["clarify"] is rows["clarify"]
+
+
+def test_apply_stage_transition_rules() -> None:
+    """AC-1：running 写 started_at 一次；succeeded 收口不可回退；failed 带 error_code。"""
+    row = _stage("clarify")
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+
+    apply_stage_transition(row, status="running", now=started)
+    assert row.status == "running"
+    assert row.started_at == started
+
+    # 再次迁移 running：started_at 保持首值
+    apply_stage_transition(row, status="running", now=datetime(2026, 1, 2, tzinfo=UTC))
+    assert row.started_at == started
+
+    # 收口：finished_at/token_used
+    apply_stage_transition(
+        row,
+        status="succeeded",
+        token_used=320,
+        finished=True,
+        now=datetime(2026, 1, 3, tzinfo=UTC),
+    )
+    assert row.finished_at is not None
+    assert row.token_used == 320
+
+    # 已 succeeded 不回退（恢复重放保护）
+    apply_stage_transition(row, status="running", now=datetime(2026, 1, 4, tzinfo=UTC))
+    assert row.status == "succeeded"
+    apply_stage_transition(row, status="failed", error_code="X", finished=True)
+    assert row.status == "succeeded"
+    assert row.error_code is None
+
+
+def test_apply_stage_transition_failed_writes_error_code() -> None:
+    """失败终态：current_stage 行置 failed 并写 error_code/finished_at。"""
+    row = _stage("critique", status="running")
+    apply_stage_transition(row, status="running", now=datetime(2026, 1, 1, tzinfo=UTC))
+    apply_stage_transition(
+        row,
+        status="failed",
+        error_code="RuntimeError",
+        finished=True,
+        token_used=88,
+        now=datetime(2026, 1, 1, 0, 1, tzinfo=UTC),
+    )
+    assert row.status == "failed"
+    assert row.error_code == "RuntimeError"
+    assert row.finished_at is not None
+    assert row.token_used == 88
+
+
+@pytest.mark.asyncio
+async def test_persist_stage_transition_inserts_missing_as_running() -> None:
+    """缺行场景：upsert 直接插入 running 行并写 started_at（执行器外的兼容入口）。"""
+    session = _FakeSession()
+    row = await persist_stage_transition(
+        _as_session(session), run_id="run-1", name="report", status="running"
+    )
+    assert row.name == "report"
+    assert row.status == "running"
+    assert row.started_at is not None
+    assert session.added and session.added[-1] is row

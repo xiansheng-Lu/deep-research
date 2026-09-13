@@ -6,7 +6,8 @@
 
 M1 快照（openapi-m1.json）为历史冻结文件，默认不覆盖：随里程碑演进，应用的
 components.schemas 会持续增加，重生成会让 M1 文件产生与端点无关的噪音 diff。
-M2-2 快照（openapi-m2-2.json，M1 子集 + M2-1 意图/闲聊 + conflicts 三端点）为当前导出品；
+M2-2 快照（openapi-m2-2.json，M1 子集 + M2-1 意图/闲聊 + conflicts 三端点）随
+M2-2 冻结；M2-4 快照（openapi-m2-4.json）为当前导出品，
 快照为累积超集，每个里程碑批次必须把已交付端点全部纳入，禁止选择性白名单。
 
 环境变量需与 conftest.py 的 _REQUIRED_ENV 对齐（测试环境最小变量集）。
@@ -64,6 +65,18 @@ _M22_ENDPOINTS = frozenset(
     }
 )
 
+# M2-4 在 M2-2 之上新增的看板只读端点（实时成本 + 看板，FR：run 详情六类视图）
+# - GET /runs 随白名单路径自动带上（POST 创建已在 M1 白名单中，按路径整体纳入）
+_M24_ENDPOINTS = frozenset(
+    {
+        "/api/v1/runs/{run_id}/stages",
+        "/api/v1/runs/{run_id}/sub-questions",
+        "/api/v1/runs/{run_id}/evidence",
+        "/api/v1/runs/{run_id}/evidence/{evidence_id}",
+        "/api/v1/runs/{run_id}/cost/snapshot",
+    }
+)
+
 _M22_DESCRIPTION = (
     "本 schema 为截至 M2-2（批判收敛与人机裁决）后端冻结契约的累积快照，"
     "包含 M1 端点 + M2-1 意图路由与闲聊 + M2-2 分歧三端点。\n"
@@ -74,6 +87,20 @@ _M22_DESCRIPTION = (
     "factual/methodological/temporal/perspective，severity 三值 low/medium/high。\n"
     "WebSocket 帧 conflict.detected/conflict.verdicts 不在 OpenAPI paths 中，"
     "其载荷契约见 M2-2 阶段技术方案。"
+)
+
+_M24_DESCRIPTION = (
+    "本 schema 为截至 M2-4（实时成本与看板接口）后端冻结契约的累积快照，"
+    "在 M2-2 全部端点之上新增五个 run 详情只读 GET："
+    "阶段时间线（stages，按固定六阶段顺序返回状态/尝试次数/时间戳/token）、"
+    "子问题列表（sub-questions，状态与证据计数）、证据池分页（evidence，"
+    "默认剔除用户排除项，include_excluded=true 可带出）、证据详情（全文 content）、"
+    "成本快照（cost/snapshot，预算占用比例与 danger/warning 分级）。\n"
+    "列表统一扁平分页信封 {items,total,page,page_size,has_more}，page_size 上限 100；"
+    "归属校验与创建端点同一不泄漏口径（不存在/非创建者统一 404）。\n"
+    "WebSocket 帧 stage.started/stage.finished/stage.failed、"
+    "sub_question.created/started/finished、evidence.fetched、"
+    "token.usage.update 不在 OpenAPI paths 中，其载荷契约见 M2-3/M2-4 阶段技术方案。"
 )
 
 
@@ -104,12 +131,17 @@ def _write_snapshot(
 
 
 def main() -> None:
-    """导出 M2-2 冻结契约；--refresh-m1 时同步重写 M1 历史快照。"""
+    """导出 M2-4 冻结契约；默认跳过 M1/M2-2 历史快照，加对应 --refresh 重写。"""
     parser = argparse.ArgumentParser(description="导出 OpenAPI 冻结快照")
     parser.add_argument(
         "--refresh-m1",
         action="store_true",
         help="同时重写已冻结的 openapi-m1.json（默认跳过以保持历史快照稳定）",
+    )
+    parser.add_argument(
+        "--refresh-m22",
+        action="store_true",
+        help="同时重写已冻结的 openapi-m2-2.json（默认跳过以保持历史快照稳定）",
     )
     args = parser.parse_args()
 
@@ -126,6 +158,7 @@ def main() -> None:
 
     m1_paths = _filter_paths(schema, _M1_ENDPOINTS)
     m22_paths = _filter_paths(schema, _M1_ENDPOINTS | _M22_ENDPOINTS)
+    m24_paths = _filter_paths(schema, _M1_ENDPOINTS | _M22_ENDPOINTS | _M24_ENDPOINTS)
 
     m1_output = output_dir / "openapi-m1.json"
     if args.refresh_m1 or not m1_output.exists():
@@ -147,21 +180,34 @@ def main() -> None:
     else:
         print("跳过已冻结的 M1 快照（如需重写加 --refresh-m1）")
 
+    m22_output = output_dir / "openapi-m2-2.json"
+    if args.refresh_m22 or not m22_output.exists():
+        _write_snapshot(
+            schema,
+            m22_paths,
+            filename="openapi-m2-2.json",
+            title="AI 研究者助手 · M2-2 累积接口契约冻结（M1 + M2-1 + M2-2）",
+            description=_M22_DESCRIPTION,
+            output_dir=output_dir,
+        )
+    else:
+        print("跳过已冻结的 M2-2 快照（如需重写加 --refresh-m22）")
+
     _write_snapshot(
         schema,
-        m22_paths,
-        filename="openapi-m2-2.json",
-        title="AI 研究者助手 · M2-2 累积接口契约冻结（M1 + M2-1 + M2-2）",
-        description=_M22_DESCRIPTION,
+        m24_paths,
+        filename="openapi-m2-4.json",
+        title="AI 研究者助手 · M2-4 累积接口契约冻结（M1 + M2-1 + M2-2 + M2-4）",
+        description=_M24_DESCRIPTION,
         output_dir=output_dir,
     )
 
     all_paths = cast(dict[str, Any], schema.get("paths", {}))
-    placeholder_count = len(all_paths) - len(m22_paths)
+    placeholder_count = len(all_paths) - len(m24_paths)
     print(f"未纳入任何快照的占位/其他端点数：{placeholder_count}")
-    print("M2-2 新增端点：")
-    for path in sorted(_M22_ENDPOINTS):
-        methods = sorted(m22_paths[path].keys())
+    print("M2-4 新增端点：")
+    for path in sorted(_M24_ENDPOINTS):
+        methods = sorted(m24_paths[path].keys())
         print(f"  {path}  [{', '.join(methods).upper()}]")
 
 

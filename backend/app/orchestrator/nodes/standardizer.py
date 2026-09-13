@@ -20,9 +20,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.core.logging import get_logger
+from app.db.models.evidence import Evidence
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.nodes._base import instrument
 from app.orchestrator.persistence import persist_evidence, persist_sub_questions
@@ -32,6 +33,9 @@ from app.orchestrator.state import (
     ResearchState,
     SubQuestionDict,
 )
+
+if TYPE_CHECKING:
+    from app.realtime.hub import RealtimeHub
 
 log = get_logger("orchestrator.standardizer")
 
@@ -152,6 +156,46 @@ def _reindex_sub_questions(
     return result
 
 
+async def _publish_evidence_fetched(
+    hub: RealtimeHub | None,
+    *,
+    run_id: str,
+    row: Evidence,
+) -> None:
+    """对本次新增证据逐条推送 evidence.fetched（载荷取分类落库后的权威字段）。
+
+    实时帧失败不阻断研究主链路；``content`` 不在增量载荷中（体积大，
+    前端按需走 ``GET /evidence/{id}`` 拉详情，M2-4 §7）。
+    """
+    if hub is None:
+        return
+    event = {
+        "type": "evidence.fetched",
+        "stage": ResearchStage.STANDARDIZE.value,
+        "payload": {
+            "id": row.id,
+            "sub_question_id": row.sub_question_id,
+            "url": row.url,
+            "domain": row.domain,
+            "title": row.title,
+            "snippet": row.snippet,
+            "source_type": row.source_type,
+            "source_level": row.source_level,
+            "credibility": row.credibility,
+            "relevance_score": float(row.relevance_score),
+            "published_at": row.published_at.isoformat() if row.published_at else None,
+            "excluded_by_user": bool(row.excluded_by_user),
+        },
+    }
+    try:
+        await hub.publish(f"runs:{run_id}", event)
+    except Exception as exc:  # noqa: BLE001 - 实时事件失败不阻断主链路
+        log.warning(
+            "evidence.fetched 推送失败",
+            extra={"run_id": run_id, "evidence_id": row.id, "error": repr(exc)},
+        )
+
+
 @instrument(ResearchStage.STANDARDIZE)
 async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str, Any]:
     """标准化节点入口。
@@ -199,7 +243,11 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
     if deps is not None and deps.db_session is not None:
         run_id = str(state.get("run_id") or "")
         await persist_sub_questions(deps.db_session, run_id=run_id, items=updated_subs)
-        await persist_evidence(deps.db_session, run_id=run_id, items=classified)
+        added_rows = await persist_evidence(deps.db_session, run_id=run_id, items=classified)
+        # 仅对本次新增证据发增量帧；重放命中既有证据不重复推送
+        hub = getattr(deps, "hub", None)
+        for row in added_rows:
+            await _publish_evidence_fetched(hub, run_id=run_id, row=row)
 
     return {
         "standardized_evidence": classified,
