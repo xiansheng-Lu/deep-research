@@ -38,7 +38,7 @@ const emit = defineEmits<{
   (e: 'open-source', evidenceId: string): void
 }>()
 
-// 目录锚点：fixture 与 M2-6 契约均带 id；缺省时按序号生成保证可定位
+// 目录锚点：fixture 与 M2-7 契约均带 id；缺省时按序号生成保证可定位
 const anchorId = computed(() => props.block.id ?? `report-block-${props.index}`)
 
 const snippetOpen = ref(false)

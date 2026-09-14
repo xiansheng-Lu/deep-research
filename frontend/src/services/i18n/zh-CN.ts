@@ -123,7 +123,7 @@ export const zhCN = {
       temporal: '时间错配',
       perspective: '观点分歧'
     },
-    // M2-7 信源元数据
+    // M2-6 信源元数据抽取（编号口径对齐 SDP §3）
     sourceType: {
       official_doc: '官方文档',
       news: '新闻媒体',
@@ -142,7 +142,7 @@ export const zhCN = {
       C: 'C 待核实',
       D: 'D 低可信'
     },
-    // M2-6 论断置信度（推断不得按事实呈现）
+    // M2-7 数据点级溯源之论断置信度（推断不得按事实呈现）
     claimConfidence: {
       single_source: '单一来源',
       cross_verified: '多源印证',

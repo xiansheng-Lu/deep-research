@@ -3,9 +3,9 @@
 // 先 GET run 判定可展示性：未结束给状态卡，failed 给错误信息；
 // succeeded 后 GET /runs/{id}/report，422（报告尚未生成）展示生成中态并 3 秒轮询。
 // ready 后按终稿响应形态分流（WP-16 计划决策 1，客观阶段差异非旧版兼容）：
-// - 含非空 blocks（demo_full；M2-6/7 冻结后的目标形态）→ blocks 结构化轨道；
+// - 含非空 blocks（demo_full；M2-7 数据点级溯源冻结后的目标形态）→ blocks 结构化轨道；
 // - 不含 blocks（happy_path 与当前真链）→ marked + DOMPurify 的 markdown 轨道。
-// M2-6/7 冻结、终稿全部结构化后，删除 markdown 终稿分支与 marked/DOMPurify 渲染。
+// M2-7 冻结、终稿全部结构化后，删除 markdown 终稿分支与 marked/DOMPurify 渲染。
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
@@ -103,7 +103,7 @@ async function loadReport(): Promise<void> {
     const parsed = marked.parse(data.content_md, { async: false })
     renderedHtml.value = DOMPurify.sanitize(parsed)
     // 结构化终稿增强：mock demo_full 返回 markdown+blocks 超集；
-    // 真链 M2-6 前仅回 markdown（或溯源端点未就绪导致增强失败），均留在 markdown 轨
+    // 真链 M2-7 前仅回 markdown（或溯源端点未就绪导致增强失败），均留在 markdown 轨
     await reportBlocks.load()
     track.value = reportBlocks.hasBlocks.value ? 'blocks' : 'markdown'
     phase.value = 'ready'
@@ -442,7 +442,7 @@ void init()
           />
         </template>
 
-        <!-- ─── markdown 轨道（M1 既有形态，M2-6/7 冻结后清退） ─── -->
+        <!-- ─── markdown 轨道（M1 既有形态，M2-7 冻结后清退） ─── -->
         <template v-else>
           <header class="report-head">
             <h1

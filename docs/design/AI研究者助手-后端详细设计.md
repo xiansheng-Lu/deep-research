@@ -850,7 +850,7 @@ action 命名空间（契约草案 §13.3）：`<domain>.<verb>`，例如 `run.s
 | `annotation.created` `annotation.updated` `annotation.deleted` | 即时 | 沿用契约草案 §4.5（是否启用由后端评审决定，前端两侧均兼容） |
 | `run.finished` | 即时 | status, summary |
 
-> **事件实现状态（2026-09-13 核对）**：M1/M2-2 实际推送的帧为 stage.started、run.finished（含 status=paused 语义）、conflict.detected、conflict.verdicts；表中 stage.finished/failed、sub_question.*、evidence.fetched、token.usage.update、cost.warning、report.chunk/report.finished 为 M2-3~M2-6 设计目标，尚未实现，以各阶段技术方案与届时冻结契约为准。其中 **report.chunk 报告流 SSE 未进入 M1 冻结契约、M2 不实现**（见 §4.4 状态说明）。
+> **事件实现状态（2026-09-13 核对）**：M1/M2-2 实际推送的帧为 stage.started、run.finished（含 status=paused 语义）、conflict.detected、conflict.verdicts；表中 stage.finished/failed、sub_question.*、evidence.fetched、token.usage.update、cost.warning 为 M2-3/M2-4 设计目标，report.chunk/report.finished 为 M2-7 数据点级溯源设计目标；以各阶段技术方案与届时冻结契约为准。其中 **report.chunk 报告流 SSE 未进入 M1 冻结契约、M2 不实现**（见 §4.4 状态说明）。
 
 **客户端发送**（受控消息）：
 
@@ -897,7 +897,7 @@ action 命名空间（契约草案 §13.3）：`<domain>.<verb>`，例如 `run.s
 
 ### 4.4 SSE 端点
 
-> **实现状态（2026-09-13）**：报告流 SSE **未进入 M1 冻结契约，M1/M2-2 均未实现**（M1 契约对齐时已移除；前端 M1 同步移除 SSE 报告通道，生成中以 run 状态 + WS 驱动、终稿一次性拉取）。本节保留为设计预案：M2-6 结构化报告落地时再评审是否恢复，若恢复须重新冻结契约并同步前端，不得直接按本节开发。已实现的 SSE 仅 M2-1 闲聊 `/api/v1/assistant/chat`（帧形态见冻结契约与《M2-1意图路由与闲聊接口交接》§3.2）。
+> **实现状态（2026-09-13）**：报告流 SSE **未进入 M1 冻结契约，M1/M2-2 均未实现**（M1 契约对齐时已移除；前端 M1 同步移除 SSE 报告通道，生成中以 run 状态 + WS 驱动、终稿一次性拉取）。本节保留为设计预案：M2-7 数据点级溯源（结构化报告）落地时再评审是否恢复，若恢复须重新冻结契约并同步前端，不得直接按本节开发。已实现的 SSE 仅 M2-1 闲聊 `/api/v1/assistant/chat`（帧形态见冻结契约与《M2-1意图路由与闲聊接口交接》§3.2）。
 
 #### 4.4.1 `/runs/{run_id}/report/stream`（设计预案，未实现）
 
@@ -2525,7 +2525,7 @@ class AuditLogger:
 - LLM 主备切换与熔断（`llm.fallback.switched` / `llm.circuit.opened`）
 - **AI 决策留档**（`decision.*`，M2-8 落地）
 
-**AI 决策留档（结论溯源）**：Clarifier/Critic 等判定节点在产出结论的同时，把"判定输入摘要 + 判定结果 + 理由 + 关联证据/分歧 id"结构化写入 `audit_entries.payload`，`action` 取 `decision.clarify` / `decision.critic` 等（事件字段见 §12.1.4）。它回答"为什么追问 / 为什么收敛成这个结论 / 为什么保留分歧"，与报告引文（M2-6 数据点级溯源）互补：引文解决"结论出自哪条信源"，决策留档解决"Agent 为什么这么判"。
+**AI 决策留档（结论溯源）**：Clarifier/Critic 等判定节点在产出结论的同时，把"判定输入摘要 + 判定结果 + 理由 + 关联证据/分歧 id"结构化写入 `audit_entries.payload`，`action` 取 `decision.clarify` / `decision.critic` 等（事件字段见 §12.1.4）。它回答"为什么追问 / 为什么收敛成这个结论 / 为什么保留分歧"，与报告引文（M2-7 数据点级溯源）互补：引文解决"结论出自哪条信源"，决策留档解决"Agent 为什么这么判"。
 
 > 审计日志是**合规与溯源的权威记录**，独立于日志采集链路（即使 Loki 不在线也落库），保留 1 年、经 §4.2.12 `/audit` 查询；与工程运行日志、实时事件的分工见 §12.1.7。
 
@@ -3023,10 +3023,12 @@ K8s 探针：`livenessProbe` 走 `/healthz`，`readinessProbe` 走 `/readyz`，�
 | M2-3 | 实时成本展示 | Pushgateway + Metrics Exporter + WS 推送链路 ≤ 3s |
 | M2-4 | 看板数据接口 | stages/sub_questions/evidence/cost/snapshot 完整 |
 | M2-5 | 用户介入 | pause/resume/intervene 接口 + LangGraph interrupt 联通 |
-| M2-6 | 数据点级溯源 | 报告 JSON Schema + report_citations 落库 |
-| M2-7 | 信源元数据 | 域名/发布时间/类型/可信分级抽取 |
+| M2-6 | 信源元数据抽取 | 来源域名/发布时间/类型/可信分级抽取与去重打分（不实现"证据簇"自动聚类） |
+| M2-7 | 数据点级溯源 | 报告 JSON Schema + report_citations 落库，论断绑定信源与原文片段 |
 | M2-8 | 审计与决策留档 | 全量审计事件覆盖 + `/audit` 可查询接口 + AI 决策留档（Clarifier/Critic 判定理由经 `AuditLogger` 的 `decision.*` 落库，支撑结论溯源/解释，见 §9.3） |
 | M2-9 | OpenAPI 导出 | 前端客户端生成 + CI 校验 |
+
+> M2-6/M2-7 的编号与交付范围以《软件开发计划》§3 M2 里程碑表为唯一事实源（M2-6 信源元数据抽取 → M2-7 数据点级溯源）；M2-8/M2-9 为本表工程工作包延伸编号，SDP §3 未单列，SDP §5.2 映射表已按此口径引用。
 
 ### 15.3 Provider 层验证指标（M1 完成时检查）
 

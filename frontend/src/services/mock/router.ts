@@ -413,7 +413,7 @@ route('GET', '/api/v1/runs/{run_id}', (req, res, params) => {
 // ─── reports ───
 
 // WP-16：demo_full 终稿另存结构化产物，报告路由返回 markdown+blocks 超集
-// （M2-6 契约冻结前的 mock 形态；无结构化产物的剧本仍只返回 markdown）
+// （M2-7 契约冻结前的 mock 形态；无结构化产物的剧本仍只返回 markdown）
 type ReportResponseLike = MockReport & Partial<MockStructuredReport>
 
 function loadOwnedReport(req: IncomingMessage, res: ServerResponse, runId: string): ReportResponseLike | null {
@@ -519,13 +519,13 @@ route('GET', '/api/v1/runs/{run_id}/evidence/{evidence_id}', (req, res, params) 
     return
   }
   // fixture 仅为重点条目手写了全文；其余条目在 mock 层确定性地生成演示全文，
-  // 保证卡片展开交互可演示（真实全文由后端 M2-7 元数据抽取产出）
+  // 保证卡片展开交互可演示（真实全文由后端 M2-6 信源元数据抽取产出）
   const content =
     found.content ??
     `《${found.title}》（${found.domain}）正文摘要：${found.snippet} ` +
       `mock 演示全文：该来源发布于 ${found.published_at ?? '日期不详'}，` +
       `来源类型 ${found.source_type}、可信分级 ${found.credibility}，` +
-      `与子问题的相关度评分为 ${found.relevance_score}。完整原文将在后端 M2-7 元数据抽取落地后提供。`
+      `与子问题的相关度评分为 ${found.relevance_score}。完整原文将在后端 M2-6 信源元数据抽取落地后提供。`
   sendJson(res, 200, { ...found, content })
 })
 
@@ -598,7 +598,7 @@ route('POST', '/api/v1/runs/{run_id}/intervene', async (req, res, params) => {
   )
 })
 
-// ─── M2-6 数据点溯源（WP-10：demo_full 终稿后可拉取，happy_path 无引用返回空列表）───
+// ─── M2-7 数据点级溯源（WP-10：demo_full 终稿后可拉取，happy_path 无引用返回空列表）───
 
 route('GET', '/api/v1/reports/{run_id}/citations', (req, res, params) => {
   const run = loadOwnedRun(req, res, params.run_id)

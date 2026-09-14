@@ -186,7 +186,7 @@ export interface SubQuestionResponse {
   updated_at?: string
 }
 
-// GET /runs/{id}/evidence 响应元素（evidence 表；M2-7 元数据抽取后字段齐全）
+// GET /runs/{id}/evidence 响应元素（evidence 表；M2-6 信源元数据抽取后字段齐全）
 export interface EvidenceResponse {
   id: string
   run_id: string
@@ -381,7 +381,7 @@ export interface AssistantStreamError {
   message: string
 }
 
-// ─── 报告（M1 markdown + M2-6 结构化）───
+// ─── 报告（M1 markdown + M2-7 数据点级溯源结构化）───
 
 // GET /runs/{run_id}/report 与 GET /reports/{report_id} 响应：含 Markdown 正文（M1 形态）
 export interface ReportResponse {
@@ -411,18 +411,18 @@ export interface ReportCitation {
 
 // 结构化区块（终稿渲染的唯一允许形态，[前端详细设计 §10.2]）
 export interface ReportBlock {
-  // M2-6 冻结后为必填；当前按 LLD 样例声明为可选
+  // M2-7 冻结后为必填；当前按 LLD 样例声明为可选
   id?: string
   type: ReportBlockType
   claim_id?: string
   text: string
   confidence?: ClaimConfidence
   citations?: ReportCitation[]
-  // dispute 区块关联的冲突 id；M2-6 契约冻结前仅 mock 产出，缺省时按纯文本分歧块渲染
+  // dispute 区块关联的冲突 id；M2-7 契约冻结前仅 mock 产出，缺省时按纯文本分歧块渲染
   conflict_id?: string
 }
 
-// GET /reports/{report_id} 结构化响应（M2-6 冻结后与 ReportResponse 并存或替代，待联调确认）
+// GET /reports/{report_id} 结构化响应（M2-7 冻结后与 ReportResponse 并存或替代，待联调确认）
 export interface StructuredReportResponse {
   id: string
   run_id: string
@@ -432,14 +432,14 @@ export interface StructuredReportResponse {
   token_used?: number
   created_at?: string
   updated_at?: string
-  // M2-6 冻结前 mock 在同一路由返回 markdown+blocks 超集，以下两字段随超集附带；
+  // M2-7 冻结前 mock 在同一路由返回 markdown+blocks 超集，以下两字段随超集附带；
   // 冻结后结构化终稿若不再回传 markdown，前端 markdown 终稿分支一并删除，此处随之清退
   template_id?: string
   content_md?: string
 }
 
 // GET /reports/{report_id}/citations 响应元素：引用 + 证据回溯所需元数据
-// （M2-6 冻结；展示字段在 block citation 基础上补全证据来源信息）
+// （M2-7 冻结；展示字段在 block citation 基础上补全证据来源信息）
 export interface ReportCitationItem extends ReportCitation {
   url: string
   title: string

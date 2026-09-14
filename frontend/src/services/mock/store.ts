@@ -147,7 +147,7 @@ export interface MockCitation {
   published_at?: string | null
 }
 
-// 结构化区块（对齐 ReportBlock；M2-6 WP-16 消费）
+// 结构化区块（对齐 ReportBlock；M2-7 WP-16 消费）
 export interface MockReportBlock {
   id?: string
   type: 'conclusion' | 'evidence' | 'dispute' | 'limitation'
