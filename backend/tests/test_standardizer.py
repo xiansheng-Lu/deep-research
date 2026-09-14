@@ -121,8 +121,24 @@ class TestClassifySourceLevel:
         assert classify_source_level("blog.example.org") == "tertiary"
 
     def test_case_insensitive(self) -> None:
+        # 独立点分隔标签 news → 弱兜底命中 secondary
         assert classify_source_level("NEWS.Example.COM") == "secondary"
-        assert classify_source_level("XHNEWS.COM") == "secondary"
+        # M2-6 AC-2：连写标签 xhnews 不再因子串包含误判为媒体
+        assert classify_source_level("XHNEWS.COM") == "tertiary"
+
+    def test_official_and_academic_domains_are_primary(self) -> None:
+        # M2-6 规则表：政府/国际组织/学术出版商
+        assert classify_source_level("miit.gov.cn") == "primary"
+        assert classify_source_level("stats.gov.cn") == "primary"
+        assert classify_source_level("who.int") == "primary"
+        assert classify_source_level("arxiv.org") == "primary"
+        assert classify_source_level("nature.com") == "primary"
+
+    def test_china_media_and_community(self) -> None:
+        assert classify_source_level("xinhuanet.com") == "secondary"
+        assert classify_source_level("thepaper.cn") == "secondary"
+        assert classify_source_level("zhihu.com") == "tertiary"
+        assert classify_source_level("stackoverflow.com") == "tertiary"
 
 
 # ---------------------------------------------------------------------------
@@ -131,46 +147,51 @@ class TestClassifySourceLevel:
 
 
 class TestClassifyCredibility:
+    """M2-6 §5.4 新矩阵：权威基准 + relevance 至多降一档 + primary 地板 B。"""
+
     def test_primary_high_score_keeps_a(self) -> None:
         ev = _ev(ev_id="e1", domain="gov.cn", source_level="primary", relevance_score=0.95)
         assert classify_credibility(ev) == "A"
 
-    def test_primary_mid_score_drops_to_b(self) -> None:
+    def test_primary_mid_score_still_a(self) -> None:
+        # 0.6 ≥ 0.2：维持基础档 A（旧实现会误降 B）
         ev = _ev(ev_id="e1", domain="gov.cn", source_level="primary", relevance_score=0.6)
-        assert classify_credibility(ev) == "B"
+        assert classify_credibility(ev) == "A"
 
-    def test_primary_low_score_drops_to_c(self) -> None:
-        ev = _ev(ev_id="e1", domain="gov.cn", source_level="primary", relevance_score=0.3)
-        assert classify_credibility(ev) == "C"
+    def test_primary_low_score_floor_is_b(self) -> None:
+        # 0.2 以下只降一档，且 primary 地板 B（旧实现降到 C，政府站也评 C 的失真）
+        ev = _ev(ev_id="e1", domain="gov.cn", source_level="primary", relevance_score=0.1)
+        assert classify_credibility(ev) == "B"
 
     def test_secondary_high_score_keeps_b(self) -> None:
         ev = _ev(ev_id="e1", domain="news.com", source_level="secondary", relevance_score=0.9)
         assert classify_credibility(ev) == "B"
 
-    def test_secondary_mid_score_drops_to_c(self) -> None:
+    def test_secondary_mid_score_still_b(self) -> None:
         ev = _ev(ev_id="e1", domain="news.com", source_level="secondary", relevance_score=0.6)
-        assert classify_credibility(ev) == "C"
+        assert classify_credibility(ev) == "B"
 
-    def test_secondary_low_score_drops_to_d(self) -> None:
-        ev = _ev(ev_id="e1", domain="news.com", source_level="secondary", relevance_score=0.2)
-        assert classify_credibility(ev) == "D"
+    def test_secondary_low_score_drops_one_to_c(self) -> None:
+        ev = _ev(ev_id="e1", domain="news.com", source_level="secondary", relevance_score=0.19)
+        assert classify_credibility(ev) == "C"
 
     def test_tertiary_high_score_keeps_c(self) -> None:
         ev = _ev(ev_id="e1", domain="example.com", source_level="tertiary", relevance_score=0.9)
         assert classify_credibility(ev) == "C"
 
-    def test_tertiary_mid_score_drops_to_d(self) -> None:
+    def test_tertiary_mid_score_still_c(self) -> None:
+        # 0.6 ≥ 0.2：维持 C（旧实现误降 D）
         ev = _ev(ev_id="e1", domain="example.com", source_level="tertiary", relevance_score=0.6)
-        assert classify_credibility(ev) == "D"
+        assert classify_credibility(ev) == "C"
 
     def test_tertiary_low_score_clamps_to_d(self) -> None:
         ev = _ev(ev_id="e1", domain="example.com", source_level="tertiary", relevance_score=0.05)
         assert classify_credibility(ev) == "D"
 
-    def test_missing_relevance_score_treated_as_zero(self) -> None:
-        # score=0 → 2 步降级
+    def test_missing_relevance_score_treated_as_low(self) -> None:
+        # 缺分数按 0 处理：primary 地板 B（不再像旧实现降到 C）
         ev = _ev(ev_id="e1", source_level="primary", relevance_score=0.0)
-        assert classify_credibility(ev) == "C"
+        assert classify_credibility(ev) == "B"
 
 
 # ---------------------------------------------------------------------------
@@ -263,18 +284,17 @@ class TestRunDedupAndSort:
 
     @pytest.mark.asyncio
     async def test_sort_by_credibility_then_relevance_score_desc(self) -> None:
-        # A 应排在 B 之前，相同 credibility 内按 relevance_score 降序
+        # M2-6 新矩阵：A(primary) → B(secondary) → C(tertiary)
         evs = [
-            _ev(ev_id="e_tertiary_low", domain="example.com", relevance_score=0.6),
+            _ev(ev_id="e_tertiary_mid", domain="example.com", relevance_score=0.6),
             _ev(ev_id="e_secondary_high", domain="reuters.com", relevance_score=0.9),
             _ev(ev_id="e_primary_mid", domain="www.stats.gov.cn", relevance_score=0.6),
         ]
         subqs = [_subq("sq1")]
         patch = await run(_state(evidence=evs, subqs=subqs))
         result_ids = [e["id"] for e in patch["standardized_evidence"]]
-        # 期望：B(primary+0.6) → B(secondary+0.9) → D(tertiary+0.6)
-        # 同 B 按 relevance_score 降序 → secondary(0.9) 在前
-        assert result_ids == ["e_secondary_high", "e_primary_mid", "e_tertiary_low"]
+        # primary/0.6 → A；secondary/0.9 → B；tertiary/0.6 → C
+        assert result_ids == ["e_primary_mid", "e_secondary_high", "e_tertiary_mid"]
 
     @pytest.mark.asyncio
     async def test_sort_within_same_credibility(self) -> None:

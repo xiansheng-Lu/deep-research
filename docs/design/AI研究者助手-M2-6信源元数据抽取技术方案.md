@@ -1,6 +1,6 @@
 # AI 研究者助手 · M2-6 信源元数据抽取阶段技术方案
 
-- 版本：v0.1（实施前评审稿，2026-09-14；实现冻结后升 v1.0）
+- 版本：v1.0（实现冻结，2026-09-14；v0.1 评审稿当日经评审通过后落地，冻结记录见 §13）
 - 范围：证据信源四元组（来源域名/发布时间/信源类型/可信分级）的真实抽取与落库、按子问题的相关性打分与排序、跨子问题去重口径固化、缺失元数据标记；**零新增 REST/WS 契约、零数据库迁移**
 - 上游依据：《AI研究者助手-软件需求规格说明书》§6 流程 5「材料标准化与溯源」（统一抽取域名/发布时间/类型/可信分级、去重并按相关性打分）、§8（可信分级字段必填、元数据缺失标记「来源信息不全」）；《AI研究者助手-软件开发计划》§3 M2-6、§5.1/§5.2（M2-6 不直接对应 A 项，A2 溯源覆盖率由 M2-7 承接）；《AI研究者助手-后端详细设计》§5.3.7 Evidence、§6.5.4 researcher、§6.5.5 standardizer；《AI研究者助手-前端详细设计》§10.7 枚举（SourceType/SourceLevel/Credibility）、§11.3 EvidenceCard/SourceBadge；《AI研究者助手-前端M2任务分解与方案设计》WP-8/WP-13/WP-14（M2-6 随 evidence 字段核对，「不另设对接点」）
 - 编号口径：以《软件开发计划》§3 M2 里程碑表为唯一事实源——**M2-6 信源元数据抽取 → M2-7 数据点级溯源**（2026-09-14 编号漂移已统一，详设 §15.2 已同步）
@@ -280,3 +280,33 @@ Provider 融合（`blend_score`）：
 3. 文档：实现冻结后本文件升 v1.0 回填实测结论；`backend/README.md` M2 里程碑行回填 M2-6 状态（指针引 SDP §3）；
 4. 联调：`docs/feedback/M2-6信源元数据抽取交接.md`（前端无新对接点，重点为 evidence 字段值分布抽验与 SourceBadge 回归），回归关闭后移入 archive/；
 5. 不在本包的动作（证据簇聚类、internal 私域、LLM/向量评判、规则配置化、报告溯源 M2-7、历史数据回刷）以 §1.1 为准，流转 M3/M5/M2-7，不临时扩包。
+
+## 13. 实现冻结记录（v1.0，2026-09-14）
+
+### 13.1 落地清单（对照 §3 落位表）
+
+| 组件 | 文件 | 结论 |
+| --- | --- | --- |
+| 信源规则表与分类器 | `app/retrieval/source_rules.py`（新增） | 四张规则表 + 新闻标签弱兜底 + IP/空域安全兜底，返回 SourceClassification(type,level,rule) |
+| 相关性打分器 | `app/retrieval/ranker.py`（改造） | score_relevance/blend_score/score_hit/rerank；停用字表；2000 字符正文上限 |
+| 页面元数据补采 | `app/retrieval/page_metadata.py`（新增） | fetch_url 经 MockTransport 离线验证；httpx client 级超时、信号量并发、空结果不入表、全异常静默 |
+| fan-out 接入 | `researcher_fan_out.py`（改造） | extract 后补缺日期、逐 hit 打分写入 relevance_score、占位中性 search、metadata 初始留痕、子问题内按分排序 |
+| 标准化节点 | `standardizer.py`（改造） | source_rules 落定 type/level、新 credibility 矩阵、metadata 合并留痕（source_rule/missing_fields） |
+| state/落库/配置 | `state.py`/`persistence.py`/`config.py`/`.env.example` | EvidenceDict 补 relevance_score/metadata_；persist_evidence 透传 metadata_；3 个 SOURCE_PAGE_* 配置 |
+| 测试 | source_rules/ranker/page_metadata 新增 3 文件；standardizer/researcher_fan_out/conftest 更新；test_integration_m26 真库 | 见 §13.3 |
+
+### 13.2 与评审稿（v0.1）的实现偏差
+
+1. **补采超时落位**：评审稿 §5.5 写「`_fetch_one` 单页超时参数」，实现为消除 ASYNC109（async 函数 timeout 形参告警），把超时放到 `httpx.AsyncClient(timeout=...)` 客户端级，语义等价、更贴合 fan-out 既有 wait_for 外包口径。
+2. **测试环境默认关闭补采**：`tests/conftest.py` 的最小环境变量集加 `SOURCE_PAGE_METADATA_ENABLED=false`，避免假检索（无日期）在单测中发起真实网络抓取；补采行为由 test_page_metadata 用 httpx MockTransport 专门开启验证。生产默认仍为 true。
+3. **弱兜底匹配范围**：评审稿写「对最后两级 host 整词比较」，实现为对全部点分隔标签做整词集合匹配（`news.example.com` 的独立标签 news 命中，`fake-news`/`mynews` 连写不命中），更准确表达「整词」语义，AC-2 样例全部满足。
+4. **空页面不入补采结果**：抓到 HTML 但无任何有效元数据（date/sitename/author 全空）时不入结果字典，published_at_source 保持 fan-out 的 "null"，避免把「没补到」误记成「补到空」。
+5. credibility 重写后 mypy 较基线**减少 3 条**历史类型错误（旧 float/字典索引报错随重写消失），非新增。
+
+### 13.3 门禁证据
+
+- 全量 `pytest -q`：**576 passed**（离线 + 全部真库集成，无跳过）；其中 M2-6 新增 source_rules/ranker/page_metadata 单测 74 条 + m26_orm 真库 1 条（共 75 个新增用例）；更新 standardizer/fan-out 断言以 §5.4 新矩阵为准。
+- 真库：`tests/test_integration_m26.py` 在 m26_orm schema 验证 stats.gov.cn→official_doc/primary/**A**/relevance 0.86、reuters 低相关→news/secondary/C（只降一档）、zhihu→community/tertiary/C，metadata_ JSONB 五键往返、missing_fields 正确；跑后 schema DROP 无残留；无迁移（head 仍 0004）。
+- ruff：本批全部变更文件 check 全净、format 已应用。
+- mypy：54 条，相对 dev 基线 57 条**零新增**（-3 为旧错误随重写消除），worktree 基线 diff 仅删除行。
+- 契约零变化（AC-11）：重新导出 OpenAPI 与 `docs/contract/openapi-m2-5.json` 内容空 diff（已还原文件），24 路径与 Evidence schema 不变，本包不产 openapi-m2-6 快照。

@@ -7,7 +7,7 @@
 """
 
 from enum import StrEnum
-from typing import Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 
 class ResearchStage(StrEnum):
@@ -50,6 +50,10 @@ class EvidenceDict(TypedDict):
     fingerprint: str
     published_at: str | None
     fetched_at: str
+    # M2-6：按子问题的相关性打分（fan-out 写入，standardizer 参与分级/排序）
+    relevance_score: NotRequired[float]
+    # M2-6：元数据留痕（分类依据/分数构成/日期来源/缺失字段），落 metadata_ 列
+    metadata_: NotRequired[dict[str, Any]]
 
 
 class ConflictDict(TypedDict):

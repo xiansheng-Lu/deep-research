@@ -43,9 +43,11 @@ from app.orchestrator.state import (
     SubQuestionDict,
 )
 from app.quota.tiers import Tier
-from app.retrieval.base import RetrievalRequest, RetrievalSource
+from app.retrieval.base import RetrievalRequest
 from app.retrieval.client import RetrievalClient, get_default_client
 from app.retrieval.dedup import fingerprint
+from app.retrieval.page_metadata import fetch_page_metadata
+from app.retrieval.ranker import blend_score, score_relevance
 
 if TYPE_CHECKING:
     from app.realtime.hub import RealtimeHub
@@ -136,16 +138,19 @@ def _hit_to_evidence_dict(
     hit_url: str | None,
     hit_title: str,
     hit_snippet: str,
-    hit_source: RetrievalSource,
     hit_published_at: datetime | None,
     hit_fetched_at: datetime | None,
     sub_question_id: str,
     fingerprint_str: str,
+    relevance_score: float,
 ) -> EvidenceDict:
-    """把 ``RetrievalHit`` 序列化成 ``EvidenceDict`` 形态。"""
+    """把 ``RetrievalHit`` 序列化成 ``EvidenceDict`` 形态。
+
+    retrieve 阶段只写中性占位（source_type=search / level=tertiary /
+    credibility=C）；权威类型与分级由 standardizer 节点按域名规则落定。
+    """
     url = hit_url or ""
     domain = _extract_domain(url)
-    source_type = "news" if hit_source == RetrievalSource.WEB else "search"
     return {
         "id": new_ulid(),
         "sub_question_id": sub_question_id,
@@ -153,13 +158,14 @@ def _hit_to_evidence_dict(
         "domain": domain,
         "title": (hit_title or "").strip()[:512],
         "snippet": (hit_snippet or "").strip()[:500],
-        # 标 source_type；source_level / credibility 由 standardizer 节点重新判定
-        "source_type": source_type,
+        # 占位值不伪装分类结果；standardizer 按 source_rules 重新判定
+        "source_type": "search",
         "source_level": "tertiary",
         "credibility": "C",
         "fingerprint": fingerprint_str,
         "published_at": hit_published_at.isoformat() if hit_published_at else None,
         "fetched_at": (hit_fetched_at or datetime.now(tz=UTC)).isoformat(),
+        "relevance_score": relevance_score,
     }
 
 
@@ -215,24 +221,71 @@ async def _research_one(
 
     # 单子问题内部仍按 fingerprint 去重
     seen_fps: set[str] = set()
-    evidence: list[EvidenceDict] = []
+    deduped_hits = []
     for hit in extracted:
         fp = fingerprint(hit)
         if fp in seen_fps:
             continue
         seen_fps.add(fp)
-        evidence.append(
-            _hit_to_evidence_dict(
-                hit_url=hit.url,
-                hit_title=hit.title,
-                hit_snippet=hit.snippet,
-                hit_source=hit.source,
-                hit_published_at=hit.published_at,
-                hit_fetched_at=hit.fetched_at,
-                sub_question_id=subq_id,
-                fingerprint_str=fp,
+        deduped_hits.append((hit, fp))
+
+    # M2-6 T3：对 provider 未给发布时间的命中，小预算抓取页面补采元数据；
+    # 失败静默（published_at 保持 None），不影响子问题成功状态
+    missing_date_urls = [hit.url for hit, _fp in deduped_hits if not hit.published_at and hit.url]
+    page_meta: dict[str, Any] = {}
+    if missing_date_urls:
+        try:
+            page_meta = await fetch_page_metadata(missing_date_urls)
+        except Exception as exc:  # noqa: BLE001 - 补采整体异常也降级为空
+            log.warning(
+                "页面元数据补采异常，按无补采处理",
+                extra={"run_id": run_id, "sub_question_id": subq_id, "error": repr(exc)},
             )
+            page_meta = {}
+
+    evidence: list[EvidenceDict] = []
+    for hit, fp in deduped_hits:
+        published_at = hit.published_at
+        published_source = "provider" if published_at is not None else "null"
+        site_name: str | None = None
+        if published_at is None and hit.url:
+            meta = page_meta.get(hit.url)
+            if meta is not None and meta.published_at is not None:
+                published_at = meta.published_at
+                published_source = "page"
+                site_name = meta.site_name
+        # M2-6 T2：按子问题计算词面相关性并与 provider 分融合
+        lexical = score_relevance(
+            subq["question"],
+            title=hit.title,
+            snippet=hit.snippet,
+            content=hit.content,
         )
+        relevance = blend_score(hit.score, lexical)
+        ev = _hit_to_evidence_dict(
+            hit_url=hit.url,
+            hit_title=hit.title,
+            hit_snippet=hit.snippet,
+            hit_published_at=published_at,
+            hit_fetched_at=hit.fetched_at,
+            sub_question_id=subq_id,
+            fingerprint_str=fp,
+            relevance_score=relevance,
+        )
+        # retrieve 阶段先留打分/日期来源留痕；分类依据由 standardizer 补写
+        ev["metadata_"] = {
+            "relevance": {
+                "provider": round(float(hit.score or 0.0), 3),
+                "lexical": lexical,
+                "blended": relevance,
+            },
+            "published_at_source": published_source,
+            **({"site_name": site_name} if site_name else {}),
+        }
+        evidence.append(ev)
+
+    # M2-6 T2：子问题内部证据按相关性降序（standardizer 仍以可信度为首要序）
+    evidence.sort(key=lambda e: float(e.get("relevance_score") or 0.0), reverse=True)
 
     if not evidence:
         return (

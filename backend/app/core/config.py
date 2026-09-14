@@ -86,6 +86,14 @@ class Settings(BaseSettings):
     bocha_base_url: str = Field(default="https://api.bochaai.com/v1", alias="BOCHA_BASE_URL")
     bocha_timeout_seconds: float = Field(default=30.0, alias="BOCHA_TIMEOUT_SECONDS")
 
+    # ===== 信源元数据页面补采（M2-6） =====
+    # Provider 不返回发布时间时，是否抓取页面 HTML 经 trafilatura 补采元数据
+    source_page_metadata_enabled: bool = Field(default=True, alias="SOURCE_PAGE_METADATA_ENABLED")
+    # 单页抓取超时（秒），超时静默跳过
+    source_page_fetch_timeout_seconds: float = Field(default=5.0, alias="SOURCE_PAGE_FETCH_TIMEOUT_SECONDS")
+    # 每子问题补采页面数上限（只补缺发布时间者，0 等价关闭）
+    source_page_fetch_per_subquestion: int = Field(default=3, alias="SOURCE_PAGE_FETCH_PER_SUBQUESTION")
+
     # ===== 成本治理 =====
     quota_default_tier: Literal["quick", "standard", "deep", "extreme"] = Field(
         default="standard", alias="QUOTA_DEFAULT_TIER"

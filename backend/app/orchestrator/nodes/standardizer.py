@@ -1,21 +1,20 @@
-"""标准化节点（§6.5.5 standardizer）。
+"""标准化节点（§6.5.5 standardizer，M2-6 增强）。
 
 契约：
-- 输入：``ResearchState`` 含 ``evidence``（WP-5.4 检索阶段产出的 ``EvidenceDict`` 列表）
-  与 ``sub_questions``（用于收敛 ``evidence_ids`` 引用）。
+- 输入：``ResearchState`` 含 ``evidence``（retrieve 阶段产出的 ``EvidenceDict``）
+  与 ``sub_questions``（收敛 ``evidence_ids`` 引用）。
 - 输出：合并到 state 的字段包括 ``standardized_evidence`` / ``sub_questions`` /
     ``current_stage`` / ``updated_at``。
-- 行为：
+- 行为（M2-6）：
     1. 跨子问题按 ``fingerprint`` 去重，保留首次出现的证据。
-    2. 重新判定 ``source_level``：gov/edu/学术域 → primary；已知媒体域 → secondary；
-       其余 → tertiary。
-    3. 重新判定 ``credibility``：结合 ``source_level`` 与 ``relevance_score`` 推导
-       A/B/C/D 评级（score>=0.8 维持基础；>=0.5 降一档；<0.5 降两档；最低 D）。
-    4. 排序：按 ``(credibility, relevance_score)`` ``reverse=False`` 实现 ——
-       字符串 ``A<B<C<D`` 升序恰好与"可信度高者靠前"语义一致。
-       （注：§6.5.5 原文 ``reverse=True`` 在字母序下与语义冲突，
-       本实现以语义为准。）
-    5. 收敛 ``sub_questions[*].evidence_ids``：去除因去重而消失的证据 ID。
+    2. ``retrieval.source_rules.classify_source`` 按域名规则表落定
+       ``source_type``（official_doc/news/community/search）与
+       ``source_level``（primary/secondary/tertiary）。
+    3. ``classify_credibility`` 按「权威基准 + relevance 至多降一档 +
+       primary 地板 B」推导 A/B/C/D（§5.4，可信度与相关性解耦）。
+    4. 写 ``metadata_`` 留痕：命中规则、缺失字段（合并 fan-out 已写的
+       相关性/发布时间来源）。
+    5. 排序 credibility 升序（A→D）+ 同级 relevance 降序；收敛子问题引用。
 """
 
 from __future__ import annotations
@@ -33,6 +32,7 @@ from app.orchestrator.state import (
     ResearchState,
     SubQuestionDict,
 )
+from app.retrieval.source_rules import SourceClassification, classify_source
 
 if TYPE_CHECKING:
     from app.realtime.hub import RealtimeHub
@@ -42,39 +42,11 @@ log = get_logger("orchestrator.standardizer")
 SourceLevel = Literal["primary", "secondary", "tertiary"]
 Credibility = Literal["A", "B", "C", "D"]
 
-# ---------------------------------------------------------------------------
-# 来源等级 / 可信度 启发式（M1 简化版）
-# ---------------------------------------------------------------------------
+# 可信度与相关性解耦后的相关性分界（M2-6 方案 §5.4）
+_RELEVANCE_LOW_THRESHOLD = 0.2
 
-# 政府 / 教育 / 学术机构 → primary
-_PRIMARY_DOMAIN_SUFFIXES: tuple[str, ...] = (
-    ".gov.cn",
-    ".gov",
-    ".edu.cn",
-    ".edu",
-    ".ac.cn",
-    ".ac",
-)
-
-# 已知新闻媒体关键字（含二级后缀即可）→ secondary
-_SECONDARY_DOMAIN_KEYWORDS: tuple[str, ...] = (
-    "news",
-    "press",
-    "times",
-    "reuters",
-    "xinhua",
-    "bloomberg",
-    "bbc",
-    "cnn",
-    "nytimes",
-    "wsj",
-    "ft.com",
-    "economist",
-    "guardian",
-)
-
-# 可信度等级降序映射：基础等级 + score 阶梯 → 调整步数
-_SOURCE_LEVEL_BASE: dict[SourceLevel, Credibility] = {
+# 来源等级 → 基础可信档（高相关时的档位）
+_SOURCE_LEVEL_BASE: dict[str, Credibility] = {
     "primary": "A",
     "secondary": "B",
     "tertiary": "C",
@@ -85,47 +57,38 @@ _RANK_TO_CREDIBILITY: tuple[Credibility, ...] = ("A", "B", "C", "D")
 
 
 def classify_source_level(domain: str | None) -> SourceLevel:
-    """按域名启发式判定来源等级。
-
-    规则：
-    - 空域名 / ``None`` → tertiary
-    - 命中 ``_PRIMARY_DOMAIN_SUFFIXES`` → primary
-    - 命中 ``_SECONDARY_DOMAIN_KEYWORDS`` 关键字 → secondary
-    - 其余 → tertiary
-    """
-    d = (domain or "").lower().strip()
-    if not d:
-        return "tertiary"
-    for suffix in _PRIMARY_DOMAIN_SUFFIXES:
-        if d.endswith(suffix):
-            return "primary"
-    for kw in _SECONDARY_DOMAIN_KEYWORDS:
-        if kw in d:
-            return "secondary"
-    return "tertiary"
+    """按域名规则表判定来源等级（保留函数名以兼容既有调用方/测试）。"""
+    return classify_source(domain).source_level  # type: ignore[return-value]
 
 
 def classify_credibility(ev: EvidenceDict) -> Credibility:
-    """根据 ``source_level`` 与 ``relevance_score`` 推导可信度 A/B/C/D。
+    """按「权威基准 + relevance 微调」推导可信度 A/B/C/D（M2-6 方案 §5.4）。
 
-    规则（M1 简化版）：
-    - ``source_level`` 决定基础等级：primary=A / secondary=B / tertiary=C
-    - ``relevance_score`` 决定调整步数：
-        - score >= 0.8 → 0 步（维持基础）
-        - score >= 0.5 → 1 步
-        - score < 0.5  → 2 步（最低夹到 D）
+    - primary：高相关（≥0.2）A；低相关降一档至 **B（地板，不再降到 C/D）**；
+    - secondary：高相关 B；低相关至多降一档至 C；
+    - tertiary：高相关 C；低相关 D。
+
+    缺失发布时间不参与降级（权威政策/技术文档常无日期）；可信度只回答
+    「信源本身是否权威」，弱相关应在排序中靠后而非被否定可信度。
     """
-    base = _SOURCE_LEVEL_BASE[ev["source_level"]]
+    base = _SOURCE_LEVEL_BASE.get(ev.get("source_level") or "tertiary", "C")
     score = float(ev.get("relevance_score") or 0.0)
-    if score >= 0.8:
-        steps = 0
-    elif score >= 0.5:
-        steps = 1
-    else:
-        steps = 2
+    steps = 0 if score >= _RELEVANCE_LOW_THRESHOLD else 1
     base_idx = _CREDIBILITY_RANK[base]
     new_idx = min(len(_CREDIBILITY_RANK) - 1, base_idx + steps)
     return _RANK_TO_CREDIBILITY[new_idx]
+
+
+def _missing_fields(ev: EvidenceDict) -> list[str]:
+    """汇总元数据缺失字段（PRD §8「来源信息不全」的承载）。
+
+    domain/source_type/source_level/credibility 由本节点必有，不列入；
+    当前仅发布时间可能缺失。
+    """
+    missing: list[str] = []
+    if not ev.get("published_at"):
+        missing.append("published_at")
+    return missing
 
 
 def dedupe_by_fingerprint(raw: list[EvidenceDict]) -> list[EvidenceDict]:
@@ -219,14 +182,25 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
     # 1) 跨子问题去重
     deduped = dedupe_by_fingerprint(raw)
 
-    # 2) 分类：source_level + credibility
+    # 2) 分类：域名规则表落定 source_type/source_level + credibility 新模型
     classified: list[EvidenceDict] = []
     for ev in deduped:
+        classification: SourceClassification = classify_source(ev.get("domain"))
         new_ev: EvidenceDict = {
             **ev,
-            "source_level": classify_source_level(ev.get("domain", "")),
+            "source_type": classification.source_type,
+            "source_level": classification.source_level,
         }
         new_ev["credibility"] = classify_credibility(new_ev)
+        # metadata 留痕：合并 fan-out 已写的相关性/日期来源，补分类依据与缺失字段
+        meta = dict(ev.get("metadata_") or {})
+        meta["source_rule"] = classification.rule
+        missing = _missing_fields(new_ev)
+        if missing:
+            meta["missing_fields"] = missing
+        else:
+            meta.pop("missing_fields", None)
+        new_ev["metadata_"] = meta
         classified.append(new_ev)
 
     # 3) 排序：按 credibility 升序（A→B→C→D）+ relevance_score 降序

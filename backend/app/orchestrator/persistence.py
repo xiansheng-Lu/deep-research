@@ -235,6 +235,8 @@ async def persist_evidence(
             fingerprint=ev["fingerprint"],
             published_at=_parse_dt(ev.get("published_at")),
             fetched_at=_parse_dt(ev.get("fetched_at")) or datetime.now(tz=UTC),
+            # M2-6：分类/打分/日期来源留痕；缺省空 dict（不覆盖既有行）
+            metadata_=ev.get("metadata_") or {},
         )
         session.add(row)
         added.append(row)

@@ -32,6 +32,8 @@ _REQUIRED_ENV: dict[str, str] = {
     "OBJECT_STORAGE_ACCESS_KEY": "test",
     "OBJECT_STORAGE_SECRET_KEY": "test-secret",
     "OBJECT_STORAGE_BUCKET": "test-bucket",
+    # M2-6：离线测试不发真实页面抓取；补采行为在 test_page_metadata 专门开启
+    "SOURCE_PAGE_METADATA_ENABLED": "false",
 }
 
 
