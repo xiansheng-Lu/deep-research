@@ -1,6 +1,6 @@
 // 结构化终稿（blocks 轨）取数与索引（WP-16；[前端详细设计 §7.4 / §10.2]）
-// mock-first：GET /reports/{run_id} 在 demo_full 返回 markdown+blocks 超集；
-// 真实后端 M2-7 数据点级溯源冻结前仅回 markdown（无 blocks），页面据 hasBlocks 留在 markdown 轨。
+// M2-7 冻结后真链与 mock demo_full 同形态：GET /reports/{run_id} 返回 markdown+outline/blocks 超集，
+// 终稿 blocks 非空走 blocks 轨；draft/历史报告与 mock happy_path 的 blocks 为空，留在 markdown 轨。
 // 本组合式只负责取数/索引/交互状态，组件不直接发 REST（[前端详细设计 §10.1]）。
 import { computed, ref } from 'vue'
 import { getReportCitations, getStructuredReport } from '@/services/api/reports'
@@ -24,8 +24,8 @@ export function useReportBlocks(runId: string) {
 
   const blocks = computed<ReportBlock[]>(() => report.value?.blocks ?? [])
   const outline = computed<StructuredReportResponse['outline']>(() => report.value?.outline ?? [])
-  // 终稿是否走 blocks 轨：响应含非空 blocks（demo_full 与后端 M2-7 冻结后的目标形态）。
-  // M2-7 冻结、终稿全部结构化后，ReportView 的 markdown 终稿分支随之删除（详设 §11.4）。
+  // 终稿是否走 blocks 轨：响应含非空 blocks（真链 M2-7 终稿与 mock demo_full 同形态）；
+  // blocks 为空（draft/历史报告、mock happy_path）时 ReportView 留在 markdown 轨。
   const hasBlocks = computed(() => blocks.value.length > 0)
 
   // 索引 1：marker（如 "[1]"）→ 引用项，供 CitationMarker 悬停卡与点击定位
@@ -160,8 +160,7 @@ export function useReportBlocks(runId: string) {
       citations.value = citationList
       conflicts.value = conflictList
     } catch (err) {
-      // 真链 M2-7 前 citations/conflicts 端点可能未就绪：增强失败不推翻 markdown 轨，
-      // ReportView 按 hasBlocks=false 继续渲染 markdown（计划 §五真链验收）
+      // 结构化增强三路中任一路失败：不推翻渲染，ReportView 按 hasBlocks=false 留在 markdown 轨
       error.value = err as ApiError
     } finally {
       loading.value = false

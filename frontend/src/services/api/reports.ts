@@ -15,9 +15,8 @@ export function getReport(runId: string): Promise<ReportResponse> {
 }
 
 // 获取结构化终稿（WP-16 blocks 轨道）。
-// M2-7 契约冻结前与 getReport 同路径：mock 对结构化剧本返回 markdown+blocks 超集；
-// 真实后端当前仅回 markdown（无 blocks 字段，页面据此走 markdown 轨道）。
-// M2-7 冻结后若路径或形态调整，只改本函数与 StructuredReportResponse 类型。
+// M2-7 冻结：GET /reports/{run_id} 与 GET /runs/{run_id}/report 同为 markdown+outline/blocks 超集，
+// 终稿 blocks 非空走 blocks 轨；draft/历史报告 blocks 为空，页面走 markdown 轨。
 export function getStructuredReport(runId: string): Promise<StructuredReportResponse> {
   return http<StructuredReportResponse>(`/reports/${encodeURIComponent(runId)}`)
 }

@@ -413,9 +413,32 @@ function pickConflictShape(): Record<string, unknown> {
 
 // ─── 终态产物：Markdown 报告 + 结构化报告 + citations ───
 
-// marker 与证据一一对应（[1]..[12]），blocks 引用时直接选取
+// 各终稿 block 引用的证据 id（顺序与 buildDemoBlocks 的 block 顺序一致），
+// 是「哪些证据被终稿引用」的唯一事实源
+const BLOCK_CITATION_IDS: string[][] = [
+  ['ev01', 'ev09'],
+  ['ev02'],
+  ['ev01', 'ev06'],
+  ['ev03'],
+  ['ev07'],
+  ['ev05', 'ev06', 'ev08'],
+  ['ev05', 'ev12'],
+  ['ev06', 'ev11'],
+  ['ev10'],
+  ['ev09', 'ev11'],
+  ['ev09'],
+  ['ev04'],
+  ['ev12'],
+  ['ev01', 'ev11']
+]
+
+// 仅被 block 引用的证据才占 marker：按材料池顺序编号（对齐真链 GET /reports/{run_id}/citations
+// 语义——未被任何 block 引用的证据不占号、不进信源索引）。demo 12 条恰好全被引，输出仍为 [1]..[12]
+const CITED_EVIDENCE_IDS = new Set<string>(BLOCK_CITATION_IDS.flat())
 const CITATION_MARKERS: Record<string, string> = Object.fromEntries(
-  buildDemoEvidence('').map((e, i) => [e.id, `[${i + 1}]`])
+  buildDemoEvidence('')
+    .filter((e) => CITED_EVIDENCE_IDS.has(e.id))
+    .map((e, i) => [e.id, `[${i + 1}]`])
 )
 
 function cite(evidenceId: string): { evidence_id: string; marker: string; snippet: string } {
@@ -428,94 +451,111 @@ function cite(evidenceId: string): { evidence_id: string; marker: string; snippe
 }
 
 function buildDemoBlocks(run: MockRun): MockReportBlock[] {
-  const c = (...ids: string[]) => ids.map(cite)
+  const c = (row: number) => BLOCK_CITATION_IDS[row].map(cite)
   return [
     {
       id: 'block-01', type: 'conclusion', claim_id: 'claim-01',
       text: `围绕「${run.question}」的多源核验显示，向量数据库已形成专用数据库、检索引擎插件与嵌入式轻量方案三条清晰的技术路线，选型应回到召回 SLA、数据规模与运维能力三个维度。`,
-      confidence: 'cross_verified', citations: c('ev01', 'ev09')
+      confidence: 'cross_verified', citations: c(0)
     },
     {
       id: 'block-02', type: 'evidence',
       text: '官方文档对 HNSW、IVF 与乘积量化三类索引的权衡有明确表述：高召回低延迟偏向 HNSW，超大规模成本敏感场景偏向 IVF+PQ。',
-      citations: c('ev02')
+      citations: c(1)
     },
     {
       id: 'block-03', type: 'conclusion', claim_id: 'claim-02',
       text: '索引机制层面，HNSW 是当前高召回场景的事实标准；IVF+PQ 的价值在于以可控的召回损失换取内存与成本下降，二者并非替代关系。',
-      confidence: 'cross_verified', citations: c('ev01', 'ev06')
+      confidence: 'cross_verified', citations: c(2)
     },
     {
       id: 'block-04', type: 'conclusion', claim_id: 'claim-03',
       text: 'HNSW 的构建参数 M 与 efConstruction 对写入放大和查询延迟影响显著，调参空间真实存在，但社区数据点样本有限。',
-      confidence: 'single_source', citations: c('ev03')
+      confidence: 'single_source', citations: c(3)
     },
     {
       id: 'block-05', type: 'evidence',
       text: '召回率随规模下滑的常见根因是分片裁剪策略与 ef 参数，其次才是量化损失——该排查路径在社区高赞回答与厂商工程博客中互证。',
-      citations: c('ev07')
+      citations: c(4)
     },
     {
       id: 'block-06', type: 'conclusion', claim_id: 'claim-04',
       text: '规模化性能上，官方与工程来源在十亿向量量级给出 P99 80ms 至 120ms 的区间，但测试条件差异明显，跨厂商数字不可直接横比。',
-      confidence: 'cross_verified', citations: c('ev05', 'ev06', 'ev08')
+      confidence: 'cross_verified', citations: c(5)
     },
     {
       id: 'block-07', type: 'dispute', claim_id: 'claim-05', conflict_id: 'cf1',
       text: '存在一处高严重度数据分歧：厂商 A 官方基准称十亿向量 95% 召回下 P99 低于 80ms，而一篇 2019 年个人博客声称"数十万 QPS 且零召回损失"且无任何测试细节。前者为可核验一手来源，后者可信度为 D 级，建议以官方口径为准并要求第三方复核。',
-      confidence: 'cross_verified', citations: c('ev05', 'ev12')
+      confidence: 'cross_verified', citations: c(6)
     },
     {
       id: 'block-08', type: 'conclusion', claim_id: 'claim-06',
       text: '扩展能力的关键不在单节点 QPS，而在分片路由与两阶段检索架构；两家主流厂商均公开了相近的横向扩展思路。',
-      confidence: 'cross_verified', citations: c('ev06', 'ev11')
+      confidence: 'cross_verified', citations: c(7)
     },
     {
       id: 'block-09', type: 'evidence',
       text: '自建集群的隐性运维成本在多名实践者的账单复盘中被反复提及：备份、压缩与索引重建需要固定的夜间维护窗口。',
-      citations: c('ev10')
+      citations: c(8)
     },
     {
       id: 'block-10', type: 'conclusion', claim_id: 'claim-07',
       text: '运维与生态维度，托管服务按维度量计费的口径差异与自建人力成本共同决定总拥有成本；主流编排框架与 Embedding 提供商的集成成熟度正在快速拉平。',
-      confidence: 'cross_verified', citations: c('ev09', 'ev11')
+      confidence: 'cross_verified', citations: c(9)
     },
     {
       id: 'block-11', type: 'conclusion', claim_id: 'claim-08',
       text: '价格报道显示托管方案在中小规模下通常更省，超过一定数据量后自建的单位成本才开始占优——但该拐点高度依赖团队运维成熟度。',
-      confidence: 'single_source', citations: c('ev09')
+      confidence: 'single_source', citations: c(10)
     },
     {
       id: 'block-12', type: 'limitation',
       text: '部分聚合类内容来源陈旧、发布时间不可考（如 D 级入门博客），本报告未将其作为结论依据；时效敏感的定价数字以 2026 年公开材料为限。',
-      citations: c('ev04')
+      citations: c(11)
     },
     {
       id: 'block-13', type: 'limitation',
       text: '性能分歧（见分歧区块）在本次研究中未获第三方独立基准复核，相关结论应保留置信区间，不宜作为硬性采购指标。',
-      citations: c('ev12')
+      citations: c(12)
     },
     {
       id: 'block-14', type: 'conclusion', claim_id: 'claim-09',
       text: '建议以单一高价值场景先行、以可复现的召回与延迟基线驱动选型，优先选择生态集成完善且支持平滑迁移的方案，避免被单一托管口径锁定。',
-      confidence: 'inferred', citations: c('ev01', 'ev11')
+      confidence: 'inferred', citations: c(13)
     }
   ]
 }
 
 function buildDemoCitations(evidence: MockEvidence[]): MockCitation[] {
-  return evidence.map((e) => ({
-    evidence_id: e.id,
-    marker: CITATION_MARKERS[e.id],
-    snippet: e.snippet,
-    url: e.url,
-    title: e.title,
-    domain: e.domain,
-    source_type: e.source_type,
-    source_level: e.source_level,
-    credibility: e.credibility,
-    published_at: e.published_at ?? null
-  }))
+  // 信源索引仅含被 block 引用的证据（对齐真链 citations 端点报告级去重语义），顺序随材料池
+  return evidence
+    .filter((e) => CITED_EVIDENCE_IDS.has(e.id))
+    .map((e) => ({
+      evidence_id: e.id,
+      marker: CITATION_MARKERS[e.id],
+      snippet: e.snippet,
+      url: e.url,
+      title: e.title,
+      domain: e.domain,
+      source_type: e.source_type,
+      source_level: e.source_level,
+      credibility: e.credibility,
+      published_at: e.published_at ?? null
+    }))
+}
+
+// 语义目录（对齐真链 M2-7：sec-overview/sec-findings 恒定；
+// sec-disputes 仅当存在分歧块时出现；sec-limitations 始终保留）
+function buildDemoOutline(blocks: MockReportBlock[]): MockStructuredReport['outline'] {
+  const outline: MockStructuredReport['outline'] = [
+    { id: 'sec-overview', title: '调研概述', type: 'conclusion' },
+    { id: 'sec-findings', title: '核心发现', type: 'conclusion' }
+  ]
+  if (blocks.some((b) => b.type === 'dispute')) {
+    outline.push({ id: 'sec-disputes', title: '分歧与不确定性', type: 'dispute' })
+  }
+  outline.push({ id: 'sec-limitations', title: '局限与建议', type: 'limitation' })
+  return outline
 }
 
 export function buildDemoArtifacts(run: MockRun): {
@@ -524,18 +564,14 @@ export function buildDemoArtifacts(run: MockRun): {
   citations: MockCitation[]
 } {
   const evidence = buildDemoEvidence(run.id)
+  const blocks = buildDemoBlocks(run)
   const ts = nowIsoStatic()
   const structured: MockStructuredReport = {
     id: `rpt_${run.id}`,
     run_id: run.id,
     status: 'final',
-    outline: [
-      { id: 'sec-1', title: '调研概述', type: 'conclusion' },
-      { id: 'sec-2', title: '架构与索引机制', type: 'conclusion' },
-      { id: 'sec-3', title: '规模化性能与数据分歧', type: 'dispute' },
-      { id: 'sec-4', title: '运维生态、局限与建议', type: 'limitation' }
-    ],
-    blocks: buildDemoBlocks(run),
+    outline: buildDemoOutline(blocks),
+    blocks,
     token_used: run.token_used,
     created_at: ts,
     updated_at: ts
