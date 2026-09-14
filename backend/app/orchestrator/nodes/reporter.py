@@ -20,10 +20,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import Any
 
+from sqlalchemy import select
+
+from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.db.models.evidence import Evidence
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.nodes._base import instrument
 from app.orchestrator.state import (
@@ -34,6 +39,11 @@ from app.orchestrator.state import (
     ResearchState,
     VerdictDict,
 )
+from app.provider.base import ChatMessage
+from app.reporting import blocks as report_engine
+from app.reporting import disputes
+from app.reporting.prompts import build_messages, build_repair_user_message
+from app.reporting.schemas import LLMReportPlan
 
 log = get_logger("orchestrator.reporter")
 
@@ -63,35 +73,16 @@ _CONFIDENCE_LABELS: dict[str, str] = {
     "inferred": "推断",
 }
 
-# 冲突类型枚举 -> 中文标签（与 critic system prompt §6.5.6 用词一致）
-_CONFLICT_TYPE_LABELS: dict[str, str] = {
-    "factual": "事实性冲突",
-    "methodological": "口径/方法冲突",
-    "temporal": "时间错配",
-    "perspective": "观点分歧",
-}
-
-# 冲突严重度枚举 -> 中文标签
-_SEVERITY_LABELS: dict[str, str] = {
-    "low": "低",
-    "medium": "中",
-    "high": "高",
-}
-
-# 裁决四值 -> 中文裁决意见（VerdictDict.choice）
-_CHOICE_LABELS: dict[str, str] = {
-    "evidence_a": "采纳口径 A，舍弃口径 B",
-    "evidence_b": "采纳口径 B，舍弃口径 A",
-    "both": "双方观点并存",
-    "reject": "双方口径均不采纳",
-}
-
+# 冲突/裁决中文标签与收敛状态机：M2-7 起统一由 reporting.disputes 提供，
+# Markdown 渲染与结构化 blocks 引擎共用同一份原语
+_CONFLICT_TYPE_LABELS = disputes.CONFLICT_TYPE_LABELS
+_SEVERITY_LABELS = disputes.SEVERITY_LABELS
+_CHOICE_LABELS = disputes.CHOICE_LABELS
 # choice 取一边即视为已收敛（冲突段不逐条展开）；以下两值属于「裁决后仍保留的
 # 未消解分歧」，必须进入「分歧与局限」区块显式呈现（AC-7/AC-16）
-_DIVERGENCE_CHOICES: frozenset[str] = frozenset({"both", "reject"})
-
+_DIVERGENCE_CHOICES = disputes.DIVERGENCE_CHOICES
 # 未挂起（无 verdict）即视为待人工裁决的冲突状态
-_PENDING_STATUSES: frozenset[str] = frozenset({"detected", "awaiting_human"})
+_PENDING_STATUSES = disputes.PENDING_STATUSES
 
 
 def default_outline(template_id: str | None) -> list[dict[str, str]]:
@@ -197,23 +188,17 @@ def _source_link(title: str | None, url: str | None) -> str:
 
 def _build_evidence_index(state: ResearchState) -> dict[str, EvidenceDict]:
     """汇总标准化证据（含未分类兜底）为 id -> evidence 索引。"""
-    index: dict[str, EvidenceDict] = {}
-    for ev in state.get("standardized_evidence") or []:
-        index[ev["id"]] = ev
-    for ev in state.get("evidence") or []:
-        index.setdefault(ev["id"], ev)
-    return index
+    return disputes.build_evidence_index(
+        list(state.get("standardized_evidence") or []),
+        list(state.get("evidence") or []),
+    )
 
 
 def _claim_for_evidence(
     claims: list[ReportClaim], evidence_id: str
 ) -> tuple[str | None, dict[str, Any] | None]:
     """找到引用指定证据的首条 claim，返回 (claim 文本, 命中的 citation)。"""
-    for claim in claims:
-        for cit in claim.get("citations") or []:
-            if cit.get("evidence_id") == evidence_id:
-                return (claim.get("text") or "").strip() or None, cit
-    return None, None
+    return disputes.claim_for_evidence(claims, evidence_id)
 
 
 def _side_view(
@@ -221,29 +206,16 @@ def _side_view(
     evidence_index: dict[str, EvidenceDict],
     evidence_id: str,
 ) -> tuple[str, str]:
-    """渲染冲突一方的「口径文本 + 来源链接」。
-
-    口径文本优先取引用该证据的 report_claim 文本（reject 场景 claim 已被
-    critic 移除），回退到证据 snippet/title；来源优先取 claim citation，
-    回退到证据自带 title/url。
-    """
-    claim_text, citation = _claim_for_evidence(claims, evidence_id)
-    if claim_text is not None and citation is not None:
-        link = _source_link(citation.get("title"), citation.get("url"))
-        return claim_text, link
+    """渲染冲突一方的「口径文本 + 来源链接」（文本原语在 reporting.disputes）。"""
+    text, title = disputes.evidence_side(claims, evidence_index, evidence_id)
     evidence = evidence_index.get(evidence_id)
-    if evidence is not None:
-        text = (evidence.get("snippet") or evidence.get("title") or "").strip()
-        return text or "（该侧证据无文本摘要）", _source_link(evidence.get("title"), evidence.get("url"))
-    # 证据行缺失（异常数据）：保留 ID 线索，不渲染为空白
-    return f"（缺失证据 {evidence_id} 的文本）", f"证据 {evidence_id}"
+    url = evidence.get("url") if evidence is not None else None
+    return text, _source_link(title, url)
 
 
 def _conflict_meta_labels(conflict: ConflictDict) -> str:
     """渲染冲突条目后的类型/严重度中文括注。"""
-    type_label = _CONFLICT_TYPE_LABELS.get(conflict.get("type") or "", "冲突")
-    severity_label = _SEVERITY_LABELS.get(conflict.get("severity") or "", conflict.get("severity") or "")
-    return f"{type_label}，严重度：{severity_label}"
+    return disputes.conflict_meta_labels(conflict)
 
 
 def _render_conflict_block(
@@ -404,6 +376,168 @@ def render_section(
 
 
 # ---------------------------------------------------------------------------
+# M2-7：结构化终稿（LLM blocks 计划 + 确定性绑定引擎）
+# ---------------------------------------------------------------------------
+
+
+def _limitation_signals(
+    material: list[EvidenceDict],
+    conflicts: list[ConflictDict],
+    verdicts: list[VerdictDict],
+    *,
+    excluded_count: int,
+) -> dict[str, Any]:
+    """汇总喂给 LLM 的局限信号（分歧要点/剔除/元数据缺失计数）。"""
+    verdict_by_id = {v["conflict_id"]: v for v in verdicts}
+    pending = 0
+    divergence: list[dict[str, Any]] = []
+    for conflict in conflicts:
+        verdict = verdict_by_id.get(conflict["id"])
+        if verdict is not None:
+            if verdict.get("choice") in disputes.DIVERGENCE_CHOICES:
+                divergence.append({"claim": conflict.get("claim"), "note": verdict.get("additional_note")})
+        elif conflict.get("status") in disputes.PENDING_STATUSES:
+            pending += 1
+    return {
+        "pending_conflicts": pending,
+        "divergence_conflicts": divergence,
+        "excluded_evidence_count": excluded_count,
+        "missing_published_at_count": sum(1 for ev in material if not ev.get("published_at")),
+        "d_level_evidence_count": sum(1 for ev in material if ev.get("credibility") == "D"),
+    }
+
+
+async def _load_content_map(
+    db_session: Any,
+    run_id: str,
+) -> dict[str, report_engine.EvidenceText]:
+    """按 run 查 Evidence 行组装 content_map（正文不入 state，§5.4）。
+
+    统一走 ``scalars(select(实体))`` 与项目持久化层/假会话约定一致；调用方按
+    材料池 id 取行，池外证据不进入引擎。
+    """
+    rows = (await db_session.scalars(select(Evidence).where(Evidence.run_id == run_id))).all()
+    return {
+        row.id: report_engine.EvidenceText(snippet=row.snippet or "", content=row.content) for row in rows
+    }
+
+
+def _state_content_map(material: list[EvidenceDict]) -> dict[str, report_engine.EvidenceText]:
+    """db_session 缺省路径（测试/未配置）：仅有摘要，正文留空走 snippet 回退。"""
+    return {
+        ev["id"]: report_engine.EvidenceText(snippet=ev.get("snippet") or "", content=None) for ev in material
+    }
+
+
+async def _call_plan(
+    llm: Any,
+    messages: list[ChatMessage],
+) -> tuple[list[report_engine.DraftBlock], int]:
+    """单次结构化调用并转为引擎草稿；脏返回/空计划抛异常由调用方降级。"""
+    settings = get_settings()
+    completion = await asyncio.wait_for(
+        llm.complete_structured(
+            messages=messages,
+            schema=LLMReportPlan,
+            temperature=0.0,
+            max_tokens=settings.report_llm_max_tokens,
+            tags=["report"],
+        ),
+        timeout=settings.report_llm_timeout_seconds,
+    )
+    parsed = completion.parsed
+    if not isinstance(parsed, LLMReportPlan):
+        raise TypeError(f"reporter LLM 返回非预期类型：{type(parsed).__name__}")
+    drafts = report_engine.drafts_from_plan(parsed)
+    if not drafts:
+        raise ValueError("reporter LLM 计划经清洗后无有效区块")
+    return drafts, int(completion.usage.get("total_tokens", 0))
+
+
+async def _build_structured_report(
+    render_state: dict[str, Any],
+    *,
+    llm: Any,
+    db_session: Any,
+) -> tuple[report_engine.ReportAssembly, bool, int]:
+    """生成结构化终稿；返回（装配产物, 是否降级, 消耗 token）。"""
+    material: list[EvidenceDict] = list(render_state.get("standardized_evidence") or [])
+    claims: list[ReportClaim] = list(render_state.get("report_claims") or [])
+    conflicts: list[ConflictDict] = list(render_state.get("conflicts") or [])
+    verdicts: list[VerdictDict] = list(render_state.get("verdicts") or [])
+    pool_ids = {ev["id"] for ev in material}
+    run_id = str(render_state.get("run_id") or "")
+
+    drafts: list[report_engine.DraftBlock] | None = None
+    consumed = 0
+    if llm is not None and material:
+        messages = build_messages(
+            question=str(render_state.get("question") or ""),
+            goal=_as_text((render_state.get("clarification") or {}).get("goal"))
+            if isinstance(render_state.get("clarification"), dict)
+            else "",
+            scope=_as_text((render_state.get("clarification") or {}).get("scope"))
+            if isinstance(render_state.get("clarification"), dict)
+            else "",
+            material=material,
+            claims=claims,
+            signals=_limitation_signals(
+                material,
+                conflicts,
+                verdicts,
+                excluded_count=len(render_state.get("_excluded_ids") or []),
+            ),
+        )
+        try:
+            drafts, consumed = await _call_plan(llm, messages)
+            violations = report_engine.find_numeric_violations(drafts, pool_ids)
+            if violations:
+                # 含数字断言但无引用的块：带反馈整份自修复，仅一次（§5.5）
+                repair_messages = [
+                    messages[0],
+                    ChatMessage(
+                        role="user",
+                        content=build_repair_user_message(
+                            messages[1].content, [drafts[i].text for i in violations]
+                        ),
+                    ),
+                ]
+                try:
+                    repaired, repair_tokens = await _call_plan(llm, repair_messages)
+                    drafts, consumed = repaired, consumed + repair_tokens
+                except Exception as exc:  # noqa: BLE001 - 自修复失败保留首版，引擎剔除违规块
+                    log.warning(
+                        "reporter 自修复调用失败，保留首版计划并由引擎剔除违规块",
+                        extra={"run_id": run_id, "error": repr(exc)},
+                    )
+        except Exception as exc:  # noqa: BLE001 - 未配置/熔断/超时/脏 JSON 统一机械降级
+            log.warning(
+                "reporter LLM 结构化生成失败，降级机械映射", extra={"run_id": run_id, "error": repr(exc)}
+            )
+            drafts = None
+
+    degraded = drafts is None
+    if drafts is None:
+        drafts = report_engine.mechanical_drafts(claims, pool_ids)
+
+    if db_session is not None and material and run_id:
+        content_map = await _load_content_map(db_session, run_id)
+    else:
+        content_map = _state_content_map(material)
+
+    assembly = report_engine.assemble_report(
+        drafts=drafts,
+        material=material,
+        claims=claims,
+        conflicts=conflicts,
+        verdicts=verdicts,
+        content_map=content_map,
+        question=str(render_state.get("question") or ""),
+    )
+    return assembly, degraded, consumed
+
+
+# ---------------------------------------------------------------------------
 # 节点入口
 # ---------------------------------------------------------------------------
 
@@ -419,10 +553,10 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
 
     返回值会被 LangGraph 自动合并到 ``ResearchState`` 中。
 
-    M1 简化：
-    - 不调 LLM（纯模板拼接）；
-    - 不持久化 Report ORM（state 内累积，下游由外层编排写入数据库）；
-    - 不发 event_bus 事件（WP-6 才接）。
+    M2-7：保留 M1 的 Markdown 模板渲染（content_md/生成中预览），新增结构化
+    终稿 ``report_blocks``——一次 LLM 结构化调用出 blocks 计划，经确定性绑定
+    引擎补 marker/snippet/缺源降级/dispute 注入；LLM 不可用走机械映射降级并
+    置 ``reporter_degraded``。节点不持久化 ORM，由 executor 统一落库。
     """
     # M2-5：剔除证据不进报告渲染（渲染视图过滤，不改写 checkpoint 中的 state）
     render_state: dict[str, Any] = dict(state)
@@ -438,8 +572,9 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
             render_state["evidence"] = [
                 ev for ev in (state.get("evidence") or []) if ev.get("id") not in excluded
             ]
+        render_state["_excluded_ids"] = excluded
 
-    # 若 outline 已存在 → 沿用；否则按模板生成
+    # 若 outline 已存在 → 沿用；否则按模板生成（旧四段，仅供 Markdown 渲染）
     outline: list[dict[str, str]] = list(state.get("report_outline") or []) or default_outline(
         state.get("template_id") or DEFAULT_TEMPLATE_ID
     )
@@ -452,10 +587,25 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
         chunks.append(render_section(section, render_state))  # type: ignore[arg-type]
 
     report_draft: str = "\n".join(chunks)
-    return {
+
+    # M2-7：结构化终稿（LLM + 绑定引擎），失败显式降级、结构恒完整
+    llm = getattr(deps, "llm", None) if deps is not None else None
+    assembly, degraded, report_tokens = await _build_structured_report(
+        render_state, llm=llm, db_session=db_session
+    )
+
+    patch: dict[str, Any] = {
         "report_outline": outline,
         "report_draft": report_draft,
+        "report_blocks": assembly.blocks,
+        "reporter_degraded": degraded,
     }
+    # outline/audit/引文行经 deps run 级通道交给 executor 落库（不占 state 字段）
+    if deps is not None:
+        deps.report_assembly = assembly
+    if report_tokens:
+        patch["token_used"] = int(state.get("token_used") or 0) + report_tokens
+    return patch
 
 
 __all__ = [

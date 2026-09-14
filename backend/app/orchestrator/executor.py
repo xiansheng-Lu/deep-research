@@ -37,7 +37,7 @@ from app.core.context import bind_run_context
 from app.core.logging import get_logger
 from app.db.base import new_ulid
 from app.db.models.project import Project
-from app.db.models.report import Report
+from app.db.models.report import Report, ReportCitation
 from app.db.models.run import ResearchRun, Stage
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.edges import (
@@ -67,6 +67,7 @@ from app.orchestrator.registry import get_run_registry
 from app.orchestrator.state import ResearchStage, ResearchState
 from app.quota.emitter import RunCostEmitter
 from app.realtime.hub import RealtimeHub
+from app.reporting.blocks import ReportAssembly
 
 log = get_logger("orchestrator.executor")
 
@@ -389,8 +390,13 @@ async def _mark_succeeded(
     report_markdown: str,
     template_id: str,
     stage_rows: dict[str, Stage],
+    assembly: ReportAssembly | None = None,
 ) -> None:
-    """把 ResearchRun 标记为 succeeded、收口 report 阶段行并新建 Report 行。"""
+    """把 ResearchRun 标记为 succeeded、收口 report 阶段行并新建 final Report 行。
+
+    M2-7：成功终稿落 ``status=final``，content_json 为结构化新形态
+    （outline/blocks/citation_audit），同事务展开 report_citations 行。
+    """
     now = datetime.now(tz=UTC)
     used = int(final_state.get("token_used") or 0)
     run.status = "succeeded"
@@ -411,20 +417,44 @@ async def _mark_succeeded(
             finished=True,
         )
 
+    if assembly is not None:
+        audit = dict(assembly.audit)
+        audit["reporter_degraded"] = bool(final_state.get("reporter_degraded"))
+        content_json = {
+            "outline": assembly.outline,
+            "blocks": assembly.blocks,
+            "citation_audit": audit,
+        }
+    else:
+        # 防御路径（正常链路 reporter 必然产出装配）：空结构化终稿，仍标 final
+        content_json = {"outline": [], "blocks": [], "citation_audit": {}}
+
     report = Report(
         id=new_ulid(),
         run_id=run.id,
         template_id=template_id,
-        status="draft",
+        status="final",
         content_md=report_markdown,
-        content_json={
-            "claims": list(final_state.get("report_claims") or []),
-            "conflicts": list(final_state.get("conflicts") or []),
-            "outline": list(final_state.get("report_outline") or []),
-        },
+        content_json=content_json,
         token_used=used,
     )
     session.add(report)
+
+    if assembly is not None:
+        # flush 取 report.id 后展开 block×证据 引文行（同事务，§5.9）
+        await session.flush()
+        for row in assembly.citation_rows:
+            session.add(
+                ReportCitation(
+                    id=new_ulid(),
+                    report_id=report.id,
+                    block_id=row["block_id"],
+                    evidence_id=row["evidence_id"],
+                    claim_id=row.get("claim_id"),
+                    position=row["position"],
+                    snippet=row["snippet"],
+                )
+            )
 
 
 async def _mark_failed(
@@ -789,6 +819,7 @@ async def _drive_to_terminal(
                 report_markdown=report_md,
                 template_id=template_id,
                 stage_rows=stage_rows,
+                assembly=getattr(deps, "report_assembly", None),
             )
         else:
             # 无产出（如仍挂起在 HITL）→ 标记 paused；当前阶段行保持 running，

@@ -1149,13 +1149,21 @@ class Report(Base, TimestampMixin):
 class ReportCitation(Base):
     __tablename__ = "report_citations"
     id: Mapped[str] = mapped_column(String(26), primary_key=True)
-    report_id: Mapped[str] = mapped_column(String(26), ForeignKey("reports.id"), index=True)
+    report_id: Mapped[str] = mapped_column(String(26), ForeignKey("reports.id"))
+    block_id: Mapped[str] = mapped_column(String(64))  # M2-7：block 粒度
     evidence_id: Mapped[str] = mapped_column(String(26), ForeignKey("evidence.id"))
-    claim_id: Mapped[str] = mapped_column(String(64))
-    position: Mapped[int]
+    claim_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # M2-7：仅 conclusion/dispute 块携带
+    position: Mapped[int]  # marker 序号 [N]，报告级从 1 起
     snippet: Mapped[str] = mapped_column(Text)
-    __table_args__ = (Index("ix_citation_claim", "report_id", "claim_id"),)
+    __table_args__ = (
+        UniqueConstraint("report_id", "block_id", "evidence_id", name="uq_citation_block_evidence"),
+        Index("ix_report_citations_report_id", "report_id"),
+        Index("ix_citation_claim", "report_id", "claim_id"),
+        Index("ix_report_citations_position", "report_id", "position"),
+    )
 ```
+
+> M2-7（0005 迁移）：引文为 block×证据 粒度，`block_id` 必填、`claim_id` 可空（evidence/limitation 块无 claim），同块同证据唯一；终稿报告 `status="final"`，`content_json` 形态为 `{outline, blocks, citation_audit}`（旧 claims/conflicts/outline 形态仅存于 cancelled 保留的 draft）。
 
 #### 5.3.10 KnowledgeItem + Embedding
 
@@ -1409,9 +1417,11 @@ class ResearchState(TypedDict, total=False):
     conflicts: list[ConflictDict]
     verdicts: list[VerdictDict]
 
-    report_outline: list[dict]
+    report_outline: list[dict]           # 旧四段，仅供 Markdown 渲染
     report_claims: list[ReportClaim]
     report_draft: str
+    report_blocks: NotRequired[list[dict]]   # M2-7：结构化终稿四类 blocks
+    reporter_degraded: NotRequired[bool]     # M2-7：LLM 不可用走机械映射时为 True
 
     current_stage: StageName
     stage_attempts: dict[str, int]
@@ -1816,6 +1826,8 @@ async def reporter(state: ResearchState, *, deps: NodeDeps) -> dict:
 ```
 
 > `stream_section` 每次产出为一个文本块（`str`）；逐 token 实时推送通过 `on_token` 回调挂接 `deps.sse`（§8.4）实现，`push_report_chunk` 内部维护已推送字数以计算 position。
+
+> **M2-7 实现口径（非流式）**：上方逐 section 流式为 M2+ 目标态；M2-7 实际落地为一次 `complete_structured`（温度 0）产出三值 blocks 计划（conclusion/evidence/limitation，无 dispute），经 `app/reporting/blocks.py` 确定性绑定引擎补 marker/snippet/缺源降级/数字断言审计后由引擎注入 dispute 块并派生语义 outline；LLM 不可用（未配置/超时/脏返回）走 `reporter_degraded` 机械映射，不抛穿 run。`report_draft` 旧 Markdown 链路保留用于留档，结构化 blocks/outline/audit 经 `NodeDeps.report_assembly` 交 executor 落 final 报告与 report_citations（§5.3.9）。SSE 报告流与 report.finished 帧不在 M2-7 范围。
 
 #### 6.5.8 cost_checkpoint
 

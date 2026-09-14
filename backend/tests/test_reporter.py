@@ -14,15 +14,20 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.core.exceptions import ProviderUnavailableError
+from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.nodes.reporter import (
     default_outline,
     render_section,
     run,
 )
 from app.orchestrator.state import ConflictDict, EvidenceDict, ReportClaim, VerdictDict
+from app.provider.client import StructuredCompletion
+from app.reporting.schemas import LLMBlockDraftModel, LLMReportPlan
 
 # ---------------------------------------------------------------------------
 # 工厂
@@ -575,3 +580,156 @@ class TestRun:
             "conflicts",
             "conclusion",
         ]
+
+
+# ---------------------------------------------------------------------------
+# M2-7：结构化终稿节点接线（LLM 计划 / 自修复 / 机械降级）
+# ---------------------------------------------------------------------------
+
+
+def _plan_completion(blocks: list[LLMBlockDraftModel], *, tokens: int = 77) -> StructuredCompletion:
+    return StructuredCompletion(parsed=LLMReportPlan(blocks=blocks), usage={"total_tokens": tokens})
+
+
+def _fake_llm(*, side_effect: list[Any] | None = None, completion: Any = None) -> MagicMock:
+    llm = MagicMock(name="fake_report_llm")
+    if side_effect is not None:
+        llm.complete_structured = AsyncMock(side_effect=side_effect)
+    else:
+        llm.complete_structured = AsyncMock(return_value=completion)
+    return llm
+
+
+def _deps(llm: MagicMock | None) -> NodeDeps:
+    return NodeDeps(run_id="run_test", team_id="t1", trace_id="tr1", llm=llm)
+
+
+class TestStructuredReport:
+    @pytest.mark.asyncio
+    async def test_llm_plan_bound_into_blocks_with_markers(self) -> None:
+        evidence = [_evidence(ev_id="ea"), _evidence(ev_id="eb")]
+        plan = _plan_completion(
+            [
+                LLMBlockDraftModel(
+                    type="conclusion",
+                    text="已形成两条清晰技术路线",
+                    confidence="cross_verified",
+                    evidence_ids=["ea", "eb"],
+                ),
+                LLMBlockDraftModel(type="limitation", text="样本范围有限", confidence="inferred"),
+            ]
+        )
+        patch = await run(_state(evidence=evidence), deps=_deps(_fake_llm(completion=plan)))
+        blocks = patch["report_blocks"]
+        conclusion = next(b for b in blocks if b["type"] == "conclusion")
+        assert [c["marker"] for c in conclusion["citations"]] == ["[1]", "[2]"]
+        assert all(c["snippet"] for c in conclusion["citations"])
+        assert patch["reporter_degraded"] is False
+        assert patch["token_used"] == 77
+        assert any(b["type"] == "limitation" for b in blocks)
+
+    @pytest.mark.asyncio
+    async def test_hallucinated_evidence_id_removed(self) -> None:
+        evidence = [_evidence(ev_id="ea")]
+        plan = _plan_completion(
+            [
+                LLMBlockDraftModel(
+                    type="conclusion",
+                    text="综合结论",
+                    confidence="cross_verified",
+                    evidence_ids=["ea", "ghost-id"],
+                )
+            ]
+        )
+        deps = _deps(_fake_llm(completion=plan))
+        patch = await run(_state(evidence=evidence), deps=deps)
+        ids = {c["evidence_id"] for b in patch["report_blocks"] for c in b["citations"]}
+        assert ids == {"ea"}
+        assert deps.report_assembly is not None
+        assert deps.report_assembly.audit["hallucinated_refs"] == 1
+
+    @pytest.mark.asyncio
+    async def test_numeric_violation_triggers_one_repair_call(self) -> None:
+        evidence = [_evidence(ev_id="ea")]
+        first = _plan_completion(
+            [LLMBlockDraftModel(type="conclusion", text="同比增长 30%", confidence="cross_verified")],
+            tokens=40,
+        )
+        repaired = _plan_completion(
+            [
+                LLMBlockDraftModel(
+                    type="conclusion",
+                    text="增长显著且有来源支撑",
+                    confidence="single_source",
+                    evidence_ids=["ea"],
+                )
+            ],
+            tokens=35,
+        )
+        llm = _fake_llm(side_effect=[first, repaired])
+        patch = await run(_state(evidence=evidence), deps=_deps(llm))
+        assert llm.complete_structured.await_count == 2
+        conclusion = next(b for b in patch["report_blocks"] if b["type"] == "conclusion")
+        assert conclusion["text"] == "增长显著且有来源支撑"
+        assert conclusion["citations"][0]["evidence_id"] == "ea"
+        assert patch["token_used"] == 75
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_falls_back_to_mechanical_mapping(self) -> None:
+        evidence = [_evidence(ev_id="ea", snippet="机械路径摘要")]
+        claims = [
+            _claim(
+                cid="cl1",
+                text="来自 claim 的结论",
+                citations=[
+                    {
+                        "evidence_id": "ea",
+                        "url": "https://example.com/ea",
+                        "title": "来源 ea",
+                        "snippet": "机械路径摘要",
+                    }
+                ],
+            )
+        ]
+        llm = _fake_llm(side_effect=[ProviderUnavailableError("熔断")])
+        patch = await run(
+            _state(evidence=evidence, claims=claims),
+            deps=_deps(llm),
+        )
+        assert patch["reporter_degraded"] is True
+        conclusion = next(b for b in patch["report_blocks"] if b["type"] == "conclusion")
+        assert conclusion["text"] == "来自 claim 的结论"
+        assert conclusion["citations"][0]["snippet"] == "机械路径摘要"
+
+    @pytest.mark.asyncio
+    async def test_no_llm_still_emits_structured_blocks(self) -> None:
+        # deps 带 None llm（未配置/测试基线）：机械降级路径，结构不缺位
+        evidence = [_evidence(ev_id="ea")]
+        patch = await run(_state(evidence=evidence), deps=_deps(None))
+        types = {b["type"] for b in patch["report_blocks"]}
+        assert {"conclusion", "limitation"} <= types
+        assert patch["reporter_degraded"] is True
+
+    @pytest.mark.asyncio
+    async def test_assembly_handed_to_deps_for_executor(self) -> None:
+        evidence = [_evidence(ev_id="ea"), _evidence(ev_id="eb")]
+        plan = _plan_completion(
+            [
+                LLMBlockDraftModel(
+                    type="conclusion",
+                    text="结论",
+                    confidence="single_source",
+                    evidence_ids=["ea", "eb"],
+                )
+            ]
+        )
+        deps = _deps(_fake_llm(completion=plan))
+        await run(_state(evidence=evidence), deps=deps)
+        assembly = deps.report_assembly
+        assert assembly is not None
+        assert [s["id"] for s in assembly.outline] == [
+            "sec-overview",
+            "sec-findings",
+            "sec-limitations",
+        ]
+        assert len(assembly.citation_rows) == 2

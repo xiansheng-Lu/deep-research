@@ -401,7 +401,8 @@ async def test_alembic_0003_upgrade_downgrade_cycle(
     # （本仓 pytest 将告警升级为错误）
     cfg.set_main_option("path_separator", "os")
 
-    command.upgrade(cfg, "head")
+    # 钉死到 0004：本用例验证 0003/0004 自身迁移循环，不随后续 head（0005+）漂移
+    command.upgrade(cfg, "0004")
     engine = create_engine(sync_dsn)
     try:
         with engine.connect() as conn:
@@ -422,7 +423,7 @@ async def test_alembic_0003_upgrade_downgrade_cycle(
             assert _alembic_version(conn) == "0002"
             assert not _constraint_exists(conn, _MIGRATION_SCHEMA)
 
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0004")
         with engine.connect() as conn:
             assert _alembic_version(conn) == "0004"
             assert _constraint_exists(conn, _MIGRATION_SCHEMA)

@@ -6,9 +6,9 @@
 
 M1 快照（openapi-m1.json）为历史冻结文件，默认不覆盖：随里程碑演进，应用的
 components.schemas 会持续增加，重生成会让 M1 文件产生与端点无关的噪音 diff。
-M2-2 快照（openapi-m2-2.json，M1 子集 + M2-1 意图/闲聊 + conflicts 三端点）随
-M2-2 冻结；M2-4 快照（openapi-m2-4.json）自 M2-5 起默认冻结（加 --refresh-m24
-重写）；M2-5 快照（openapi-m2-5.json）为当前导出品。
+M2-2/M2-4/M2-5 快照均已冻结，默认跳过（分别加 --refresh-m22/--refresh-m24/
+--refresh-m25 重写）；M2-7 快照（openapi-m2-7.json）为当前导出品
+（M1 + M2-1 + M2-2 + M2-4 + M2-5 + M2-7 数据点级溯源，25 路径）。
 快照为累积超集，每个里程碑批次必须把已交付端点全部纳入，禁止选择性白名单。
 
 环境变量需与 conftest.py 的 _REQUIRED_ENV 对齐（测试环境最小变量集）。
@@ -88,6 +88,13 @@ _M25_ENDPOINTS = frozenset(
     }
 )
 
+# M2-7 在 M2-5 之上新增的数据点级溯源端点（报告级信源索引）
+_M27_ENDPOINTS = frozenset(
+    {
+        "/api/v1/reports/{run_id}/citations",
+    }
+)
+
 _M22_DESCRIPTION = (
     "本 schema 为截至 M2-2（批判收敛与人机裁决）后端冻结契约的累积快照，"
     "包含 M1 端点 + M2-1 意图路由与闲聊 + M2-2 分歧三端点。\n"
@@ -132,6 +139,23 @@ _M25_DESCRIPTION = (
     "OpenAPI paths 中，其载荷契约见 M2-5 阶段技术方案。"
 )
 
+_M27_DESCRIPTION = (
+    "本 schema 为截至 M2-7（数据点级溯源）后端冻结契约的累积快照，"
+    "在 M2-5 全部端点之上新增一个报告只读端点：\n"
+    "GET /reports/{run_id}/citations 返回报告级信源索引（按 marker [N] 升序、"
+    "报告级去重），元素为 ReportCitationItem：内联三字段 evidence_id/marker/snippet "
+    "之外补七项回溯展示字段 url/title/domain/source_type/source_level/credibility/"
+    "published_at（marker/snippet 与该七项合计九展示字段，published_at 可空）。\n"
+    "既有 GET /reports/{run_id} 与 GET /runs/{run_id}/report 响应在原八字段之上增 "
+    "outline（sec-overview/sec-findings/sec-disputes/sec-limitations 语义章节，"
+    "分歧/局限章按需出现）与 blocks（conclusion/evidence/dispute/limitation 四类，"
+    "conclusion/dispute 带 claim_id 与 confidence，dispute 带 conflict_id，"
+    "block 内联 citations 为 {evidence_id, marker, snippet}）；draft/历史报告两数组为空。\n"
+    "终稿 status=final，含数字/事实声明的论断 100% 绑定信源（缺源降级 inferred，"
+    "无来源数字块经一次自修复仍不达标则剔除）；同一证据跨块共享 marker，"
+    "未被引用证据不占号。WebSocket 帧在本批零变化。"
+)
+
 
 def _filter_paths(schema: dict[str, Any], whitelist: frozenset[str]) -> dict[str, Any]:
     paths = cast(dict[str, Any], schema.get("paths", {}))
@@ -160,7 +184,7 @@ def _write_snapshot(
 
 
 def main() -> None:
-    """导出 M2-5 冻结契约；历史快照默认跳过，加对应 --refresh 重写。"""
+    """导出 M2-7 冻结契约；历史快照默认跳过，加对应 --refresh 重写。"""
     parser = argparse.ArgumentParser(description="导出 OpenAPI 冻结快照")
     parser.add_argument(
         "--refresh-m1",
@@ -175,7 +199,12 @@ def main() -> None:
     parser.add_argument(
         "--refresh-m24",
         action="store_true",
-        help="同时重写已冻结的 openapi-m2-4.json（M2-5 起默认跳过以保持快照稳定）",
+        help="同时重写已冻结的 openapi-m2-4.json（默认跳过以保持快照稳定）",
+    )
+    parser.add_argument(
+        "--refresh-m25",
+        action="store_true",
+        help="同时重写已冻结的 openapi-m2-5.json（M2-7 起默认跳过以保持快照稳定）",
     )
     args = parser.parse_args()
 
@@ -193,8 +222,10 @@ def main() -> None:
     m1_paths = _filter_paths(schema, _M1_ENDPOINTS)
     m22_paths = _filter_paths(schema, _M1_ENDPOINTS | _M22_ENDPOINTS)
     m24_paths = _filter_paths(schema, _M1_ENDPOINTS | _M22_ENDPOINTS | _M24_ENDPOINTS)
-    m25_paths = _filter_paths(
-        schema, _M1_ENDPOINTS | _M22_ENDPOINTS | _M24_ENDPOINTS | _M25_ENDPOINTS
+    m25_paths = _filter_paths(schema, _M1_ENDPOINTS | _M22_ENDPOINTS | _M24_ENDPOINTS | _M25_ENDPOINTS)
+    m27_paths = _filter_paths(
+        schema,
+        _M1_ENDPOINTS | _M22_ENDPOINTS | _M24_ENDPOINTS | _M25_ENDPOINTS | _M27_ENDPOINTS,
     )
 
     m1_output = output_dir / "openapi-m1.json"
@@ -243,21 +274,34 @@ def main() -> None:
     else:
         print("跳过已冻结的 M2-4 快照（如需重写加 --refresh-m24）")
 
+    m25_output = output_dir / "openapi-m2-5.json"
+    if args.refresh_m25 or not m25_output.exists():
+        _write_snapshot(
+            schema,
+            m25_paths,
+            filename="openapi-m2-5.json",
+            title="AI 研究者助手 · M2-5 累积接口契约冻结（M1 + M2-1 + M2-2 + M2-4 + M2-5）",
+            description=_M25_DESCRIPTION,
+            output_dir=output_dir,
+        )
+    else:
+        print("跳过已冻结的 M2-5 快照（如需重写加 --refresh-m25）")
+
     _write_snapshot(
         schema,
-        m25_paths,
-        filename="openapi-m2-5.json",
-        title="AI 研究者助手 · M2-5 累积接口契约冻结（M1 + M2-1 + M2-2 + M2-4 + M2-5）",
-        description=_M25_DESCRIPTION,
+        m27_paths,
+        filename="openapi-m2-7.json",
+        title="AI 研究者助手 · M2-7 累积接口契约冻结（M1 + M2-1 + M2-2 + M2-4 + M2-5 + M2-7）",
+        description=_M27_DESCRIPTION,
         output_dir=output_dir,
     )
 
     all_paths = cast(dict[str, Any], schema.get("paths", {}))
-    placeholder_count = len(all_paths) - len(m25_paths)
+    placeholder_count = len(all_paths) - len(m27_paths)
     print(f"未纳入任何快照的占位/其他端点数：{placeholder_count}")
-    print("M2-5 新增端点：")
-    for path in sorted(_M25_ENDPOINTS):
-        methods = sorted(m25_paths[path].keys())
+    print("M2-7 新增端点：")
+    for path in sorted(_M27_ENDPOINTS):
+        methods = sorted(m27_paths[path].keys())
         print(f"  {path}  [{', '.join(methods).upper()}]")
 
 

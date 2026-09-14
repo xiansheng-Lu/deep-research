@@ -118,6 +118,10 @@ class ResearchState(TypedDict, total=False):
     report_outline: list[dict]
     report_claims: list[ReportClaim]
     report_draft: str
+    # M2-7：结构化终稿 blocks（conclusion/evidence/dispute/limitation）与降级标记；
+    # 增删字段须同步《后端详细设计》§6.2
+    report_blocks: NotRequired[list[dict[str, Any]]]
+    reporter_degraded: NotRequired[bool]
 
     # ===== 编排 =====
     current_stage: StageName

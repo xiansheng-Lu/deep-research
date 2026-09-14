@@ -1,27 +1,21 @@
-"""报告路由：按 run_id 查询报告。
+"""报告路由：按 run_id 查询报告与信源索引。
 
-对齐 LLD §6.2 / §8.2；M1 阶段交付 1 个端点：
-- ``GET /reports/{run_id}``：按研究运行 ID 查询报告
+M2-7 交付 2 个端点：
+- ``GET /reports/{run_id}``：报告（八字段 + 结构化 outline/blocks 超集）
+- ``GET /reports/{run_id}/citations``：报告级信源索引（marker 升序去重）
 
-与 ``GET /runs/{run_id}/report`` 功能等价，提供顶级路由入口便于前端直接引用。
+路径参数历史命名即 run_id（run↔report 1:1），与前端实参传 runId 的调用约定一致。
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter
-from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DBSession
-from app.core.exceptions import NotFoundError, ValidationError
-from app.db.models.report import Report
-from app.db.models.run import ResearchRun
-from app.schemas.reports import ReportResponse
+from app.schemas.reports import ReportCitationItem, ReportResponse
+from app.services import reports as reports_service
 
 router = APIRouter(prefix="/reports", tags=["reports"])
-
-
-def _to_response(report: Report) -> ReportResponse:
-    return ReportResponse.model_validate(report)
 
 
 @router.get(
@@ -34,24 +28,23 @@ async def get_report_by_run(
     current_user: CurrentUser,
     session: DBSession,
 ) -> ReportResponse:
-    """按研究运行 ID 查询报告。
+    """按研究运行 ID 查询报告（含 M2-7 结构化终稿 outline/blocks）。"""
+    report = await reports_service.get_report_for_run(session, run_id=run_id, user_id=current_user.id)
+    return reports_service.to_response(report)
 
-    先校验 run 归属当前用户，再查 Report 行。
-    """
-    run = await session.scalar(
-        select(ResearchRun)
-        .where(ResearchRun.id == run_id)
-        .where(ResearchRun.creator_id == current_user.id)
-    )
-    if run is None:
-        raise NotFoundError("研究运行不存在")
 
-    report = await session.scalar(
-        select(Report).where(Report.run_id == run_id)
-    )
-    if report is None:
-        raise ValidationError("报告尚未生成")
-    return _to_response(report)
+@router.get(
+    "/{run_id}/citations",
+    response_model=list[ReportCitationItem],
+    summary="查询报告的数据点级溯源信源索引",
+)
+async def get_report_citations(
+    run_id: str,
+    current_user: CurrentUser,
+    session: DBSession,
+) -> list[ReportCitationItem]:
+    """报告级信源列表：角标 [N] + 原文片段 + URL/可信元数据，按 marker 升序去重。"""
+    return await reports_service.list_citations(session, run_id=run_id, user_id=current_user.id)
 
 
 __all__ = ["router"]

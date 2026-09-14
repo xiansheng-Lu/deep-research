@@ -20,10 +20,9 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DBSession, SettingsDep
 from app.core.config import Settings
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.exceptions import NotFoundError
 from app.core.logging import get_logger
 from app.db.models.project import Project
-from app.db.models.report import Report
 from app.db.models.run import ResearchRun
 from app.orchestrator.executor import run_research_async
 from app.orchestrator.registry import get_run_registry
@@ -49,6 +48,7 @@ from app.schemas.runs import (
     RunStatus,
 )
 from app.services import dashboard, runs_control
+from app.services import reports as reports_service
 from app.services.conflicts import get_owned_run
 from app.services.interventions import submit_intervention
 
@@ -62,10 +62,6 @@ def _to_run_response(run: ResearchRun) -> RunResponse:
     resp = RunResponse.model_validate(run)
     resp.stream_url = f"/api/v1/ws/runs/{run.id}/stream"
     return resp
-
-
-def _to_report_response(report: Report) -> ReportResponse:
-    return ReportResponse.model_validate(report)
 
 
 def _normalize_key(value: str | None) -> str | None:
@@ -397,18 +393,9 @@ async def get_run_report(
     current_user: CurrentUser,
     session: DBSession,
 ) -> ReportResponse:
-    """查询研究运行产出的 Markdown 报告。"""
-    # 先校验 run 归属
-    run = await session.scalar(
-        select(ResearchRun).where(ResearchRun.id == run_id).where(ResearchRun.creator_id == current_user.id)
-    )
-    if run is None:
-        raise NotFoundError("研究运行不存在")
-
-    report = await session.scalar(select(Report).where(Report.run_id == run_id))
-    if report is None:
-        raise ValidationError("报告尚未生成")
-    return _to_report_response(report)
+    """查询研究运行产出的报告（Markdown 正文 + M2-7 结构化 outline/blocks 超集）。"""
+    report = await reports_service.get_report_for_run(session, run_id=run_id, user_id=current_user.id)
+    return reports_service.to_response(report)
 
 
 @router.get(

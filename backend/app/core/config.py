@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     # 每子问题补采页面数上限（只补缺发布时间者，0 等价关闭）
     source_page_fetch_per_subquestion: int = Field(default=3, alias="SOURCE_PAGE_FETCH_PER_SUBQUESTION")
 
+    # ===== 结构化报告生成（M2-7） =====
+    # 终稿 blocks 计划单次结构化调用硬超时（秒）；超时/异常走机械映射降级
+    report_llm_timeout_seconds: float = Field(default=45.0, alias="REPORT_LLM_TIMEOUT_SECONDS")
+    # blocks 计划输出 token 上限
+    report_llm_max_tokens: int = Field(default=4096, alias="REPORT_LLM_MAX_TOKENS")
+
     # ===== 成本治理 =====
     quota_default_tier: Literal["quick", "standard", "deep", "extreme"] = Field(
         default="standard", alias="QUOTA_DEFAULT_TIER"

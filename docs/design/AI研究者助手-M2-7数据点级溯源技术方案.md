@@ -1,6 +1,6 @@
 # AI 研究者助手 · M2-7 数据点级溯源阶段技术方案
 
-- 版本：v0.2（评审修订稿，2026-09-14；按 v0.1 评审结论修订 outline/marker 与 fixture 的口径差异、quote 正文取数路径、字段计数、dispute 双方均剔除边界等；评审通过后按 §4 T 序列落地，冻结时升 v1.0 并回填 §13）
+- 版本：v1.0（实现冻结，2026-09-14；v0.1→v0.2 按评审结论修订 outline/marker 与 fixture 口径差异、quote 正文取数路径、字段计数、dispute 双方均剔除边界；v0.2→v1.0 落地偏差与门禁证据见 §13）
 - 范围：结构化报告（conclusion/evidence/dispute/limitation 四类 blocks）的真实产出、论断与信源/原文片段的确定性绑定、`report_citations` 表启用与迁移、新增 `GET /reports/{run_id}/citations`、既有两个报告查询端点的结构化超集扩展、累积契约快照 openapi-m2-7
 - 上游依据：《AI研究者助手-软件需求规格说明书》§11 验收 A2「报告每个论断可点击回溯到原始来源 URL 与片段，抽样 ≥10 个论断全部可回溯」、A3「结论/证据/分歧/局限四类区块完整呈现」（A2 首次通过归属本包，A3 为 M2-2 首次通过后的共同回归）；《AI研究者助手-智能体协作规格说明》§3.8「Reporter 按模板生成四类区块；任何论断必须绑定信源，缺源即降级为推断标记」、§5.2 阶段契约表「Reporter → 报告呈现层：报告渲染数据 JSON Schema 化；缺源论断降级为推断」、§6「摘要+引用」上下文压缩、§7 失败与回溯策略表「报告缺源：论断降级为推断标记，兜底不冒充事实」；《AI研究者助手-软件开发计划》§3 M2-7「报告内每个论断自动绑定信源与原文片段，UI 支持点击回溯」、§3 里程碑硬指标「有数字或事实声明的论断 100% 绑定信源；纯推论性段落允许标注推断」、§5.1/§5.2（A2 首次通过归属 M2-7）；《AI研究者助手-后端详细设计》§5.3.9 Report + Citation、§6.2 ResearchState、§6.5.7 reporter、§15.2 M2-7「报告 JSON Schema + report_citations 落库，论断绑定信源与原文片段」；《AI研究者助手-前端详细设计》§10.2 溯源体系数据模型、§10.3 CitationMarker、§11.4 报告页；《AI研究者助手-前端M2任务分解与方案设计》WP-16
 - 编号口径：以《软件开发计划》§3 M2 里程碑表为唯一事实源——M2-6 信源元数据抽取 → **M2-7 数据点级溯源**；本包承接 M2-6 已真实化的证据元数据（source_type/source_level/credibility/published_at）作为溯源信源索引的数据面（字段计数口径见 §5.9）
@@ -330,16 +330,44 @@ block 内联引用响应三字段固定为 `{evidence_id, marker, snippet}`（�
 5. 联调：`docs/feedback/M2-7数据点级溯源接口交接.md`，重点为真链 run 的 blocks 四类型分布、≥10 论断角标 URL+片段回溯（A2）、四类区块完整（A3）、citations 信源索引（evidence_id + 九展示字段）与 SourcePanel/ConflictBlock 联动、未被引证据不占号的重排实例、report.finished 帧差异确认；交接单同时列明前端跟随项并由前端回归关闭：① `demo_full.ts` outline 改语义 id/固定标题/按需章节、marker 改仅被引占号；② types.ts L430/L440-443 与 useReportBlocks 中「M2-7 冻结前/后」过期注释清退；③ 前端详设 §11.4 与 WP-16 取数时机措辞改 run.finished(succeeded) 驱动；回归关闭后移入 archive/；
 6. 不在本包的动作（流式报告、版本化/批注/导出/分享、证据簇、历史回刷、M2-9 客户端生成、前端 WP-16 引擎/交互重构）以 §1.1 为准流转后续里程碑，不临时扩包；第 5 条所列前端 fixture/文档跟随项是本包交接的组成部分，不属于扩包。
 
-## 13. 实现冻结记录（v1.0，待落地回填）
+## 13. 实现冻结记录（v1.0，2026-09-14）
 
 ### 13.1 落地清单（对照 §3 落位表）
 
-（实现完成后逐行回填）
+| 组件 | 文件 | 结论 |
+| --- | --- | --- |
+| 报告结构化领域包 | `app/reporting/__init__.py`（新增） | 领域包建立，与 retrieval 同级 |
+| LLM 输出 schema | `app/reporting/schemas.py`（新增） | LLMBlockDraftModel/LLMReportPlan；type 三值无 dispute、text 1~800、evidence_ids/quotes |
+| Prompt | `app/reporting/prompts.py`（新增） | 中文 system 六硬约束 + JSON 材料 user 消息 + 数字违规自修复消息；入参精确 TypedDict |
+| 分歧原语 | `app/reporting/disputes.py`（新增） | 标签常量、select_disputes、evidence_side、compose_dispute_text；reporter Markdown 渲染改为复用本模块（去重不双写） |
+| blocks 绑定引擎 | `app/reporting/blocks.py`（新增） | DraftBlock/EvidenceText/ReportAssembly；marker 池序仅被引占号、白名单去重、quote 原文窗口、缺源降级/数字剔除、dispute 注入（双方均剔除跳过）、语义 outline、审计恒等式、引文行展开 |
+| reporter 节点 | `app/orchestrator/nodes/reporter.py`（改造） | Markdown 链保留；content_map 查 Evidence 行（正文不入 state）；一次结构化调用 + 一次自修复；机械映射降级 reporter_degraded；装配经 NodeDeps.report_assembly 交 executor |
+| state 类型 | `app/orchestrator/state.py`（改造） | ResearchState 增 report_blocks/reporter_degraded（LLD §6.2 已同步） |
+| 依赖通道 | `app/orchestrator/dependencies.py`（改造） | NodeDeps 增 report_assembly（run 级进程内通道，不占 state 字段） |
+| 落库 | `app/orchestrator/executor.py`（改造） | `_mark_succeeded` 终稿 status=final、content_json={outline,blocks,citation_audit}、flush 后同事务展开引文行；citation_audit 带 reporter_degraded |
+| ORM/迁移 | `app/db/models/report.py`、`0005_report_citations_blocks.py`（新增） | block_id NOT NULL、claim_id 可空、uq_citation_block_evidence、ix_report_citations_position；downgrade 往返；head=0005 |
+| API schema | `app/schemas/reports.py`（改造） | ReportBlockType/ClaimConfidence、ReportCitation/ReportOutlineItem/ReportBlock/ReportCitationItem；ReportResponse 增 outline/blocks |
+| service | `app/services/reports.py`（新增） | get_report_for_run（404/422 口径）、to_response（新形态超集/旧 draft 空数组）、list_citations（scalars 双查 + position 去重升序） |
+| 路由 | `app/api/v1/reports.py`、`app/api/v1/runs.py`（改造） | GET /reports/{run_id}/citations 新增；两报告端点切 service 出超集；清理内联归属逻辑 |
+| 配置 | `app/core/config.py`、`.env.example` | REPORT_LLM_TIMEOUT_SECONDS=45、REPORT_LLM_MAX_TOKENS=4096 |
+| 契约 | `app/export_openapi.py`、`docs/contract/openapi-m2-7.json` | `_M27_ENDPOINTS` 1 路径 + 描述常量；M2-5 转默认冻结（`--refresh-m25`）；导出 25 路径，M2-5 文件零 diff |
+| 测试 | test_report_blocks（45 新增）、test_reporter（+6）、test_runs_api（+5）、test_executor（1 更新）、test_integration_m27（2 新增真库）、test_integration_m24/m25（钉版本号） | AC-1~AC-13 全覆盖 |
+| 文档 | 本文件 v1.0、LLD §5.3.9/§6.2/§6.5.7 同步、backend/README 回填、M2-7 交接单 | 落位遵循《项目人员协调操作规约》 |
 
-### 13.2 与评审稿（v0.1）的实现偏差
+### 13.2 与评审稿（v0.2）的实现偏差
 
-（实现完成后回填）
+1. **装配产物经 NodeDeps 通道传递，不入 state**：评审稿允许的 state 新字段仅 report_blocks/reporter_degraded 两个；outline/citation_audit/citation_rows 若再开 state 字段会偏离冻结清单，实现为 `NodeDeps.report_assembly: ReportAssembly | None`（deps 本就是 run 级注入通道，executor 在同一进程内读取），ResearchState 严格只增两字段。
+2. **content_map 查询走 `scalars(select(Evidence))` 而非 `execute(select(id,content,snippet))`**：与项目持久化层（persistence.py 全部 scalars）及现有假会话替身约定保持一致；按 run_id 取全量证据行后由引擎按池 id 使用，不改变 §5.4 语义。
+3. **分歧原语抽到 reporting.disputes 而非在引擎内复制**：reporter Markdown 渲染（M2-2 已交付并测试）与 blocks 引擎共用同一份冲突选择/双方口径原语，reporter 侧改为薄封装委托，26 条既有 Markdown 用例零改动通过。
+4. **信源索引查询不做 SQL JOIN**：service 用两次 scalars（引文行 + run 证据池）在 Python 侧拼装去重，与全仓数据访问风格一致；证据受外键约束必然在池内，不设缺行兜底。
+5. **历史迁移循环测试钉死版本号**：test_integration_m24/m25 原以 `upgrade head` 断言固定版本，新增 0005 后 head 漂移；按「历史用例验证自身迁移循环」语义改为显式 `upgrade "0003"/"0004"`，断言内容不变。
+6. **citation_audit 增补 reporter_degraded 布尔**：§5.7 要求 state 与 content_json 双标记，实现把该标记并入 audit 对象（不另开 content_json 顶层键），state 侧仍为独立字段。
 
 ### 13.3 门禁证据
 
-（实现完成后回填：pytest 总数与新增用例数、真库 m27 用例结论、ruff 范围、mypy 基线对比、契约路径数与字段核对结论）
+- 全量 `pytest -q`：**634 passed**（离线 + 全部真库集成，零跳过）；M2-7 新增 58 用例（test_report_blocks 45 + test_reporter 结构化接线 6 + test_runs_api 超集/信源索引 5 + test_integration_m27 真库 2），test_executor 更新 1 处终稿断言，m24/m25 迁移用例钉版本号；基线 576 → 634。
+- 真库 `tests/test_integration_m27.py`：m27_orm 下引擎装配（quote 命中统计局正文「30%」原句窗口）→ final Report + 3 条 block×证据引文行（evidence 块 claim_id 为空）→ 独立会话经 service 读回信源索引 [1]/[2] 九展示字段齐全；m27_migration 下 alembic upgrade head=0005（block_id NOT NULL、claim_id nullable、uq 约束与三索引存在）→ downgrade -1 回 0004 全部消失 → upgrade 恢复；两 schema 跑后 DROP CASCADE 无残留。
+- ruff：本批全部变更文件 check All checks passed、format 已应用。
+- mypy：54 条，与 dev worktree 基线（b9b3481）54 条**零新增**（实现中出现的 2 条 prompts TypedDict 入参告警已通过精确标注消除）。
+- 契约（AC-12）：openapi-m2-7 导出 **25 路径**（新增 GET /api/v1/reports/{run_id}/citations）；ReportBlock（required id/type/text，四可选）、ReportCitation（三必填）、ReportCitationItem（五必填 + domain/source_type/source_level/credibility/published_at 五可选，线上 10 字段）、ReportOutlineItem（三必填）与前端 types.ts 字段名/枚举/可选性差异为 0；M2-5 快照保持 24 路径零 diff（转默认冻结）。
+- 联调前置：alembic head 由 0004 变 **0005**，联调环境须 `alembic upgrade head`。

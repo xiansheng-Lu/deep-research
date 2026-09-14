@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from app.db.models.report import Report
+from app.db.models.report import Report, ReportCitation
 from app.db.models.run import ResearchRun
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.executor import (
@@ -564,8 +564,18 @@ async def test_run_research_async_real_graph_values_stream() -> None:
 
     assert run.status == "succeeded"
     assert run.current_stage == "report"
-    added_report = mock_session.add.call_args[0][0]
+    # M2-7：session.add 同时收到 Report(final) 与 report_citations 行
+    added_objects = [call.args[0] for call in mock_session.add.call_args_list]
+    added_report = next(obj for obj in added_objects if isinstance(obj, Report))
+    assert added_report.status == "final"
     assert len(added_report.content_md) > 200
+    structured = added_report.content_json
+    assert {"outline", "blocks", "citation_audit"} <= set(structured)
+    assert structured["blocks"]
+    assert any(block["type"] == "conclusion" for block in structured["blocks"])
+    citation_rows = [obj for obj in added_objects if isinstance(obj, ReportCitation)]
+    assert citation_rows
+    assert all(row.position >= 1 and row.block_id.startswith("block-") for row in citation_rows)
 
     stage_events = [e for e in events if e["type"] == "stage.started"]
     assert [e["stage"] for e in stage_events] == [

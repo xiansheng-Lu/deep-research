@@ -32,6 +32,9 @@ class NodeDeps:
             不直接落库（外层编排可在 checkpoint 时统一持久化）。
         hub: 实时事件总线；critic 检出 high 冲突逐条推送 ``conflict.detected``、
             await_human 回流时推送 ``conflict.verdicts``；缺省不推送。
+        report_assembly: M2-7 reporter 节点写回的结构化终稿装配产物
+            （reporting.blocks.ReportAssembly：blocks/outline/audit/引文行），
+            run 级进程内通道，不入 ResearchState；executor 据此落 final 报告。
     """
 
     run_id: str
@@ -41,6 +44,7 @@ class NodeDeps:
     retrieval_client: RetrievalClient | None = None
     db_session: AsyncSession | None = None
     hub: RealtimeHub | None = None
+    report_assembly: Any = None
 
     def safe(self) -> dict[str, Any]:
         """返回便于日志输出的轻量字典（不暴露敏感字段）。"""

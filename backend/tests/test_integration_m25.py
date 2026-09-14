@@ -468,7 +468,7 @@ def _idempotency_index_unique(sync_conn: Any) -> bool | None:
 
 @pytest.mark.asyncio
 async def test_alembic_0004_intervention_table_cycle(migration_dsn: str) -> None:
-    """AC-14：head(0004) 表+唯一索引 → downgrade -1 全删 → upgrade 恢复。"""
+    """AC-14：0004 表+唯一索引 → downgrade -1 全删 → upgrade 恢复（钉死版本，不随 head 漂移）。"""
     from alembic import command
     from alembic.config import Config
     from sqlalchemy import create_engine
@@ -477,7 +477,7 @@ async def test_alembic_0004_intervention_table_cycle(migration_dsn: str) -> None
     cfg.set_main_option("script_location", str(_BACKEND_DIR / "app" / "db" / "migrations"))
     cfg.set_main_option("path_separator", "os")
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0004")
     engine = create_engine(migration_dsn)
     try:
         with engine.connect() as conn:
@@ -493,7 +493,7 @@ async def test_alembic_0004_intervention_table_cycle(migration_dsn: str) -> None
             assert not _table_exists(conn, "run_interventions")
             assert _idempotency_index_unique(conn) is None
 
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0004")
         with engine.connect() as conn:
             assert _table_exists(conn, "run_interventions")
             assert _idempotency_index_unique(conn) is True
