@@ -144,7 +144,7 @@
 - 渲染器四类型：conclusion（正文 + 行内 CitationMarker 组 + confidence 中文标签：单一来源/多源印证/推断）、evidence（可折叠原文片段）、dispute（ConflictBlock 内联警告 + 双方立场，"查看分歧详情"M2 仅弹只读抽屉）、limitation。
 - CitationMarker 三态（§10.3）：hover 200ms Popover 迷你 SourceBadge；click 右侧 SourcePanel 抽屉定位原文；键盘 Tab/Enter/方向键可达。
 - LimitationSummary 报告末尾汇总；ReportChrome 工具条 M2 仅返回 + "只看分歧"筛选（灰化未命中 block，不删除）。
-- 双轨切换：生成中保留 M1 markdown 预览（流式光标、100ms flush）；report.finished 后无损切 blocks；M2 不实现 SSE report.chunk（M1 契约已移除 SSE，生成中以 run 状态 + 轮询/WS 为准，若后端 M2 恢复报告流再按 §9.2 挂接，列入对接确认）。
+- 双轨切换：生成中保留 M1 markdown 预览（流式光标、100ms flush）；真链 M2-7 不发 report.finished 帧，run.finished(status=succeeded) 后拉取终稿超集，按 blocks 是否非空切 blocks（mock demo_full 保留 report.finished 帧仅模拟用）；M2 不实现 SSE report.chunk（M1 契约已移除 SSE，生成中以 run 状态 + 轮询/WS 为准，若后端 M2 恢复报告流再按 §9.2 挂接，列入对接确认）。
 - 验收：样例报告 ≥10 个论断角标全部可点击回溯到 URL + 原文片段（A2 抽样口径）；四类区块完整（A3）；推断结论不以事实呈现；首帧 ≤2s（文本先出、角标懒挂）。
 
 ### 阶段 E：横切韧性与可观测

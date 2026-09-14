@@ -485,7 +485,7 @@ export function useRunStream(runId: string) {
 1. **流式预览**：由 `useReportDraft(runId)` 消费 SSE `report.chunk` 的 `delta/position`，维护只读文本缓冲，渲染层每 N 帧 flush 到视图（防抖 100ms，避免逐 token 重渲染）。
 2. **结构化终稿**：由 `useReportBlocks(reportId)` 拉取 `GET /reports/{report_id}` 的 JSON 结构，构建 blocks/claims/citations 索引（claim 级查找表），是角标回溯/筛选/批注锚点的唯一数据源。
 
-两条通道通过 report `status`（`draft/final`）切换；`draft→final` 时用 `report.finished` 事件触发从 draft 模式无损切换到 blocks 模式（保留滚动位置到最近可映射区块）。
+两条通道通过 report `status`（`draft/final`）与终稿响应形态切换。M2-7 冻结口径：真链 WS 不发 `report.finished` 帧，切换由 `run.finished(status=succeeded)` 驱动——ReportView 先 `GET /runs/{id}` 判定状态，succeeded 后并行拉取报告超集/citations/conflicts，按 blocks 是否非空分流（422 报告未生成时 3s 轮询）；mock demo_full 剧本保留 `report.finished` 帧仅作模拟演示。
 
 ### 7.5 缓存与失效
 
@@ -588,7 +588,7 @@ envelope 校验通过后按 `type` 分发；`stage` 用于快速过滤（未订�
 | `token.usage.update` | 1s | 更新 `cost {used, budget, model_breakdown}` | 指挥舱成本卡 |
 | `cost.warning` | 即时 | 右下角警告卡（70% 提示 / 90% danger） | 指挥舱 |
 | `report.chunk` | 即时 | 转发给报告预览通道（若本页订阅） | 报告流式预览 |
-| `report.finished` | 即时 | 触发 draft→final 切换 + 全局通知 | 报告页 |
+| `report.finished` | 即时 | mock 剧本帧：真链 M2-7 不发送，blocks 轨切换以 `run.finished(status=succeeded)` 为准 | 报告页（仅 mock） |
 | `run.finished` | 即时 | 全局 toast/通知、首页"进行中"更新 | 全局 |
 
 ### 9.3 连接生命周期与断线补齐
@@ -825,7 +825,7 @@ export type ReportAnchor =
 **数据流（双轨，§7.4）**：
 
 - 生成中：`useReportDraft` 订阅 SSE；无终稿时不展示角标与筛选（简化实现），仅"实时输出 + 光标"；顶部提供"报告生成中"状态条。
-- `report.finished` → 切换 `useReportBlocks`：拉取 `GET /reports/{id}` 与 `GET /reports/{id}/citations`，渲染 blocks 视图并高亮迁移点；保留阅读进度（尝试滚动到最近章节）。
+- 真链 M2-7 不发 `report.finished`：`run.finished(status=succeeded)` 后进入本页，先 `GET /runs/{id}` 判定状态，再并行拉取 `GET /reports/{run_id}`（markdown+outline/blocks 超集）、`GET /reports/{run_id}/citations` 与 run 冲突列表，按 blocks 是否非空分流（422 报告未生成时 3s 轮询）；mock demo_full 的 `report.finished` 帧仅作模拟演示。
 - `status=superseded`（M4 `report.replace`）→ 顶栏提示"内容已更新（标存疑后重生成）"，锚点重映射（§10.4）。
 
 **区块渲染**（blocks 引擎）：
