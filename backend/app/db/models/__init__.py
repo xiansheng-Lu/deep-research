@@ -13,6 +13,7 @@ from app.db.models.knowledge import KnowledgeEmbedding, KnowledgeItem
 from app.db.models.project import Project
 from app.db.models.report import Report, ReportCitation
 from app.db.models.run import ResearchRun, Stage, SubQuestion
+from app.db.models.telemetry import TelemetryEvent
 
 __all__ = [
     "AuditEntry",
@@ -28,6 +29,7 @@ __all__ = [
     "Stage",
     "SubQuestion",
     "Team",
+    "TelemetryEvent",
     "User",
     "Verdict",
 ]

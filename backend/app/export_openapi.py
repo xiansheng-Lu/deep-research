@@ -95,6 +95,14 @@ _M27_ENDPOINTS = frozenset(
     }
 )
 
+# M2-8 在 M2-7 之上新增的埋点端点（批量接收 + 指标聚合）
+_M28_ENDPOINTS = frozenset(
+    {
+        "/api/v1/telemetry/batch",
+        "/api/v1/telemetry/metrics",
+    }
+)
+
 _M22_DESCRIPTION = (
     "本 schema 为截至 M2-2（批判收敛与人机裁决）后端冻结契约的累积快照，"
     "包含 M1 端点 + M2-1 意图路由与闲聊 + M2-2 分歧三端点。\n"
@@ -156,6 +164,22 @@ _M27_DESCRIPTION = (
     "未被引用证据不占号。WebSocket 帧在本批零变化。"
 )
 
+_M28_DESCRIPTION = (
+    "本 schema 为截至 M2-8a（埋点接收与指标出数）后端冻结契约的累积快照，"
+    "在 M2-7 全部端点之上新增两个遥测只读/接收端点（共 27 路径）：\n"
+    "POST /telemetry/batch 批量接收前端 WP-18 埋点（204 无体；批≤200 条/64KB，"
+    "event/ts/page/run_id/props 条级非法丢条整批仍 204，批结构非法 422 "
+    "telemetry_batch_invalid，超频 429 telemetry_rate_limited；props 仅扁平标量，"
+    "user/team 归属服务端注入）；\n"
+    "GET /telemetry/metrics 按时间窗（默认近 30 天、上限 90 天）返回 A8 聚合标量："
+    "报告生成成功率（succeeded/(succeeded+failed)，cancelled 排除）、看板介入率"
+    "（run_interventions applied + run.pause/run.resume 审计按 run 去重，by_action "
+    "含 clarify 前端事件口径）、溯源可回溯率（final 报告 numeric_claim_binding_rate "
+    "均值 + report.citation.open distinct run 交互口径）、意图降级率与接收自检计数。\n"
+    "指标为全局聚合（无明细/无租户维度，M6 审计明细另议）；WebSocket 帧零变化。"
+    "M2-8b Celery 接管长任务不新增 REST 路径，本快照不随其变化。"
+)
+
 
 def _filter_paths(schema: dict[str, Any], whitelist: frozenset[str]) -> dict[str, Any]:
     paths = cast(dict[str, Any], schema.get("paths", {}))
@@ -204,7 +228,12 @@ def main() -> None:
     parser.add_argument(
         "--refresh-m25",
         action="store_true",
-        help="同时重写已冻结的 openapi-m2-5.json（M2-7 起默认跳过以保持快照稳定）",
+        help="同时重写已冻结的 openapi-m2-5.json（默认跳过以保持快照稳定）",
+    )
+    parser.add_argument(
+        "--refresh-m27",
+        action="store_true",
+        help="同时重写已冻结的 openapi-m2-7.json（M2-8 起默认跳过以保持快照稳定）",
     )
     args = parser.parse_args()
 
@@ -226,6 +255,11 @@ def main() -> None:
     m27_paths = _filter_paths(
         schema,
         _M1_ENDPOINTS | _M22_ENDPOINTS | _M24_ENDPOINTS | _M25_ENDPOINTS | _M27_ENDPOINTS,
+    )
+    m28_paths = _filter_paths(
+        schema,
+        _M1_ENDPOINTS | _M22_ENDPOINTS | _M24_ENDPOINTS | _M25_ENDPOINTS | _M27_ENDPOINTS
+        | _M28_ENDPOINTS,
     )
 
     m1_output = output_dir / "openapi-m1.json"
@@ -287,21 +321,34 @@ def main() -> None:
     else:
         print("跳过已冻结的 M2-5 快照（如需重写加 --refresh-m25）")
 
+    m27_output = output_dir / "openapi-m2-7.json"
+    if args.refresh_m27 or not m27_output.exists():
+        _write_snapshot(
+            schema,
+            m27_paths,
+            filename="openapi-m2-7.json",
+            title="AI 研究者助手 · M2-7 累积接口契约冻结（M1 + M2-1 + M2-2 + M2-4 + M2-5 + M2-7）",
+            description=_M27_DESCRIPTION,
+            output_dir=output_dir,
+        )
+    else:
+        print("跳过已冻结的 M2-7 快照（如需重写加 --refresh-m27）")
+
     _write_snapshot(
         schema,
-        m27_paths,
-        filename="openapi-m2-7.json",
-        title="AI 研究者助手 · M2-7 累积接口契约冻结（M1 + M2-1 + M2-2 + M2-4 + M2-5 + M2-7）",
-        description=_M27_DESCRIPTION,
+        m28_paths,
+        filename="openapi-m2-8.json",
+        title="AI 研究者助手 · M2-8a 累积接口契约冻结（M1 + M2-1 + M2-2 + M2-4 + M2-5 + M2-7 + M2-8a）",
+        description=_M28_DESCRIPTION,
         output_dir=output_dir,
     )
 
     all_paths = cast(dict[str, Any], schema.get("paths", {}))
-    placeholder_count = len(all_paths) - len(m27_paths)
+    placeholder_count = len(all_paths) - len(m28_paths)
     print(f"未纳入任何快照的占位/其他端点数：{placeholder_count}")
-    print("M2-7 新增端点：")
-    for path in sorted(_M27_ENDPOINTS):
-        methods = sorted(m27_paths[path].keys())
+    print("M2-8a 新增端点：")
+    for path in sorted(_M28_ENDPOINTS):
+        methods = sorted(m28_paths[path].keys())
         print(f"  {path}  [{', '.join(methods).upper()}]")
 
 

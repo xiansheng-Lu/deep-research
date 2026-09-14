@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     # 每子问题补采页面数上限（只补缺发布时间者，0 等价关闭）
     source_page_fetch_per_subquestion: int = Field(default=3, alias="SOURCE_PAGE_FETCH_PER_SUBQUESTION")
 
+    # ===== 埋点接收（M2-8a） =====
+    # 稳定采样率（0~1，按 user_id 哈希）；0 等价关闭落库（端点仍 204）
+    telemetry_sample_rate: float = Field(default=1.0, alias="TELEMETRY_SAMPLE_RATE")
+    # 每用户每分钟批量请求上限，超限 429
+    telemetry_rate_limit_per_min: int = Field(default=12, alias="TELEMETRY_RATE_LIMIT_PER_MIN")
+
     # ===== 结构化报告生成（M2-7） =====
     # 终稿 blocks 计划单次结构化调用硬超时（秒）；超时/异常走机械映射降级
     report_llm_timeout_seconds: float = Field(default=45.0, alias="REPORT_LLM_TIMEOUT_SECONDS")

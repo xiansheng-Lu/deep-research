@@ -69,3 +69,17 @@ class ExternalServiceError(AppError):
 
     status_code = 502
     code = "external_service_error"
+
+
+class TelemetryBatchInvalidError(AppError):
+    """埋点批量请求结构非法（422，契约 §14）。"""
+
+    status_code = 422
+    code = "telemetry_batch_invalid"
+
+
+class TelemetryRateLimitedError(AppError):
+    """单用户埋点批量频率超限（429，契约 §14）。"""
+
+    status_code = 429
+    code = "telemetry_rate_limited"

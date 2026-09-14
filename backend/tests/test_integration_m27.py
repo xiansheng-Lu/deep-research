@@ -378,7 +378,8 @@ async def test_alembic_0005_report_citations_cycle(migration_dsn: str) -> None:
     cfg.set_main_option("script_location", str(_BACKEND_DIR / "app" / "db" / "migrations"))
     cfg.set_main_option("path_separator", "os")
 
-    command.upgrade(cfg, "head")
+    # 钉死 0005：本用例验证 0004/0005 自身循环，不随后续 head（0006+）漂移
+    command.upgrade(cfg, "0005")
     engine = create_engine(migration_dsn)
     try:
         with engine.connect() as conn:
@@ -401,7 +402,7 @@ async def test_alembic_0005_report_citations_cycle(migration_dsn: str) -> None:
             assert not _named_object_exists(conn, "uq_citation_block_evidence")
             assert not _named_object_exists(conn, "ix_report_citations_position")
 
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0005")
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).first()
             assert version is not None and version[0] == "0005"

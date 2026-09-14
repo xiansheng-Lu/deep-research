@@ -18,6 +18,7 @@ from app.api.v1 import (
     reports,
     runs,
     teams,
+    telemetry,
     templates,
     users,
 )
@@ -37,6 +38,7 @@ api_v1_router.include_router(knowledge.router)
 api_v1_router.include_router(connectors.router)
 api_v1_router.include_router(templates.router)
 api_v1_router.include_router(audit.router)
+api_v1_router.include_router(telemetry.router)
 api_v1_router.include_router(ws_router)
 
 __all__ = ["api_v1_router"]

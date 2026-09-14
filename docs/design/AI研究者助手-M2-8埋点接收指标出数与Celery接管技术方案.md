@@ -1,6 +1,6 @@
 ﻿# AI 研究者助手 · M2-8 埋点接收/指标出数与 Celery 接管长任务阶段技术方案
 
-- 版本：v0.2（评审稿，2026-09-15；v0.1 仅含埋点接收，v0.2 按评审意见把 Celery 接管与孤儿清扫并入同一里程碑方案，分 a/b 两段独立 T 序列交付）
+- 版本：v0.2 + M2-8a 实现冻结（2026-09-15；a 段已落地，门禁证据见 §13.3；b 段 Celery 接管仍待编码，§14~§23 维持评审稿）
 - 范围：
   - **M2-8a 埋点接收与指标出数**：前端 Telemetry 批量接收端点（`POST /telemetry/batch`，WP-18 已在发数、当前 404 静默失败）、`telemetry_events` 表与 0006 迁移、A8 三指标聚合出数端点（`GET /telemetry/metrics`）。
   - **M2-8b Celery 接管长任务 + 跨进程事件 + 孤儿 run 清扫**：研究/恢复执行从 API 进程内 `asyncio.create_task` 迁出到独立 worker；Redis 承载跨进程 RealtimeHub 扇出与在途 run 租约/控制信号；启动期孤儿 run 清扫（收敛 M2-5 挂账的无协程 pause 409）。
@@ -317,19 +317,39 @@ WS 帧：无增删改。M2-7 快照转默认冻结（`--refresh-m27`）。
 3. **8a/8b 同里程碑分两段交付**：a 先行（无部署变更、前端在等），b 随后（Redis/worker 跨进程改造）；8b 不晚于 M3 启动前完成，避免长任务 asyncio 形态长期固化。
 4. **事件名不设服务端白名单**：允许前端扩展事件零后端发版，结构校验兜底；若评审要求白名单（只收三事件），改为配置化集合，评审时定。
 
-## 13. M2-8a 实现冻结记录（v1.0，待落地回填）
+## 13. M2-8a 实现冻结记录（v1.0，2026-09-15）
 
 ### 13.1 落地清单（对照 §3 落位表）
 
-（实现完成后逐行回填）
+| 组件 | 文件 | 结论 |
+| --- | --- | --- |
+| 迁移 | `0006_telemetry_events.py`（新增） | telemetry_events + 四索引（created_at/event_time/run/user_time），server_default '{}'，downgrade 往返；head=0006 |
+| ORM | `app/db/models/telemetry.py`（新增）+ `__init__.py`/test_models 注册 | TelemetryEvent 追加表（无 updated_at），props Mapped[dict[str, Any]] |
+| API schema | `app/schemas/telemetry.py`（新增） | 入站 TelemetryEventIn（仅 event:str/ts:int 为批级强约束，run_id/page/props 为 Any 交条级清洗）、TelemetryBatchRequest(1~200)、metrics 五组响应模型；全部常量固化 |
+| 限流/采样 | `app/telemetry_ingest/__init__.py`（新增） | SlidingWindowRateLimiter（60s 滑窗）、stable_sample（blake2b user_id 稳定切流）、IngestCounters 进程计数 |
+| 接收/指标服务 | `app/services/telemetry.py`（新增） | ingest_batch（采样+条级清洗+归属注入+add_all）、check_rate_limit、parse_window、get_metrics（成功率/介入率/双口径溯源率/意图降级率） |
+| 路由 | `app/api/v1/telemetry.py`（新增）+ `__init__.py` 注册 | POST /telemetry/batch（204/422/429，64KB raw body 二次校验）、GET /telemetry/metrics（窗口 422 走 validation_error） |
+| 错误码 | `app/core/exceptions.py` | TelemetryBatchInvalidError(422)、TelemetryRateLimitedError(429) |
+| 配置 | config.py/.env.example | TELEMETRY_SAMPLE_RATE=1.0、TELEMETRY_RATE_LIMIT_PER_MIN=12 |
+| 契约 | export_openapi.py + openapi-m2-8.json | `_M28_ENDPOINTS` 2 路径，M2-7 转默认冻结（--refresh-m27），导出 27 路径 |
+| 测试 | test_telemetry_ratelimit（4）、test_telemetry_api（11）、test_integration_m28（4 真库+纯函数）、m27 迁移用例钉 0005、test_models 清单更新 | AC-1~AC-13 覆盖 |
 
 ### 13.2 与评审稿的实现偏差
 
-（实现完成后回填）
+1. **入站 schema 放宽到 Any 由 service 逐行清洗**：评审稿原拟 Pydantic 直接约束 props 标量/字段长度，但嵌套 dict、超长字符串会在请求体解析阶段触发整批 422，与「条级非法丢条、整批仍 204」（AC-3）矛盾。实现为 TelemetryEventIn 只强约束 event:string、ts:int（不可恢复结构错误才整批 422），其余类型/长度/正则/时间窗/props 白名单全部在 service `_clean_event` 逐行判定。
+2. **空批/超条数的 422 为 FastAPI 默认请求体错误形态（`detail`）**：仅 64KB 超限走 telemetry_batch_invalid 自定义码；两类都是 HTTP 422，前端 WP-18 静默策略不依赖 body。
+3. **介入率分母含 running run**：方案 §5.5 文字为「started_at 非空」，running 同样满足（用户已看到看板），实现按 5 个 started 计；测试期望已据实修正为 2/5=0.4。
+4. **审计/介入聚合查询 select 实体而非多列标量**：与全仓 scalars() 约定一致，Python 侧取属性。
+5. **响应附加 `X-Accepted-Events` 头**：204 无体，实际接受条数放调试响应头（前端 fire-and-forget 不依赖，契约无破坏）。
+6. **test_models 顺手清掉两处既有告警**：触碰该文件后 ruff 纳入检查，删除未用的 `inspect` 导入与未用 `indexes` 变量（不改断言语义）。
 
 ### 13.3 门禁证据
 
-（实现完成后回填：pytest 总数与新增用例数、真库 m28 用例结论、ruff 范围、mypy 基线对比、契约 27 路径与前端 telemetry 类型核对结论）
+- 全量 `pytest -q`：**655 passed**（基线 636 +19：限流/采样 4、接收 API 11、m28 真库 4），含全部真库集成零跳过。
+- 真库 m28：m28_orm 造 4 终态+1 running run、exclude/pause 介入、2 final(1.0/0.5)、9 条埋点（含 r-unknown 去伪），独立会话聚合断言成功率 2/3、介入率 2/5、by_action(pause=1/exclude=1/clarify=1)、溯源均值 0.75/交互率 1.0、意图降级 1/4；空窗口率字段全 null；m28_migration 0006 表+四索引 upgrade/downgrade/upgrade 往返。
+- ruff：本批文件 check 全净、format 已应用；mypy 54 条与 dev 基线 54 条**零新增**（telemetry 模型 Mapped[dict[str,Any]] 补齐类型参数）。
+- 契约：openapi-m2-8 **27 路径**（+batch/+metrics）；入站 TelemetryEventIn 的 JSON 字段（event/ts/run_id/page/props）与前端 types.ts TelemetryEvent 同构，metrics 为后端新增出站（前端 WP-18 只发不读）；M2-7 快照 25 路径零 diff 转冻结。
+- 联调前置：alembic head 0005→**0006**（`alembic upgrade head`）；新配置有默认值，不设环境变量即可启动。
 
 ---
 

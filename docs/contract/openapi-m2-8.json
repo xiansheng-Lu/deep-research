@@ -1,0 +1,3702 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AI 研究者助手 · M2-8a 累积接口契约冻结（M1 + M2-1 + M2-2 + M2-4 + M2-5 + M2-7 + M2-8a）",
+    "version": "0.1.0",
+    "description": "本 schema 为截至 M2-8a（埋点接收与指标出数）后端冻结契约的累积快照，在 M2-7 全部端点之上新增两个遥测只读/接收端点（共 27 路径）：\nPOST /telemetry/batch 批量接收前端 WP-18 埋点（204 无体；批≤200 条/64KB，event/ts/page/run_id/props 条级非法丢条整批仍 204，批结构非法 422 telemetry_batch_invalid，超频 429 telemetry_rate_limited；props 仅扁平标量，user/team 归属服务端注入）；\nGET /telemetry/metrics 按时间窗（默认近 30 天、上限 90 天）返回 A8 聚合标量：报告生成成功率（succeeded/(succeeded+failed)，cancelled 排除）、看板介入率（run_interventions applied + run.pause/run.resume 审计按 run 去重，by_action 含 clarify 前端事件口径）、溯源可回溯率（final 报告 numeric_claim_binding_rate 均值 + report.citation.open distinct run 交互口径）、意图降级率与接收自检计数。\n指标为全局聚合（无明细/无租户维度，M6 审计明细另议）；WebSocket 帧零变化。M2-8b Celery 接管长任务不新增 REST 路径，本快照不随其变化。"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Healthz",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "邮箱密码登录",
+        "description": "校验邮箱 + 密码，签发访问/刷新令牌。",
+        "operationId": "login_api_v1_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPair"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "刷新访问令牌",
+        "description": "用 refresh token 换发新的 access token（refresh token 同时轮换）。",
+        "operationId": "refresh_api_v1_auth_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPair"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "登出（M1 软登出）",
+        "description": "软登出：仅同步 ``last_login_at`` 作为审计锚点。\n\n注：M1 不引入 refresh token 黑名单（需 Redis）；前端清理本地令牌即可。\nM2 接入 Redis 后会补充黑名单校验。",
+        "operationId": "logout_api_v1_auth_logout_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Logout Api V1 Auth Logout Post"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "当前用户",
+        "description": "返回当前登录用户的视图。",
+        "operationId": "me_api_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentUser"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "列出当前团队的项目",
+        "description": "列出当前用户所属团队下 ``status='active'`` 且未软删除的项目。",
+        "operationId": "list_projects_api_v1_projects_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectResponse"
+                  },
+                  "type": "array",
+                  "title": "Response List Projects Api V1 Projects Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "创建项目",
+        "description": "创建项目并归属到当前用户及其团队。",
+        "operationId": "create_project_api_v1_projects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/runs": {
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "发起研究运行",
+        "description": "创建研究运行并后台调度 executor。\n\n校验项目归属：``project_id`` 必须属于当前用户团队且 ``status='active'``。",
+        "operationId": "create_run_api_v1_runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "查询研究运行列表（创建者维度）",
+        "description": "分页返回当前用户创建的研究运行（created_at 倒序）。\n\n- ``status``：六态单值过滤，非法枚举由 FastAPI 判 422；\n- ``project_id``：再过滤且校验团队归属，非本团队项目 404。",
+        "operationId": "list_runs_api_v1_runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "running",
+                    "paused",
+                    "succeeded",
+                    "failed",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 26
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedResponse_RunResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/pause": {
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "暂停研究运行（软暂停）",
+        "description": "软暂停运行中的研究。\n\n- 仅 ``running`` 且存在在途执行协程时可暂停；已暂停 409 RUN_ALREADY_PAUSED，\n  其他终态/孤儿 running 409 RUN_NOT_PAUSABLE；\n- 暂停为协作式：响应返回后协程在最近 super-step 边界落 paused 并推\n  ``run.finished(status=paused)``，恢复走 POST /resume（M2-5 T2）。",
+        "operationId": "pause_run_api_v1_runs__run_id__pause_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PauseRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunControlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/cancel": {
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "取消研究运行（硬中断）",
+        "description": "硬取消研究；对 succeeded/failed/cancelled 幂等返回当前状态。\n\n``keep_partial=true``（默认）时若已有报告草稿则保留并在响应带回 id。",
+        "operationId": "cancel_run_api_v1_runs__run_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunControlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/resume": {
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "恢复研究运行（人类输入统一入口）",
+        "description": "从暂停/澄清/裁决/成本挂起点恢复。\n\n空 body 或 ``{human_input:{kind:\"proceed\"}}`` 为纯继续；澄清挂起必须带\n非空 answers；载荷校验与 409/422 语义见 M2-5 方案 §5.3。",
+        "operationId": "resume_run_api_v1_runs__run_id__resume_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunControlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/intervene": {
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "运行中主动介入（追加追问/剔除证据）",
+        "description": "running 中的受控介入；动作语义与可用阶段见 M2-5 方案 §5.5。",
+        "operationId": "intervene_run_api_v1_runs__run_id__intervene_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterventionAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunControlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "查询研究运行状态",
+        "description": "查询单个研究运行的当前状态。\n\npaused@clarify 时附加 interrupt 澄清上下文（M2-5 §5.4，供刷新恢复澄清卡）。",
+        "operationId": "get_run_api_v1_runs__run_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/report": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "查询研究运行的报告",
+        "description": "查询研究运行产出的报告（Markdown 正文 + M2-7 结构化 outline/blocks 超集）。",
+        "operationId": "get_run_report_api_v1_runs__run_id__report_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/stages": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "查询运行阶段时间线",
+        "description": "固定六阶段顺序返回；历史无阶段行的 run 返回空数组。",
+        "operationId": "list_run_stages_api_v1_runs__run_id__stages_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StageResponse"
+                  },
+                  "title": "Response List Run Stages Api V1 Runs  Run Id  Stages Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/sub-questions": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "查询运行的子问题列表",
+        "description": "按 created_at 升序返回 run 下全部子问题。",
+        "operationId": "list_run_sub_questions_api_v1_runs__run_id__sub_questions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SubQuestionResponse"
+                  },
+                  "title": "Response List Run Sub Questions Api V1 Runs  Run Id  Sub Questions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/evidence": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "分页查询运行的证据池",
+        "description": "证据池分页（fetched_at 倒序）；默认剔除用户已排除证据。",
+        "operationId": "list_run_evidence_api_v1_runs__run_id__evidence_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "sub_question_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 26
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sub Question Id"
+            }
+          },
+          {
+            "name": "include_excluded",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Excluded"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedResponse_EvidenceResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/evidence/{evidence_id}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "查询单条证据详情（全文懒加载）",
+        "description": "单条证据详情；归属不符/不存在统一 404。",
+        "operationId": "get_run_evidence_api_v1_runs__run_id__evidence__evidence_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "evidence_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Evidence Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/cost/snapshot": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "查询运行实时成本快照",
+        "description": "成本快照直接读 run 行；level 与实时帧共用同一阈值派生。",
+        "operationId": "get_run_cost_snapshot_api_v1_runs__run_id__cost_snapshot_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CostSnapshotResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/intent/classify": {
+      "post": {
+        "tags": [
+          "intent"
+        ],
+        "summary": "判别用户输入意图",
+        "description": "判别闲聊 / 研究 / 不确定；LLM 不可用时保守降级为研究。",
+        "operationId": "classify_api_v1_intent_classify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntentClassifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntentClassifyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/assistant/chat": {
+      "post": {
+        "tags": [
+          "assistant"
+        ],
+        "summary": "闲聊直答（SSE 流式）",
+        "description": "通用 LLM 流式直答；LLM 未配置时返回 503。",
+        "operationId": "chat_api_v1_assistant_chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/conflicts": {
+      "get": {
+        "tags": [
+          "conflicts"
+        ],
+        "summary": "查询研究运行下的分歧列表",
+        "description": "返回 run 下全部分歧，按创建时间升序；非创建者 404（FR-6）。",
+        "operationId": "list_run_conflicts_api_v1_runs__run_id__conflicts_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ConflictResponse"
+                  },
+                  "title": "Response List Run Conflicts Api V1 Runs  Run Id  Conflicts Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conflicts/{conflict_id}": {
+      "get": {
+        "tags": [
+          "conflicts"
+        ],
+        "summary": "查询分歧详情（含双方证据摘要）",
+        "description": "返回冲突字段及双方证据摘要；不存在或不归属返回 404（FR-7）。",
+        "operationId": "get_conflict_api_v1_conflicts__conflict_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "conflict_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conflict Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conflicts/{conflict_id}/verdict": {
+      "post": {
+        "tags": [
+          "conflicts"
+        ],
+        "summary": "提交分歧裁决",
+        "description": "写入 Verdict 并把 Conflict 置 resolved（FR-8/9）。\n\n已终结冲突返回 409；请求级事务由 db_session 依赖在响应后统一提交。\n提交后的自动恢复判定经服务钩子执行（Task 8 接线）。",
+        "operationId": "submit_conflict_verdict_api_v1_conflicts__conflict_id__verdict_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "conflict_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conflict Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerdictRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerdictResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reports/{run_id}": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "按研究运行 ID 查询报告",
+        "description": "按研究运行 ID 查询报告（含 M2-7 结构化终稿 outline/blocks）。",
+        "operationId": "get_report_by_run_api_v1_reports__run_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reports/{run_id}/citations": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "查询报告的数据点级溯源信源索引",
+        "description": "报告级信源列表：角标 [N] + 原文片段 + URL/可信元数据，按 marker 升序去重。",
+        "operationId": "get_report_citations_api_v1_reports__run_id__citations_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReportCitationItem"
+                  },
+                  "title": "Response Get Report Citations Api V1 Reports  Run Id  Citations Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/telemetry/batch": {
+      "post": {
+        "tags": [
+          "telemetry"
+        ],
+        "summary": "前端埋点批量上报",
+        "description": "批量接收埋点：批级结构非法 422、超频 429；采样丢弃/条级非法仍 204。",
+        "operationId": "post_telemetry_batch_api_v1_telemetry_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelemetryBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/telemetry/metrics": {
+      "get": {
+        "tags": [
+          "telemetry"
+        ],
+        "summary": "查询 A8 埋点指标窗口聚合",
+        "description": "全局聚合标量（无明细/无租户维度）；默认近 30 天，窗口上限 90 天。",
+        "operationId": "get_telemetry_metrics_api_v1_telemetry_metrics_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetryMetricsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AssistantChatRequest": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message",
+            "description": "当前用户消息"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantTurn"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "History"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "AssistantChatRequest",
+        "description": "``POST /assistant/chat`` 请求体。"
+      },
+      "AssistantTurn": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "AssistantTurn",
+        "description": "历史对话中的一条消息。"
+      },
+      "CancelRunRequest": {
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "keep_partial": {
+            "type": "boolean",
+            "title": "Keep Partial",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "CancelRunRequest",
+        "description": "``POST /runs/{id}/cancel`` 请求体（契约草案 §6.1）。"
+      },
+      "ConflictDetailResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "claim": {
+            "type": "string",
+            "title": "Claim"
+          },
+          "evidence_a_id": {
+            "type": "string",
+            "title": "Evidence A Id"
+          },
+          "evidence_b_id": {
+            "type": "string",
+            "title": "Evidence B Id"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "factual",
+              "methodological",
+              "temporal",
+              "perspective"
+            ],
+            "title": "Type"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Severity"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "detected",
+              "awaiting_human",
+              "resolved",
+              "abandoned"
+            ],
+            "title": "Status"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "evidence_a": {
+            "$ref": "#/components/schemas/ConflictEvidenceSummary"
+          },
+          "evidence_b": {
+            "$ref": "#/components/schemas/ConflictEvidenceSummary"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "run_id",
+          "claim",
+          "evidence_a_id",
+          "evidence_b_id",
+          "type",
+          "severity",
+          "status",
+          "evidence_a",
+          "evidence_b"
+        ],
+        "title": "ConflictDetailResponse",
+        "description": "冲突详情：冲突字段 + 双方证据摘要。"
+      },
+      "ConflictEvidenceSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "snippet": {
+            "type": "string",
+            "title": "Snippet"
+          },
+          "credibility": {
+            "type": "string",
+            "title": "Credibility"
+          },
+          "source_type": {
+            "type": "string",
+            "title": "Source Type"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "url",
+          "domain",
+          "snippet",
+          "credibility",
+          "source_type"
+        ],
+        "title": "ConflictEvidenceSummary",
+        "description": "冲突详情内嵌的一方证据摘要（FR-7 八项）。"
+      },
+      "ConflictResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "claim": {
+            "type": "string",
+            "title": "Claim"
+          },
+          "evidence_a_id": {
+            "type": "string",
+            "title": "Evidence A Id"
+          },
+          "evidence_b_id": {
+            "type": "string",
+            "title": "Evidence B Id"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "factual",
+              "methodological",
+              "temporal",
+              "perspective"
+            ],
+            "title": "Type"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Severity"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "detected",
+              "awaiting_human",
+              "resolved",
+              "abandoned"
+            ],
+            "title": "Status"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "run_id",
+          "claim",
+          "evidence_a_id",
+          "evidence_b_id",
+          "type",
+          "severity",
+          "status"
+        ],
+        "title": "ConflictResponse",
+        "description": "冲突对象（列表项与 WS 帧载荷的字段超集）。"
+      },
+      "CostSnapshotResponse": {
+        "properties": {
+          "used": {
+            "type": "integer",
+            "title": "Used"
+          },
+          "budget": {
+            "type": "integer",
+            "title": "Budget"
+          },
+          "ratio": {
+            "type": "number",
+            "title": "Ratio"
+          },
+          "level": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "warning",
+                  "danger"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level"
+          }
+        },
+        "type": "object",
+        "required": [
+          "used",
+          "budget",
+          "ratio"
+        ],
+        "title": "CostSnapshotResponse",
+        "description": "成本快照：直接读 run 行；``level`` 按统一阈值派生（可空）。"
+      },
+      "CreateProjectRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "default_tier": {
+            "type": "string",
+            "enum": [
+              "quick",
+              "standard",
+              "deep",
+              "extreme"
+            ],
+            "title": "Default Tier",
+            "default": "standard"
+          },
+          "default_template_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Template Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "CreateProjectRequest",
+        "description": "``POST /projects`` 请求体。"
+      },
+      "CreateRunRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 26,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "question": {
+            "type": "string",
+            "maxLength": 4096,
+            "minLength": 5,
+            "title": "Question"
+          },
+          "tier": {
+            "type": "string",
+            "enum": [
+              "quick",
+              "standard",
+              "deep",
+              "extreme"
+            ],
+            "title": "Tier",
+            "default": "standard"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "question"
+        ],
+        "title": "CreateRunRequest",
+        "description": "``POST /runs`` 请求体。"
+      },
+      "CurrentUser": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "team_id": {
+            "type": "string",
+            "title": "Team Id"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "title": "Email"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "last_login_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Login At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "team_id",
+          "email",
+          "display_name",
+          "role"
+        ],
+        "title": "CurrentUser",
+        "description": "当前登录用户视图。"
+      },
+      "EvidenceResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "sub_question_id": {
+            "type": "string",
+            "title": "Sub Question Id"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "snippet": {
+            "type": "string",
+            "title": "Snippet"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "official_doc",
+              "news",
+              "community",
+              "search",
+              "internal"
+            ],
+            "title": "Source Type"
+          },
+          "source_level": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "secondary",
+              "tertiary"
+            ],
+            "title": "Source Level"
+          },
+          "credibility": {
+            "type": "string",
+            "enum": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ],
+            "title": "Credibility"
+          },
+          "relevance_score": {
+            "type": "number",
+            "title": "Relevance Score",
+            "default": 0.0
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fetched At"
+          },
+          "excluded_by_user": {
+            "type": "boolean",
+            "title": "Excluded By User",
+            "default": false
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "run_id",
+          "sub_question_id",
+          "url",
+          "domain",
+          "title",
+          "snippet",
+          "source_type",
+          "source_level",
+          "credibility",
+          "fetched_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "EvidenceResponse",
+        "description": "证据池列表行与单条详情共用视图（``content`` 懒加载，本包通常为 null）。"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "ok"
+          },
+          "service": {
+            "type": "string",
+            "title": "Service"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "type": "object",
+        "required": [
+          "service",
+          "version",
+          "timestamp"
+        ],
+        "title": "HealthResponse",
+        "description": "健康检查响应。"
+      },
+      "HumanInput": {
+        "properties": {
+          "answers": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answers"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "proceed"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          }
+        },
+        "type": "object",
+        "title": "HumanInput",
+        "description": "``POST /runs/{id}/resume`` 的统一人类输入模型（契约草案 §6.2）。\n\n``answers`` / ``action`` / ``kind`` 三选一互斥：\n- answers：澄清/裁决挂起答案（键为问题 key，特殊键 verdicts 为裁决集合）；\n- action：主动介入（与 POST /intervene 等价，T3 开放，T2 先行 409）；\n- kind=proceed：软暂停/成本挂起后的纯恢复继续。"
+      },
+      "IngestMetrics": {
+        "properties": {
+          "accepted_events": {
+            "type": "integer",
+            "title": "Accepted Events"
+          },
+          "dropped_events": {
+            "type": "integer",
+            "title": "Dropped Events"
+          },
+          "rate_limited_batches": {
+            "type": "integer",
+            "title": "Rate Limited Batches"
+          }
+        },
+        "type": "object",
+        "required": [
+          "accepted_events",
+          "dropped_events",
+          "rate_limited_batches"
+        ],
+        "title": "IngestMetrics"
+      },
+      "IntentClassifyRequest": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text",
+            "description": "用户原始输入"
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "chat",
+                  "research"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "IntentClassifyRequest",
+        "description": "``POST /intent/classify`` 请求体。"
+      },
+      "IntentClassifyResponse": {
+        "properties": {
+          "intent": {
+            "type": "string",
+            "enum": [
+              "chat",
+              "research",
+              "uncertain"
+            ],
+            "title": "Intent"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          },
+          "recommended_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Template"
+          },
+          "recommended_tier": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "quick",
+                  "standard",
+                  "deep",
+                  "extreme"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Tier"
+          },
+          "estimated_token_budget": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Token Budget"
+          },
+          "estimated_cost_grade": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "quick",
+                  "standard",
+                  "deep",
+                  "extreme"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Grade"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "llm",
+              "forced",
+              "fallback"
+            ],
+            "title": "Source"
+          },
+          "degraded": {
+            "type": "boolean",
+            "title": "Degraded",
+            "default": false
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "intent",
+          "confidence",
+          "source"
+        ],
+        "title": "IntentClassifyResponse",
+        "description": "``POST /intent/classify`` 响应体。\n\n研究推荐参数与成本预估仅在 research / uncertain 路径有值；\nchat 路径置 None。字段口径对齐 LLD §4.2.8 与契约草案 §6.6。"
+      },
+      "IntentMetrics": {
+        "properties": {
+          "classify_total": {
+            "type": "integer",
+            "title": "Classify Total"
+          },
+          "degraded": {
+            "type": "integer",
+            "title": "Degraded"
+          },
+          "degraded_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Degraded Rate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "classify_total",
+          "degraded",
+          "degraded_rate"
+        ],
+        "title": "IntentMetrics"
+      },
+      "InterruptInfo": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "const": "clarify",
+            "title": "Reason"
+          },
+          "questions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "defaults": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Defaults"
+          },
+          "expires_in_seconds": {
+            "type": "integer",
+            "title": "Expires In Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason",
+          "questions",
+          "expires_in_seconds"
+        ],
+        "title": "InterruptInfo",
+        "description": "澄清挂起上下文（RunResponse.interrupt，对齐 interrupt.requested 帧载荷）。"
+      },
+      "InterventionAction": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "ask_followup",
+              "exclude_evidence"
+            ],
+            "title": "Type"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "InterventionAction",
+        "description": "``POST /runs/{id}/intervene`` 请求体（契约草案 §6.2）。\n\ntype 仅开放 M2 两个动作（revert_stage/mark_doubt 为 M4）；payload 按 type\n的必填字段由 service 层校验：\n- ask_followup: {sub_question_id, question, reason?}\n- exclude_evidence: {evidence_id, reason?}"
+      },
+      "InterventionMetrics": {
+        "properties": {
+          "runs_started": {
+            "type": "integer",
+            "title": "Runs Started"
+          },
+          "runs_with_intervention": {
+            "type": "integer",
+            "title": "Runs With Intervention"
+          },
+          "intervention_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intervention Rate"
+          },
+          "by_action": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "runs_started",
+          "runs_with_intervention",
+          "intervention_rate",
+          "by_action"
+        ],
+        "title": "InterventionMetrics"
+      },
+      "LoginRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "title": "Email"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "LoginRequest",
+        "description": "``POST /auth/login`` 请求体。"
+      },
+      "MetricsWindow": {
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "title": "From"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "title": "To"
+          }
+        },
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "MetricsWindow"
+      },
+      "PaginatedResponse_EvidenceResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Page",
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Page Size",
+            "default": 20
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "PaginatedResponse[EvidenceResponse]"
+      },
+      "PaginatedResponse_RunResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Page",
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Page Size",
+            "default": 20
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "PaginatedResponse[RunResponse]"
+      },
+      "PauseRunRequest": {
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "title": "PauseRunRequest",
+        "description": "``POST /runs/{id}/pause`` 请求体（契约草案 §6.1）。"
+      },
+      "ProjectResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "team_id": {
+            "type": "string",
+            "title": "Team Id"
+          },
+          "owner_id": {
+            "type": "string",
+            "title": "Owner Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "default_template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Template Id"
+          },
+          "default_tier": {
+            "type": "string",
+            "enum": [
+              "quick",
+              "standard",
+              "deep",
+              "extreme"
+            ],
+            "title": "Default Tier",
+            "default": "standard"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived"
+            ],
+            "title": "Status",
+            "default": "active"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "team_id",
+          "owner_id",
+          "name",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ProjectResponse",
+        "description": "项目视图。"
+      },
+      "RefreshRequest": {
+        "properties": {
+          "refresh_token": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Refresh Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refresh_token"
+        ],
+        "title": "RefreshRequest",
+        "description": "``POST /auth/refresh`` 请求体（纯 JSON 方案，不依赖 Cookie）。"
+      },
+      "ReportBlock": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "conclusion",
+              "evidence",
+              "dispute",
+              "limitation"
+            ],
+            "title": "Type"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "claim_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Id"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "single_source",
+                  "cross_verified",
+                  "inferred"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/ReportCitation"
+            },
+            "type": "array",
+            "title": "Citations",
+            "default": []
+          },
+          "conflict_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conflict Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "text"
+        ],
+        "title": "ReportBlock",
+        "description": "结构化区块（终稿渲染的唯一允许形态，对齐前端 ReportBlock）。"
+      },
+      "ReportCitation": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id"
+          },
+          "marker": {
+            "type": "string",
+            "title": "Marker"
+          },
+          "snippet": {
+            "type": "string",
+            "title": "Snippet"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "marker",
+          "snippet"
+        ],
+        "title": "ReportCitation",
+        "description": "区块内联引用（数据点级溯源依据：角标 + 证据 + 原文片段）。"
+      },
+      "ReportCitationItem": {
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id"
+          },
+          "marker": {
+            "type": "string",
+            "title": "Marker"
+          },
+          "snippet": {
+            "type": "string",
+            "title": "Snippet"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "source_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Type"
+          },
+          "source_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Level"
+          },
+          "credibility": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credibility"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "marker",
+          "snippet",
+          "url",
+          "title"
+        ],
+        "title": "ReportCitationItem",
+        "description": "信源索引元素：内联三字段 + 回溯所需展示字段。\n\n线上共 10 字段：关联键 ``evidence_id`` 加九展示字段（marker/snippet/url/\ntitle/domain/source_type/source_level/credibility/published_at）；\n除 published_at 可空外，M2-6 后其余字段实际总有值，可选声明以前端冻结形态为准。"
+      },
+      "ReportOutlineItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "type"
+        ],
+        "title": "ReportOutlineItem",
+        "description": "报告目录项（M2-7 语义 id：sec-overview/sec-findings/sec-disputes/sec-limitations）。"
+      },
+      "ReportResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "template_id": {
+            "type": "string",
+            "title": "Template Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "final",
+              "superseded"
+            ],
+            "title": "Status",
+            "default": "draft"
+          },
+          "content_md": {
+            "type": "string",
+            "title": "Content Md"
+          },
+          "token_used": {
+            "type": "integer",
+            "title": "Token Used",
+            "default": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "outline": {
+            "items": {
+              "$ref": "#/components/schemas/ReportOutlineItem"
+            },
+            "type": "array",
+            "title": "Outline",
+            "default": []
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ReportBlock"
+            },
+            "type": "array",
+            "title": "Blocks",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "run_id",
+          "template_id",
+          "content_md",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ReportResponse",
+        "description": "报告视图：Markdown 正文 + M2-7 结构化终稿超集。"
+      },
+      "ResumeRunRequest": {
+        "properties": {
+          "human_input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HumanInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ResumeRunRequest",
+        "description": "``POST /runs/{id}/resume`` 请求体；空 body 等价纯继续（kind=proceed）。"
+      },
+      "RunControlResponse": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "paused",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status"
+          },
+          "partial_report_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partial Report Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "status"
+        ],
+        "title": "RunControlResponse",
+        "description": "pause/resume/cancel/intervene 控制类操作的统一响应。"
+      },
+      "RunMetrics": {
+        "properties": {
+          "total_terminal": {
+            "type": "integer",
+            "title": "Total Terminal"
+          },
+          "succeeded": {
+            "type": "integer",
+            "title": "Succeeded"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "cancelled": {
+            "type": "integer",
+            "title": "Cancelled"
+          },
+          "success_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success Rate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_terminal",
+          "succeeded",
+          "failed",
+          "cancelled",
+          "success_rate"
+        ],
+        "title": "RunMetrics"
+      },
+      "RunResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "creator_id": {
+            "type": "string",
+            "title": "Creator Id"
+          },
+          "template_id": {
+            "type": "string",
+            "title": "Template Id"
+          },
+          "tier": {
+            "type": "string",
+            "enum": [
+              "quick",
+              "standard",
+              "deep",
+              "extreme"
+            ],
+            "title": "Tier"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "paused",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "default": "pending"
+          },
+          "current_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Stage"
+          },
+          "token_used": {
+            "type": "integer",
+            "title": "Token Used",
+            "default": 0
+          },
+          "token_budget": {
+            "type": "integer",
+            "title": "Token Budget"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "stream_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stream Url"
+          },
+          "interrupt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InterruptInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "creator_id",
+          "template_id",
+          "tier",
+          "question",
+          "token_budget",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RunResponse",
+        "description": "研究运行视图。"
+      },
+      "StageResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "name": {
+            "type": "string",
+            "enum": [
+              "clarify",
+              "decompose",
+              "retrieve",
+              "standardize",
+              "critique",
+              "report"
+            ],
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "succeeded",
+              "failed",
+              "skipped"
+            ],
+            "title": "Status",
+            "default": "pending"
+          },
+          "attempt": {
+            "type": "integer",
+            "title": "Attempt",
+            "default": 1
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "run_id",
+          "name",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "StageResponse",
+        "description": "阶段时间线单行（固定六阶段，按 STAGE_ORDER 返回）。"
+      },
+      "SubQuestionResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "depends_on": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Depends On"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "evidence_short"
+            ],
+            "title": "Status",
+            "default": "pending"
+          },
+          "evidence_count": {
+            "type": "integer",
+            "title": "Evidence Count",
+            "default": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "run_id",
+          "question",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SubQuestionResponse",
+        "description": "子问题看板行。"
+      },
+      "TelemetryBatchRequest": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/TelemetryEventIn"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "events"
+        ],
+        "title": "TelemetryBatchRequest",
+        "description": "POST /telemetry/batch 请求体。"
+      },
+      "TelemetryEventIn": {
+        "properties": {
+          "event": {
+            "type": "string",
+            "title": "Event"
+          },
+          "ts": {
+            "type": "integer",
+            "title": "Ts"
+          },
+          "run_id": {
+            "title": "Run Id"
+          },
+          "page": {
+            "title": "Page"
+          },
+          "props": {
+            "title": "Props"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event",
+          "ts"
+        ],
+        "title": "TelemetryEventIn",
+        "description": "单个埋点事件入站的最小结构约束（批级 422 用）。\n\n只保证 event 为字符串、ts 为整数这两个不可恢复结构字段；run_id/page/props\n的类型/长度/取值域与 event 命名、ts 时间窗等条级规则由 service 逐行清洗\n（非法丢条、整批仍 204），避免一条非标量污染整批。"
+      },
+      "TelemetryMetricsResponse": {
+        "properties": {
+          "window": {
+            "$ref": "#/components/schemas/MetricsWindow"
+          },
+          "runs": {
+            "$ref": "#/components/schemas/RunMetrics"
+          },
+          "intervention": {
+            "$ref": "#/components/schemas/InterventionMetrics"
+          },
+          "traceability": {
+            "$ref": "#/components/schemas/TraceabilityMetrics"
+          },
+          "intent": {
+            "$ref": "#/components/schemas/IntentMetrics"
+          },
+          "ingest": {
+            "$ref": "#/components/schemas/IngestMetrics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "window",
+          "runs",
+          "intervention",
+          "traceability",
+          "intent",
+          "ingest"
+        ],
+        "title": "TelemetryMetricsResponse"
+      },
+      "TokenPair": {
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "title": "Access Token"
+          },
+          "refresh_token": {
+            "type": "string",
+            "title": "Refresh Token"
+          },
+          "token_type": {
+            "type": "string",
+            "title": "Token Type",
+            "default": "bearer"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In",
+            "description": "访问令牌剩余秒数"
+          }
+        },
+        "type": "object",
+        "required": [
+          "access_token",
+          "refresh_token",
+          "expires_in"
+        ],
+        "title": "TokenPair",
+        "description": "访问令牌 + 刷新令牌对（login / refresh 响应）。"
+      },
+      "TraceabilityMetrics": {
+        "properties": {
+          "final_reports": {
+            "type": "integer",
+            "title": "Final Reports"
+          },
+          "avg_numeric_binding_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Numeric Binding Rate"
+          },
+          "runs_with_citation_open": {
+            "type": "integer",
+            "title": "Runs With Citation Open"
+          },
+          "citation_open_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Citation Open Rate"
+          },
+          "citation_open_events": {
+            "type": "integer",
+            "title": "Citation Open Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "final_reports",
+          "avg_numeric_binding_rate",
+          "runs_with_citation_open",
+          "citation_open_rate",
+          "citation_open_events"
+        ],
+        "title": "TraceabilityMetrics"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "VerdictRequest": {
+        "properties": {
+          "choice": {
+            "type": "string",
+            "enum": [
+              "evidence_a",
+              "evidence_b",
+              "both",
+              "reject"
+            ],
+            "title": "Choice"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Reason"
+          },
+          "additional_note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Additional Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "choice",
+          "reason"
+        ],
+        "title": "VerdictRequest",
+        "description": "``POST /conflicts/{id}/verdict`` 请求体。"
+      },
+      "VerdictResponse": {
+        "properties": {
+          "conflict_id": {
+            "type": "string",
+            "title": "Conflict Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "detected",
+              "awaiting_human",
+              "resolved",
+              "abandoned"
+            ],
+            "title": "Status"
+          },
+          "verdict_id": {
+            "type": "string",
+            "title": "Verdict Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "conflict_id",
+          "status",
+          "verdict_id"
+        ],
+        "title": "VerdictResponse",
+        "description": "裁决提交成功响应（FR-8 三字段）。"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "description": "JWT Bearer token",
+        "scheme": "bearer"
+      }
+    }
+  }
+}
