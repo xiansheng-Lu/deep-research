@@ -2,6 +2,7 @@
 // 信源角标（[前端详细设计 §10.1 / §10.5 M2]）
 // 紧凑呈现信源三要素：可信分级（A/B/C/D 色编码字母）、信源类型、域名；
 // 信源层级（一手/二手/三手）以小字附在类型后。供证据卡、冲突块、报告溯源共用。
+import { computed } from 'vue'
 import {
   credibilityLabel,
   sourceLevelLabel,
@@ -9,24 +10,36 @@ import {
 } from '@/services/i18n/zh-CN'
 import type { Credibility, SourceLevel, SourceType } from '@/types/domain'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     domain: string
     sourceType: SourceType
-    // M2-2 分歧详情内嵌摘要（FR-7 八项）不含 source_level，缺省时不渲染层级
-    sourceLevel?: SourceLevel
+    // M2-2 分歧详情内嵌摘要（FR-7 八项）不含 source_level，缺省时不渲染层级；
+    // 真链低可信信源 source_level 可能为 null，title 一并跳过，避免出现 "undefined"
+    sourceLevel?: SourceLevel | null
     credibility: Credibility
     // 是否展示域名（冲突块等窄空间可关）
     showDomain?: boolean
   }>(),
   { showDomain: true, sourceLevel: undefined }
 )
+
+// 悬停 title 与可视层同口径：无 source_level 时不拼层级段
+const badgeTitle = computed(() =>
+  [
+    sourceTypeLabel(props.sourceType),
+    props.sourceLevel ? sourceLevelLabel(props.sourceLevel) : null,
+    credibilityLabel(props.credibility)
+  ]
+    .filter(Boolean)
+    .join(' · ')
+)
 </script>
 
 <template>
   <span
     class="source-badge"
-    :title="`${sourceTypeLabel(sourceType)} · ${sourceLevelLabel(sourceLevel)} · ${credibilityLabel(credibility)}`"
+    :title="badgeTitle"
   >
     <span
       class="source-badge__grade"
