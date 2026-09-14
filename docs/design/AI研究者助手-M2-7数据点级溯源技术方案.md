@@ -362,6 +362,7 @@ block 内联引用响应三字段固定为 `{evidence_id, marker, snippet}`（�
 4. **信源索引查询不做 SQL JOIN**：service 用两次 scalars（引文行 + run 证据池）在 Python 侧拼装去重，与全仓数据访问风格一致；证据受外键约束必然在池内，不设缺行兜底。
 5. **历史迁移循环测试钉死版本号**：test_integration_m24/m25 原以 `upgrade head` 断言固定版本，新增 0005 后 head 漂移；按「历史用例验证自身迁移循环」语义改为显式 `upgrade "0003"/"0004"`，断言内容不变。
 6. **citation_audit 增补 reporter_degraded 布尔**：§5.7 要求 state 与 content_json 双标记，实现把该标记并入 audit 对象（不另开 content_json 顶层键），state 侧仍为独立字段。
+7. **联调 P1-1 修复（2026-09-15）**：前端真链回归发现零 conclusion 存活时兜底概述块把含数字断言的研究问题原文嵌入无引用 inferred 块（绕过 §5.5 审计）。修复两点：① `_fallback_overview_block` 在问题文本命中数字断言时改用无数字通用概述「本次研究的多源核验结果如下。」，与 §5.5 同口径；② `numeric_claim_binding_rate` 由硬编码 1.0 改为遍历终稿 claim 块按数字断言/引用实况回算，使审计恒等式可自检。补「数字问题 × 零 conclusion 存活」与空问题两个组合用例。
 
 ### 13.3 门禁证据
 
@@ -371,3 +372,4 @@ block 内联引用响应三字段固定为 `{evidence_id, marker, snippet}`（�
 - mypy：54 条，与 dev worktree 基线（b9b3481）54 条**零新增**（实现中出现的 2 条 prompts TypedDict 入参告警已通过精确标注消除）。
 - 契约（AC-12）：openapi-m2-7 导出 **25 路径**（新增 GET /api/v1/reports/{run_id}/citations）；ReportBlock（required id/type/text，四可选）、ReportCitation（三必填）、ReportCitationItem（五必填 + domain/source_type/source_level/credibility/published_at 五可选，线上 10 字段）、ReportOutlineItem（三必填）与前端 types.ts 字段名/枚举/可选性差异为 0；M2-5 快照保持 24 路径零 diff（转默认冻结）。
 - 联调前置：alembic head 由 0004 变 **0005**，联调环境须 `alembic upgrade head`。
+- P1-1 修复后复测（2026-09-15）：全量 **636 passed**（+2 兜底概述组合用例）；ruff 全净、mypy 54 条零新增；无契约/迁移变化（纯引擎纯函数修复，openapi-m2-7 25 路径不变）。

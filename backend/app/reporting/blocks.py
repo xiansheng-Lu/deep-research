@@ -300,9 +300,17 @@ def _dispute_entries(
 
 
 def _fallback_overview_block(question: str) -> dict[str, Any]:
-    """无任何结论块时的概述块（机械降级无 claim 场景，结构不降级）。"""
+    """无任何结论块时的概述块（机械降级无 claim 场景，结构不降级）。
+
+    该块零引用且标 inferred，必须与 §5.5 同口径：研究问题含数字断言（年份/
+    百分比/数量词等）时不得把问题原文嵌进来，否则终稿会出现无来源数字论断
+    （联调 P1-1 根因）；此时改用不含任何数字断言的通用概述。
+    """
     q = (question or "").strip()
-    text = f"围绕「{q}」开展的多源核验已形成以下结构化报告。" if q else "本次研究的多源核验结果如下。"
+    if q and not has_numeric_assertion(q):
+        text = f"围绕「{q}」开展的多源核验已形成以下结构化报告。"
+    else:
+        text = "本次研究的多源核验结果如下。"
     return {"type": "conclusion", "text": text, "confidence": "inferred", "citation_ids": []}
 
 
@@ -466,6 +474,16 @@ def assemble_report(
         outline.append(dict(_OUTLINE_DISPUTES))
     outline.append(dict(_OUTLINE_LIMITATIONS))
 
+    # ---- 7. 数字绑定率按终稿实际回算（可自检，不信任上游计数；§5.5 恒等式） ----
+    numeric_claim_total = 0
+    numeric_claim_bound = 0
+    for block in final_blocks:
+        if block["type"] in _CLAIM_TYPES and has_numeric_assertion(block["text"]):
+            numeric_claim_total += 1
+            if block["citations"]:
+                numeric_claim_bound += 1
+    numeric_binding_rate = round(numeric_claim_bound / numeric_claim_total, 3) if numeric_claim_total else 1.0
+
     audit = {
         "claim_blocks": claim_blocks,
         "bound_blocks": bound_blocks,
@@ -474,8 +492,7 @@ def assemble_report(
         "skipped_disputes": skipped_disputes,
         "hallucinated_refs": hallucinated_refs,
         "quote_verified_refs": quote_verified_refs,
-        # 规则恒等式：无引用数字块一律不进终稿（§5.5）
-        "numeric_claim_binding_rate": 1.0,
+        "numeric_claim_binding_rate": numeric_binding_rate,
     }
     return ReportAssembly(
         blocks=final_blocks,

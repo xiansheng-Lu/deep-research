@@ -467,6 +467,37 @@ class TestIdsAndOutline:
         assert "向量数据库选型" in first["text"]
         assert first["confidence"] == "inferred"
 
+    def test_overview_fallback_numeric_question_does_not_embed_question(self) -> None:
+        """P1-1：数字问题 × 零 conclusion 存活，兜底概述块不得携带问题原文数字。"""
+        question = "2024年全球新能源汽车销量是多少万辆？同比增长率约为百分之多少？"
+        # 唯一 conclusion 含数字且无引用 → 模拟自修复失败终态被剔除 → 零 conclusion
+        assembly = _assemble(
+            [_draft(text="2024 年销量同比增长 30%", evidence_ids=[])],
+            material=_material("ea"),
+            question=question,
+        )
+        conclusions = _blocks_by_type(assembly, "conclusion")
+        first = conclusions[0]
+        assert first["id"] == "block-01"
+        assert first["confidence"] == "inferred"
+        assert first["citations"] == []
+        # 问题原文（年份/万辆/百分比）不得出现在终稿任何无引用论断块中
+        assert "2024" not in first["text"]
+        assert "万辆" not in first["text"]
+        assert question not in first["text"]
+        assert not has_numeric_assertion(first["text"])
+        # 审计：剔除计数 + inferred 兜底计数齐全，终稿数字论断绑定率仍回算为 1.0
+        assert assembly.audit["dropped_numeric_blocks"] == 1
+        assert assembly.audit["forced_inferred_blocks"] == 1
+        assert assembly.audit["numeric_claim_binding_rate"] == 1.0
+
+    def test_overview_fallback_empty_question_uses_generic_text(self) -> None:
+        assembly = _assemble(
+            [_draft(btype="evidence", text="只有证据展开", evidence_ids=["ea"])],
+            question="",
+        )
+        assert assembly.blocks[0]["text"] == "本次研究的多源核验结果如下。"
+
 
 # ---------------------------------------------------------------------------
 # AC-8 机械映射
