@@ -42,6 +42,9 @@ const runId = String(route.params.runId)
 
 const { state, derived, reload, actions } = useRunStream(runId)
 const evidenceList = useEvidenceList(runId, { pageSize: 10 })
+// M2-5：真链证据剔除为单向操作，无恢复端点（交接单 §4.2）；
+// 「已剔除证据可恢复列」仅保留在 mock gateway 无后端开发模式，真链不调用恢复接口
+const canRestoreEvidence = import.meta.env.VITE_MOCK === 'gateway'
 // 可恢复列：含已剔除证据的独立列表，仅在出现剔除项时才拉取，避免常规流量放大
 const excludedList = useEvidenceList(runId, {
   pageSize: 100,
@@ -322,11 +325,11 @@ const pendingExcludeIds = ref<Set<string>>(new Set())
 // 实时态中的已剔除证据（含关闭通道后的 REST 全量快照）
 const liveExcluded = computed(() => state.evidence.filter((item) => item.excluded_by_user))
 
-// 一旦出现剔除项即拉取含剔除项的全量列表，供刷新/终态后恢复列仍可见
+// 一旦出现剔除项即拉取含剔除项的全量列表（仅 mock 恢复列需要，真链不放大该请求）
 watch(
   () => liveExcluded.value.length,
   (count) => {
-    if (count > 0) void excludedList.refresh()
+    if (canRestoreEvidence && count > 0) void excludedList.refresh()
   },
   { immediate: true }
 )
@@ -802,9 +805,9 @@ function openReport(): void {
                   </li>
                 </ul>
 
-                <!-- 已剔除证据可恢复列（[前端详细设计 §11.3]：剔除隐藏、可恢复） -->
+                <!-- 已剔除证据可恢复列（mock 先行形态；M2-5 真链剔除单向不渲染，交接单 §4.2） -->
                 <section
-                  v-if="excludedRows.length > 0"
+                  v-if="canRestoreEvidence && excludedRows.length > 0"
                   class="cockpit-excluded"
                 >
                   <h3 class="cockpit-excluded__title">

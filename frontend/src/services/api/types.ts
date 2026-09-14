@@ -27,6 +27,8 @@ import type {
   UserActionReason,
   VerdictChoice
 } from '@/types/domain'
+// M2-5 RunResponse.interrupt 与 interrupt.requested 帧同形（type-only 循环引用，无运行时依赖）
+import type { InterruptRequestedPayload } from '@/services/realtime/types'
 
 // ─── 枚举再导出（兼容 M1 既有 import 路径，勿在业务文件直接重复声明）───
 
@@ -157,6 +159,9 @@ export interface RunResponse {
   error_code?: string | null
   error_message?: string | null
   stream_url?: string | null
+  // M2-5：仅 paused@clarify 非空，其余状态/非澄清挂起恒为 null；服务端不做帧回放，
+  // 刷新页面后前端据此恢复澄清卡（交接单 §2.6）
+  interrupt?: InterruptRequestedPayload | null
   created_at: string
   updated_at: string
 }

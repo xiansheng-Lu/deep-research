@@ -302,6 +302,24 @@ export function useRunStream(runId: string) {
     if (cost.warningLevel !== undefined) state.cost.warningLevel = cost.warningLevel
   }
 
+  // M2-5：澄清挂起刷新恢复。interrupt.requested 帧不做服务端回放，
+  // paused@clarify 时 GET 详情携带 interrupt（交接单 §2.6），据此恢复卡片；
+  // 显式 null + 非暂停态清空帧残留；mock 无该字段时沿用帧状态不破坏
+  function applyInterrupt(run: RunResponse): void {
+    if (run.interrupt && Array.isArray(run.interrupt.questions)) {
+      state.interrupt = {
+        reason: run.interrupt.reason,
+        questions: run.interrupt.questions,
+        defaults: run.interrupt.defaults ?? {},
+        expires_in_seconds: run.interrupt.expires_in_seconds,
+        stage: run.current_stage ?? 'clarify',
+        receivedAt: Date.now()
+      }
+    } else if (run.status !== 'paused') {
+      state.interrupt = null
+    }
+  }
+
   function applyRun(run: RunResponse): void {
     state.run = run
     state.stages = mapStages(run, state.stages)
@@ -310,6 +328,7 @@ export function useRunStream(runId: string) {
       budget: run.token_budget,
       ratio: run.token_budget ? Math.min(1, run.token_used / run.token_budget) : state.cost.ratio
     })
+    applyInterrupt(run)
     if (isStreamClosed(run)) {
       detach('destroy')
     }
@@ -740,9 +759,7 @@ export function useRunStream(runId: string) {
       // WP-17：重试成功后清除错误卡（重试期间不清，承载自动重试倒计时）
       state.error = null
       applyRun(run)
-      // 澄清已被提交/运行已恢复时，清掉模块缓存中可能残留的上一次 interrupt 帧，
-      // 避免重新进入看板后仍弹出已失效的澄清卡
-      if (run.status !== 'paused') state.interrupt = null
+      // interrupt 的恢复/清空统一走 applyRun→applyInterrupt（含 M2-5 REST 字段）
       if (isStreamClosed(run)) {
         // 终态/澄清挂起：不建 WS，仅 REST 对齐列表
         syncClosedSnapshot()
