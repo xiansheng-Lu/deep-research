@@ -193,12 +193,10 @@ function conflictEvidence(
 // 成本卡滞后口径：仅 retrying 标「可能滞后」；connecting 首帧前展示的是 REST 快照
 const costStale = computed(() => state.channelState === 'retrying')
 
-// 澄清挂起态：实时 interrupt 帧优先；页面在 paused 后刷新（无 WS）时按阶段口径兜底推导
-const awaitingClarification = computed(
-  () =>
-    state.interrupt !== null ||
-    (run.value?.status === 'paused' && run.value?.current_stage === 'clarify')
-)
+// 澄清挂起态只认真实 interrupt 载荷（WS interrupt.requested 帧或 REST 快照 run.interrupt，
+// useRunStream.applyRun 已统一恢复）。paused@clarify 但无载荷是用户在澄清节点手动软暂停，
+// 必须按普通暂停展示「继续研究」（resume kind=proceed），否则指挥舱无任何恢复入口（M2-8a 回归发现）
+const awaitingClarification = computed(() => state.interrupt !== null)
 const pausedStageName = computed(
   () => state.interrupt?.stage ?? run.value?.current_stage ?? 'clarify'
 )
