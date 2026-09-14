@@ -25,6 +25,7 @@
     --success-50: #1c3a2c;
     --warning-50: #3d2f17;
     --danger-50: #3d1f1f;
+    --info-50: #1c2e3d;
 
     /* ── 阴影加深 ── */
     --shadow-popover: 0 2px 8px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);

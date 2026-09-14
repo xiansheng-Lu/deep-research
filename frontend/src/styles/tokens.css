@@ -34,6 +34,7 @@
     --danger-500: #c84a4a;
     --danger-50: #f7e0e0;
     --info-500: #3d7ab8;
+    --info-50: #e4eef8;
 
     /* ── 信源语义 ── */
     --source-primary: var(--brand-500);

@@ -69,14 +69,15 @@ withDefaults(
   line-height: 1;
 }
 
+/* 可信度四档四色：A 高可信绿、B 蓝、C 一般灰、D 低可信橙（设计决定 2026-09-14，四档必须异色） */
 .source-badge__grade.is-A {
   background: var(--success-50);
   color: var(--success-500);
 }
 
 .source-badge__grade.is-B {
-  background: var(--success-50);
-  color: var(--success-500);
+  background: var(--info-50);
+  color: var(--info-500);
 }
 
 .source-badge__grade.is-C {
