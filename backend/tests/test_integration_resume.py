@@ -58,6 +58,7 @@ from app.provider.client import LLMClient, StructuredCompletion
 from app.realtime.hub import RealtimeHub
 from app.retrieval.base import RetrievalHit, RetrievalRequest, RetrievalSource
 from app.retrieval.client import RetrievalClient
+from app.schemas.runs import HumanInput
 
 pytestmark = pytest.mark.integration
 
@@ -626,5 +627,151 @@ async def test_resume_failure_marks_run_failed(context: dict[str, Any]) -> None:
         assert frames[-1]["type"] == "run.finished"
         assert frames[-1]["status"] == "failed"
         assert frames[-1]["error_code"] == "RuntimeError"
+    finally:
+        await pool.close()
+
+
+# ---------------------------------------------------------------------------
+# 交接单 §9.1 回归：runs_control 恢复服务（预翻转 running）→ 真实 executor
+# 组合链（不 patch executor），覆盖 answers / proceed 两分支
+# ---------------------------------------------------------------------------
+
+
+def _service_request(context: dict[str, Any], saver: Any, llm: Any, retrieval: Any) -> Any:
+    """构造 resume_run 所需的最小 Request（仅消费 app.state.*）。"""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                session_factory=context["maker"],
+                checkpointer=saver,
+                llm=llm,
+                retrieval_client=retrieval,
+                hub=context["hub"],
+            )
+        )
+    )
+
+
+async def test_resume_service_answers_branch_drives_to_succeeded(context: dict[str, Any]) -> None:
+    """澄清挂起经 runs_control.resume_run（非 executor 直连）恢复至 succeeded。
+
+    回归交接单 §9.1：服务层先条件 UPDATE paused→running，修复前 executor
+    守卫只认 paused 会直接 return，run 永久卡 running。
+    """
+    from app.services import runs_control
+
+    maker: async_sessionmaker[AsyncSession] = context["maker"]
+    hub: RealtimeHub = context["hub"]
+
+    saver, pool = await _make_pg_saver()
+    try:
+        async with maker() as session:
+            run, user = await _seed_run(session)
+            run_id = run.id
+            await session.commit()
+
+        llm = _ClarifyThenCompleteLLM()
+        retrieval = _TwoHitRetrieval()
+        frame_collector = asyncio.create_task(_collect_frames(hub, run_id, 2))
+        await asyncio.sleep(0.05)
+
+        await _start_run(context, run, llm=llm, retrieval=retrieval, saver=saver)
+        async with maker() as session:
+            paused = await session.get(ResearchRun, run_id)
+            assert paused is not None and paused.status == "paused"
+            assert paused.current_stage == "clarify"
+
+        # 走真实恢复服务（条件 UPDATE 预翻转 + 真实 executor 续跑，不打补丁）
+        async with maker() as session:
+            run_row = await session.get(ResearchRun, run_id)
+            assert run_row is not None
+            await runs_control.resume_run(
+                session,
+                run=run_row,
+                human_input=HumanInput.model_validate({"answers": {"scope": "欧洲市场"}}),
+                user_id=user.id,
+                team_id=user.team_id,
+                request=_service_request(context, saver, llm, retrieval),
+            )
+
+        succeeded_run = await _wait_status(maker, run_id, "succeeded")
+        assert succeeded_run.current_stage == "report"
+        frames = await asyncio.wait_for(frame_collector, timeout=10.0)
+        assert [f["status"] for f in frames] == ["paused", "succeeded"]
+
+        # 终态后恢复占位必须已由真实协程注销（注册表无残留）
+        from app.orchestrator.registry import get_run_registry
+
+        assert get_run_registry().is_active(run_id) is False
+    finally:
+        await pool.close()
+
+
+async def test_resume_service_proceed_branch_after_cost_gate(context: dict[str, Any]) -> None:
+    """90% 成本闸门挂起（current_stage=user_intervention 前置点）后，
+
+    经恢复服务空 body（kind=proceed）恢复至 succeeded（AC-6 + §9.1 proceed 分支）。
+    """
+    from test_executor import _BudgetedStructuredLLM
+
+    from app.services import runs_control
+
+    maker: async_sessionmaker[AsyncSession] = context["maker"]
+    hub: RealtimeHub = context["hub"]
+
+    saver, pool = await _make_pg_saver()
+    try:
+        async with maker() as session:
+            run, user = await _seed_run(session)
+            run_id = run.id
+            await session.commit()
+
+        # 预算 100：clarify+decompose 两次结构化调用各 60（离线替身 critic
+        # 不调 LLM）→ 120 > 100*0.9，闸门在 critique 后判定挂起
+        llm = _BudgetedStructuredLLM(tokens_per_call=60)
+        retrieval = _TwoHitRetrieval()
+        frame_collector = asyncio.create_task(_collect_frames(hub, run_id, 2))
+        await asyncio.sleep(0.05)
+
+        # 小预算首跑：直接调用执行器（生产 create_run 路径同样直连）
+        await run_research_async(
+            run_id=run_id,
+            project_id=run.project_id,
+            template_id="generic",
+            tier="standard",
+            question=run.question,
+            token_budget=100,
+            clarification=None,
+            team_id="t1",
+            creator_id=user.id,
+            trace_id=f"tr-{run_id}",
+            session_factory=maker,
+            llm=llm,
+            retrieval_client=retrieval,
+            hub=hub,
+            checkpointer=saver,
+        )
+        paused_run = await _wait_status(maker, run_id, "paused")
+        assert paused_run.token_used >= 100
+
+        # 空 body 恢复（等价 kind=proceed）：经真实恢复服务
+        async with maker() as session:
+            run_row = await session.get(ResearchRun, run_id)
+            assert run_row is not None
+            await runs_control.resume_run(
+                session,
+                run=run_row,
+                human_input=None,
+                user_id=user.id,
+                team_id=user.team_id,
+                request=_service_request(context, saver, llm, retrieval),
+            )
+
+        succeeded_run = await _wait_status(maker, run_id, "succeeded")
+        assert succeeded_run.current_stage == "report"
+        frames = await asyncio.wait_for(frame_collector, timeout=10.0)
+        assert [f["status"] for f in frames] == ["paused", "succeeded"]
     finally:
         await pool.close()

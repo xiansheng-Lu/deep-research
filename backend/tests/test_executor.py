@@ -173,29 +173,51 @@ async def test_run_research_async_run_not_found_publishes_failed() -> None:
 
 
 class _FakeAsyncGraphStream:
-    """模拟 LangGraph 编译图的 ``astream``（values 模式：逐 super-step 产出完整 state）。"""
+    """模拟 LangGraph 编译图的 ``astream``。
+
+    - values 模式：逐 super-step 产出完整 state 快照（旧契约，保留兼容）；
+    - ["debug","values"] 混合模式（生产口径）：每个快照前先发同名节点的
+      debug ``task`` 事件（先于节点执行），再发 values 快照，顺序与真实
+      LangGraph 实测一致（task(N) → values(post-N)）。
+    """
 
     def __init__(self, snapshots: list[dict[str, Any]]) -> None:
         self._snapshots = snapshots
 
     def astream(self, initial_state: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ARG002
-        # 生产侧固定以 stream_mode="values" 调用，mock 仅校验契约不消费该参数
-        assert kwargs.get("stream_mode") == "values"
+        stream_mode = kwargs.get("stream_mode")
         snapshots = self._snapshots
 
         class _Iterator:
             def __init__(self) -> None:
                 self._idx = 0
+                # 混合模式：每个快照对应两条事件（task + values）
+                self._mixed = stream_mode == ["debug", "values"]
+                self._phase = 0
 
             def __aiter__(self) -> _Iterator:
                 return self
 
-            async def __anext__(self) -> dict[str, Any]:
+            async def __anext__(self) -> Any:
                 if self._idx >= len(snapshots):
                     raise StopAsyncIteration
                 snap = snapshots[self._idx]
+                if not self._mixed:
+                    self._idx += 1
+                    return snap
+                if self._phase == 0:
+                    self._phase = 1
+                    stage = snap.get("current_stage")
+                    return (
+                        "debug",
+                        {
+                            "type": "task",
+                            "payload": {"name": getattr(stage, "value", stage)},
+                        },
+                    )
+                self._phase = 0
                 self._idx += 1
-                return snap
+                return ("values", snap)
 
         return _Iterator()
 
@@ -332,29 +354,36 @@ class _BoomAfterFirstGraphStream:
     """首份快照（clarify）后抛错的假图，覆盖异常终态路径。"""
 
     def astream(self, initial_state: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ARG002
-        assert kwargs.get("stream_mode") == "values"
+        assert kwargs.get("stream_mode") == ["debug", "values"]
+
+        snap = {
+            "run_id": "test-run-graph-error",
+            "current_stage": ResearchStage.CLARIFY,
+            "token_used": 50,
+            "stage_attempts": {},
+            "report_draft": "",
+            "report_claims": [],
+            "conflicts": [],
+            "report_outline": [],
+        }
+        events: list[tuple[str, dict[str, Any]]] = [
+            ("debug", {"type": "task", "payload": {"name": "clarify"}}),
+            ("values", snap),
+        ]
 
         class _Iterator:
             def __init__(self) -> None:
-                self._done = False
+                self._idx = 0
 
             def __aiter__(self) -> _Iterator:
                 return self
 
-            async def __anext__(self) -> dict[str, Any]:
-                if self._done:
+            async def __anext__(self) -> tuple[str, dict[str, Any]]:
+                if self._idx >= len(events):
                     raise StopAsyncIteration
-                self._done = True
-                return {
-                    "run_id": "test-run-graph-error",
-                    "current_stage": ResearchStage.CLARIFY,
-                    "token_used": 50,
-                    "stage_attempts": {},
-                    "report_draft": "",
-                    "report_claims": [],
-                    "conflicts": [],
-                    "report_outline": [],
-                }
+                event = events[self._idx]
+                self._idx += 1
+                return event
 
         return _Iterator()
 
@@ -365,15 +394,17 @@ async def test_run_research_async_graph_raises_publishes_stage_failed() -> None:
 
     class _RaisingStream(_BoomAfterFirstGraphStream):
         def astream(self, initial_state: Any, config: Any = None, **kwargs: Any) -> Any:
-            assert kwargs.get("stream_mode") == "values"
             inner = super().astream(initial_state, config, **kwargs)
 
             class _Iterator:
                 def __aiter__(self) -> Any:
                     return self
 
-                async def __anext__(self) -> dict[str, Any]:
-                    await inner.__anext__()  # 消费首份 clarify 快照后立即炸
+                async def __anext__(self) -> tuple[str, dict[str, Any]]:
+                    # 消费 task(clarify) + values(clarify) 两条事件后，
+                    # 下一节点调度前立即炸
+                    await inner.__anext__()
+                    await inner.__anext__()
                     raise RuntimeError("图执行炸了")
 
             return _Iterator()
@@ -857,23 +888,36 @@ class _GatedAsyncGraphStream:
         self._gate = gate
 
     def astream(self, initial_state: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ARG002
-        assert kwargs.get("stream_mode") == "values"
+        stream_mode = kwargs.get("stream_mode")
+        assert stream_mode == ["debug", "values"]
         snapshots = self._snapshots
         gate = self._gate
 
         class _Iterator:
             def __init__(self) -> None:
                 self._idx = 0
+                self._phase = 0
 
             def __aiter__(self) -> _Iterator:
                 return self
 
-            async def __anext__(self) -> dict[str, Any]:
+            async def __anext__(self) -> Any:
                 if self._idx < len(snapshots):
                     snap = snapshots[self._idx]
+                    if self._phase == 0:
+                        self._phase = 1
+                        stage = snap.get("current_stage")
+                        return (
+                            "debug",
+                            {
+                                "type": "task",
+                                "payload": {"name": getattr(stage, "value", stage)},
+                            },
+                        )
+                    self._phase = 0
                     self._idx += 1
-                    return snap
-                # 模拟执行中的长 IO 节点：gate 不 set，只等取消信号打断
+                    return ("values", snap)
+                # 模拟下一节点执行中的长 IO：gate 不 set，只等取消信号打断
                 await gate.wait()
                 raise StopAsyncIteration
 

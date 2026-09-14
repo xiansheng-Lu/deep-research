@@ -356,9 +356,16 @@ def test_pause_reason_too_long_422(auth: dict[str, str]) -> None:
 
 @pytest.fixture
 def _neutralize_resume_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """拦截后台 resume_research_async 调度（API 测试不驱动真实图）。"""
+    """拦截后台 resume_research_async 调度（API 测试不驱动真实图）。
+
+    恢复服务在调度前会写入注册表恢复占位；替身负责释放占位（模拟真实恢复
+    协程 register/unregister 生命周期），避免用例间占位残留导致 409。
+    """
 
     async def _no_resume(**kwargs: Any) -> None:
+        from app.orchestrator.registry import get_run_registry
+
+        get_run_registry().unregister(kwargs["run_id"])
         return None
 
     monkeypatch.setattr("app.orchestrator.executor.resume_research_async", _no_resume)

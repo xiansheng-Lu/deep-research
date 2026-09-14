@@ -58,7 +58,11 @@ from app.orchestrator.nodes import (
     sub_questioner,
     user_intervention,
 )
-from app.orchestrator.persistence import apply_stage_transition, ensure_stage_rows
+from app.orchestrator.persistence import (
+    STAGE_ORDER,
+    apply_stage_transition,
+    ensure_stage_rows,
+)
 from app.orchestrator.registry import get_run_registry
 from app.orchestrator.state import ResearchStage, ResearchState
 from app.quota.emitter import RunCostEmitter
@@ -303,41 +307,46 @@ async def _astream_and_publish(
     """
     final_state: ResearchState | None = None
     last_stage: str | None = None
-    # 必须显式指定 stream_mode="values"：当前 LangGraph 版本 astream 默认
-    # "updates"（chunk 形如 {节点名: 增量patch}），取不到扁平 state 字段；
-    # values 模式下每个 super-step 产出一份完整 state 快照。
-    async for snapshot in graph.astream(
+    latest_used = 0
+    # 混合流：debug 的 task 事件先于节点执行（用于在节点真正开始时打开阶段，
+    # 修复「阶段在节点完成后才戳记」导致的阶段耗时/受理窗口错位）；values
+    # 提供每超步完整 state 快照（成本写穿、中间提交、取消快照、终态判定）。
+    # 事件顺序实测为 task(N) → task_result(N) → values(post-N) → task(N+1)。
+    async for mode, event in graph.astream(
         initial_state,
         config=thread_config,
-        stream_mode="values",
+        stream_mode=["debug", "values"],
     ):
-        final_state = snapshot
-        # 记录最近完整快照：协作式取消落在本超步中途时，收尾据此取 token/草稿
-        stop_holder.snapshot = snapshot
-        # state 中 current_stage 可能是 ResearchStage(StrEnum) 或裸字符串，
-        # 统一归一化为字符串，保证去重比对与 WS 载荷均为纯字符串契约。
-        raw_stage = snapshot.get("current_stage")
-        stage = raw_stage.value if isinstance(raw_stage, ResearchStage) else raw_stage
-        used = int(snapshot.get("token_used") or 0)
-        if isinstance(stage, str) and stage != last_stage:
-            attempts = snapshot.get("stage_attempts") or {}
+        if mode == "debug":
+            # 仅在六阶段业务节点「开始执行」时切换阶段行；failure_recovery /
+            # await_human / user_intervention / cost_checkpoint 不产生阶段帧
+            if event.get("type") != "task":
+                continue
+            payload = event.get("payload") or {}
+            stage = payload.get("name")
+            if not isinstance(stage, str) or stage not in STAGE_ORDER:
+                continue
+            if stage == last_stage:
+                # resume 回流重跑同阶段（如 clarify）：不重开、不重发 started
+                continue
+            attempts = (final_state or {}).get("stage_attempts") or {}
             if last_stage is not None:
                 old_row = stage_rows.get(last_stage)
-                if old_row is not None:
+                if old_row is not None and old_row.status != "succeeded":
                     apply_stage_transition(
                         old_row,
                         status="succeeded",
-                        token_used=used,
+                        token_used=latest_used,
                         finished=True,
                     )
-                    await _publish_stage_finished(hub, run_id, row=old_row, token_used=used)
+                    await _publish_stage_finished(hub, run_id, row=old_row, token_used=latest_used)
             attempt = int(attempts.get(stage) or 1)
             new_row = stage_rows.get(stage)
-            if new_row is not None:
+            if new_row is not None and new_row.status != "succeeded":
                 apply_stage_transition(new_row, status="running", attempt=attempt)
             last_stage = stage
             run.current_stage = stage
-            # 更新指标上下文：下一 super-step 节点任务在 gather 创建时继承
+            # 更新指标上下文：下一节点任务在 gather 创建时继承
             bind_run_context(stage=stage)
             await _publish_event(
                 hub,
@@ -349,10 +358,22 @@ async def _astream_and_publish(
                     "payload": {
                         "stage": stage,
                         "attempt": attempt,
-                        "token_used": used,
+                        "token_used": latest_used,
                     },
                 },
             )
+            # 立即提交：阶段开始即对外可见（ask_followup 受理窗口与真实检索
+            # 执行区间一致，不再是节点完成后的毫秒级窗口）
+            await session.commit()
+            continue
+
+        # mode == "values"：完整 state 快照（节点完成后产出）
+        snapshot = cast(ResearchState, event)
+        final_state = snapshot
+        # 记录最近完整快照：协作式取消落在本超步中途时，收尾据此取 token/草稿
+        stop_holder.snapshot = snapshot
+        used = int(snapshot.get("token_used") or 0)
+        latest_used = used
         # 成本：写穿 run.token_used + 节流/边沿帧（不依赖事务提交）
         await cost_emitter.observe(used)
         # super-step 中间提交：运行中看板 REST 即可读到本步落库数据
@@ -624,6 +645,8 @@ async def run_research_async(
     assert current_task is not None
     # M2-5：登记在途句柄，pause/cancel 控制端点据此投递协作式取消信号
     stop_holder = _StopHolder()
+    # 返回值忽略：首跑为 run 的第一个驱动者，正常无旧句柄；恢复占位场景
+    # 不会走到首跑入口
     registry.register(run_id, current_task)
     try:
         deps = NodeDeps(
@@ -681,15 +704,18 @@ async def run_research_async(
                 stop_holder=stop_holder,
             )
     except asyncio.CancelledError:
-        # 受控停止（pause/cancel）：独立会话收尾落库并发终态帧，吞掉取消正常退出
-        await _finalize_controlled_stop(
-            session_factory,
-            run_id=run_id,
-            hub=hub,
-            stop_holder=stop_holder,
-        )
+        # 受控停止（pause/cancel）：仅当句柄仍属于本协程时收尾落库并发终态帧；
+        # 被恢复占位/恢复协程接管时静默退出（暂停状态已由控制服务提交，
+        # 后续由恢复链路接管）
+        if registry.is_owner(run_id, current_task):
+            await _finalize_controlled_stop(
+                session_factory,
+                run_id=run_id,
+                hub=hub,
+                stop_holder=stop_holder,
+            )
     finally:
-        registry.unregister(run_id)
+        registry.unregister(run_id, owner=current_task)
 
 
 async def _drive_to_terminal(
@@ -894,15 +920,34 @@ async def resume_research_async(
     图状态，因此先 ``aupdate_state`` 写入 ``human_input``，再从挂起线程续跑；
     ``await_human`` 节点随后按 ``interrupt_reason`` 分流回流（详设 §6.5.10）。
 
-    仅 ``paused`` 状态的 run 可恢复；非挂起调用直接忽略（幂等保护）。
+    两种合法入口：
+
+    - runs_control 恢复服务：服务层已乐观置 running 并在注册表预留占位，
+      本协程接管占位续跑（生产 HTTP 路径）；
+    - 裁决等直连入口：run 仍为 paused，由本协程自行翻转为 running。
+
+    终态/pending 一律忽略；双击/重复恢复由服务层条件 UPDATE + 恢复占位拦截。
     """
     registry = get_run_registry()
     current_task = asyncio.current_task()
     assert current_task is not None
-    # 恢复任务同样登记句柄：恢复途中允许再 pause/cancel
+    # 恢复任务同样登记句柄：恢复途中允许再 pause/cancel。register 会取代
+    # 恢复服务预先写入的占位（或暂停首跑协程的旧句柄），并沿用占位上已到达
+    # 的停止信号。
     stop_holder = _StopHolder()
-    registry.register(run_id, current_task)
+    prior = registry.register(run_id, current_task)
     try:
+        # 被暂停的首跑协程可能仍在 CancelledError 收尾：等待其退出，避免两个
+        # 驱动循环并发；旧协程经属主检查会自行放弃落库收尾（暂停状态已由
+        # pause 服务提交）。
+        if (
+            prior is not None
+            and prior.task is not None
+            and prior.task is not current_task
+            and not prior.task.done()
+        ):
+            await asyncio.gather(prior.task, return_exceptions=True)
+
         await asyncio.sleep(0)
 
         async with session_factory() as session:
@@ -915,10 +960,26 @@ async def resume_research_async(
                     {"type": "run.failed", "run_id": run_id, "error_code": "RUN_NOT_FOUND"},
                 )
                 return
-            if run.status != "paused":
+            if run.status not in ("paused", "running"):
+                # 终态/pending：忽略恢复（双击由服务层条件 UPDATE 拦截，
+                # 此处兜底终态/pending 的直接/延迟调用）
                 log.warning(
-                    "非 paused 状态忽略恢复请求",
+                    "非 paused/running 状态忽略恢复请求",
                     extra={"run_id": run_id, "status": run.status},
+                )
+                return
+            # 微窗口内 pause/cancel 已落在恢复占位上：不驱动图，直接按信号
+            # 收尾（DB 已由控制服务置 paused/cancelled）
+            if registry.peek_mode(run_id) is not None:
+                log.info(
+                    "恢复协程启动前已收到停止信号，按受控停止收尾",
+                    extra={"run_id": run_id, "mode": registry.peek_mode(run_id)},
+                )
+                await _finalize_controlled_stop(
+                    session_factory,
+                    run_id=run_id,
+                    hub=hub,
+                    stop_holder=stop_holder,
                 )
                 return
 
@@ -938,7 +999,10 @@ async def resume_research_async(
                 # 把人类输入显式写入挂起线程状态，供 await_human 节点读取
                 await graph.aupdate_state(thread_config, {"human_input": human_input})
 
-                run.status = "running"
+                # runs_control 恢复服务已乐观置 running；裁决直连入口下 run
+                # 仍为 paused，由执行器在此翻转为 running
+                if run.status == "paused":
+                    run.status = "running"
                 run.error_code = None
                 run.error_message = None
                 run.finished_at = None
@@ -982,15 +1046,17 @@ async def resume_research_async(
                     },
                 )
     except asyncio.CancelledError:
-        # 恢复途中受控停止：与首跑同一路径收尾
-        await _finalize_controlled_stop(
-            session_factory,
-            run_id=run_id,
-            hub=hub,
-            stop_holder=stop_holder,
-        )
+        # 恢复途中受控停止：仅当句柄仍属于本协程时收尾；被更新的恢复任务或
+        # 占位接管时本协程静默退出，不做落库/发帧（避免覆盖新状态）
+        if registry.is_owner(run_id, current_task):
+            await _finalize_controlled_stop(
+                session_factory,
+                run_id=run_id,
+                hub=hub,
+                stop_holder=stop_holder,
+            )
     finally:
-        registry.unregister(run_id)
+        registry.unregister(run_id, owner=current_task)
 
 
 __all__ = [

@@ -101,3 +101,77 @@ async def test_done_task_is_not_active_and_stop_returns_false() -> None:
     assert task.done()
     assert registry.is_active("run-1") is False
     assert registry.request_stop("run-1", "pause") is False
+
+
+# ---------------------------------------------------------------------------
+# M2-5 修复（交接单 §9.1）：恢复预留 / 占位接管 / 属主感知
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reserve_places_placeholder_and_is_active() -> None:
+    registry = RunRegistry()
+    assert registry.reserve("run-1") is None
+    assert registry.is_reserved("run-1") is True
+    # 占位视为在途（pause/cancel 可落在占位上）
+    assert registry.is_active("run-1") is True
+    registry.unregister("run-1")
+    assert registry.is_active("run-1") is False
+
+
+@pytest.mark.asyncio
+async def test_register_adopts_reservation_and_carries_stop_mode() -> None:
+    registry = RunRegistry()
+    task = asyncio.create_task(_idle())
+    await asyncio.sleep(0)
+    try:
+        # 恢复服务先占位，pause 信号落在占位（无任务可 cancel，仅记录）
+        assert registry.reserve("run-1") is None
+        assert registry.request_stop("run-1", "pause") is True
+        # 恢复协程注册：接管占位并沿用暂停信号
+        prior = registry.register("run-1", task)
+        assert prior is not None and prior.task is None
+        assert registry.peek_mode("run-1") == "pause"
+        assert registry.is_owner("run-1", task) is True
+        await asyncio.gather(task, return_exceptions=True)
+    finally:
+        registry.unregister("run-1", owner=task)
+        assert registry.is_active("run-1") is False
+
+
+@pytest.mark.asyncio
+async def test_duplicate_reserve_restored_and_rejected() -> None:
+    """已有恢复占位/在途恢复协程时重复抢占：旧句柄可放回，占位不变。"""
+    registry = RunRegistry()
+    # 第一次抢占：占位
+    first_prior = registry.reserve("run-1")
+    assert first_prior is None
+    # 第二次抢占拿到占位；模拟服务层拒绝后 restore
+    second_prior = registry.reserve("run-1")
+    assert second_prior is not None and second_prior.task is None
+    registry.restore("run-1", second_prior)
+    assert registry.is_reserved("run-1") is True
+    registry.unregister("run-1")
+
+
+@pytest.mark.asyncio
+async def test_unregister_owner_aware_keeps_new_handle() -> None:
+    """被取代的旧协程注销时不能弹掉新恢复协程的句柄。"""
+    registry = RunRegistry()
+    old_task = asyncio.create_task(_idle())
+    new_task = asyncio.create_task(_idle())
+    await asyncio.sleep(0)
+    try:
+        registry.register("run-1", old_task)
+        registry.register("run-1", new_task)
+        # 旧协程退出：属主不匹配，不弹出新句柄
+        registry.unregister("run-1", owner=old_task)
+        assert registry.is_owner("run-1", new_task) is True
+        assert registry.is_active("run-1") is True
+        # 新协程正常注销
+        registry.unregister("run-1", owner=new_task)
+        assert registry.is_active("run-1") is False
+    finally:
+        for t in (old_task, new_task):
+            t.cancel()
+        await asyncio.gather(old_task, new_task, return_exceptions=True)

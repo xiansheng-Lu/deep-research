@@ -26,7 +26,7 @@ from app.core.exceptions import ConflictError, ValidationError
 from app.core.logging import get_logger
 from app.db.models.report import Report
 from app.db.models.run import ResearchRun
-from app.orchestrator.registry import RunRegistry
+from app.orchestrator.registry import RunRegistry, get_run_registry
 from app.realtime.hub import get_hub
 from app.schemas.runs import HumanInput
 
@@ -220,27 +220,56 @@ async def resume_run(
                     verdict["user_id"] = user_id
         normalized = {"answers": answers}
 
-    now = datetime.now(tz=UTC)
-    result = await session.execute(
-        update(ResearchRun)
-        .where(ResearchRun.id == run.id, ResearchRun.status == "paused")
-        .values(status="running", updated_at=now, error_code=None, error_message=None, finished_at=None)
-    )
-    if _affected_rows(result) == 0:
-        # 并发恢复/状态变化（双击防护）
-        raise ConflictError("当前研究运行状态不允许恢复", details={"code": "RUN_NOT_RESUMABLE"})
+    # 调度防重一：注册表层同步抢占恢复位，必须在条件 UPDATE 之前占位，
+    # 使 pause/cancel 落在「预翻转→恢复协程注册」微窗口的信号不丢失。
+    # 既有句柄若为已收到停止信号、正在收尾的首跑协程，属合法交接；
+    # 其余在途句柄（已存在恢复占位/恢复协程）按重复恢复拒绝。
+    registry = get_run_registry()
+    prior = registry.reserve(run.id)
+    if prior is not None and not _is_finalizing_first_run(prior):
+        # 已存在恢复协程等非收尾句柄：放回旧句柄，本次抢占作废
+        registry.restore(run.id, prior)
+        raise ConflictError(
+            "研究运行恢复已在调度中，请勿重复恢复",
+            details={"code": "RUN_NOT_RESUMABLE"},
+        )
 
-    await write_audit_entry(
-        session,
-        team_id=team_id,
-        user_id=user_id,
-        action=AuditAction.RUN_RESUME,
-        target_type="run",
-        target_id=run.id,
-        payload={"branch": "proceed" if "kind" in normalized else "answers"},
-    )
-    await session.commit()
-    await session.refresh(run)
+    try:
+        # 调度防重二：UPDATE 抢占 paused→running（双击以 affected_rows=0 拒绝）
+        now = datetime.now(tz=UTC)
+        result = await session.execute(
+            update(ResearchRun)
+            .where(ResearchRun.id == run.id, ResearchRun.status == "paused")
+            .values(
+                status="running",
+                updated_at=now,
+                error_code=None,
+                error_message=None,
+                finished_at=None,
+            )
+        )
+        if _affected_rows(result) == 0:
+            # 并发恢复/状态变化：以 DB 真实状态为准
+            raise ConflictError(
+                "当前研究运行状态不允许恢复",
+                details={"code": "RUN_NOT_RESUMABLE"},
+            )
+
+        await write_audit_entry(
+            session,
+            team_id=team_id,
+            user_id=user_id,
+            action=AuditAction.RUN_RESUME,
+            target_type="run",
+            target_id=run.id,
+            payload={"branch": "proceed" if "kind" in normalized else "answers"},
+        )
+        await session.commit()
+    except Exception:
+        # 抢占未成功：释放本请求的恢复占位（仅当句柄仍是占位），避免恢复位卡死
+        if registry.is_reserved(run.id):
+            registry.unregister(run.id)
+        raise
 
     asyncio.create_task(
         resume_research_async(
@@ -254,7 +283,19 @@ async def resume_run(
         )
     )
     log.info("研究运行已调度恢复", extra={"run_id": run.id, "reason": reason or "manual"})
+    # 响应语义：恢复已抢占（200 running）；最终成败以帧/REST 收敛
+    run.status = "running"
     return run
+
+
+def _is_finalizing_first_run(handle: Any) -> bool:
+    """既有句柄是否为「被暂停、正在收尾的首跑协程」（允许恢复占位取代）。
+
+    pause 服务乐观提交后、首跑协程 CancelledError 收尾完成前调用 resume 时，
+    句柄仍指向真实任务但已带停止信号（mode 非空）；这是合法的暂停→恢复
+    交接，不是重复恢复。
+    """
+    return handle.task is not None and handle.mode is not None
 
 
 async def _publish_cancelled(hub: RealtimeHub | None, run: ResearchRun) -> None:
