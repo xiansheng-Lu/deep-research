@@ -65,9 +65,15 @@ class _FakeSession:
         if "FROM sub_questions" in sql:
             return _FakeScalars(list(self._subs.values()))
         if "FROM evidence" in sql:
+            # M2-5：剔除集合查询在测试假库中恒为空（预置证据默认未被剔除）
+            if "excluded_by_user" in sql:
+                return _FakeScalars([])
             return _FakeScalars(sorted(self._evidence_ids))
         if "FROM conflicts" in sql:
             return _FakeScalars(sorted(self._conflict_ids))
+        if "FROM run_interventions" in sql:
+            # M2-5：fan-out 边界默认无待消费介入
+            return _FakeScalars([])
         raise AssertionError(f"未预期的查询: {sql}")
 
     async def scalar(self, statement: Any) -> Stage | None:  # noqa: ARG002

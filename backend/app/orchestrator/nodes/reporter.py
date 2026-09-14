@@ -424,8 +424,20 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
     - 不持久化 Report ORM（state 内累积，下游由外层编排写入数据库）；
     - 不发 event_bus 事件（WP-6 才接）。
     """
-    # 兼容 M0 签名：未注入 deps 时仍可运行
-    del deps
+    # M2-5：剔除证据不进报告渲染（渲染视图过滤，不改写 checkpoint 中的 state）
+    render_state: dict[str, Any] = dict(state)
+    db_session = getattr(deps, "db_session", None) if deps is not None else None
+    if db_session is not None:
+        from app.services.interventions import excluded_evidence_ids
+
+        excluded = await excluded_evidence_ids(db_session, str(state.get("run_id") or ""))
+        if excluded:
+            render_state["standardized_evidence"] = [
+                ev for ev in (state.get("standardized_evidence") or []) if ev.get("id") not in excluded
+            ]
+            render_state["evidence"] = [
+                ev for ev in (state.get("evidence") or []) if ev.get("id") not in excluded
+            ]
 
     # 若 outline 已存在 → 沿用；否则按模板生成
     outline: list[dict[str, str]] = list(state.get("report_outline") or []) or default_outline(
@@ -436,8 +448,8 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
     chunks: list[str] = []
     for section in outline:
         # M2+ 可在此按 section.id 过滤 claim 子集传给 render_section
-        _ = _iter_claims(state.get("report_claims") or [])
-        chunks.append(render_section(section, state))
+        _ = _iter_claims(render_state.get("report_claims") or [])
+        chunks.append(render_section(section, render_state))  # type: ignore[arg-type]
 
     report_draft: str = "\n".join(chunks)
     return {

@@ -367,6 +367,21 @@ def _alembic_version(sync_conn: object) -> str | None:
     return str(row[0]) if row else None
 
 
+def _table_exists(sync_conn: object, table_name: str) -> bool:
+    row = sync_conn.execute(  # type: ignore[attr-defined]
+        text(
+            """
+            SELECT 1
+            FROM pg_tables
+            WHERE schemaname = :schema
+              AND tablename = :table
+            """
+        ),
+        {"schema": _MIGRATION_SCHEMA, "table": table_name},
+    ).first()
+    return row is not None
+
+
 @pytest.mark.asyncio
 async def test_alembic_0003_upgrade_downgrade_cycle(
     migration_dsn: tuple[str, str],
@@ -390,9 +405,18 @@ async def test_alembic_0003_upgrade_downgrade_cycle(
     engine = create_engine(sync_dsn)
     try:
         with engine.connect() as conn:
+            assert _alembic_version(conn) == "0004"
+            assert _constraint_exists(conn, _MIGRATION_SCHEMA)
+            assert _table_exists(conn, "run_interventions")
+
+        # 0004→0003：stages 唯一约束仍在（0003 产物），介入队列表删除
+        command.downgrade(cfg, "-1")
+        with engine.connect() as conn:
             assert _alembic_version(conn) == "0003"
             assert _constraint_exists(conn, _MIGRATION_SCHEMA)
+            assert not _table_exists(conn, "run_interventions")
 
+        # 0003→0002：唯一约束删除
         command.downgrade(cfg, "-1")
         with engine.connect() as conn:
             assert _alembic_version(conn) == "0002"
@@ -400,8 +424,9 @@ async def test_alembic_0003_upgrade_downgrade_cycle(
 
         command.upgrade(cfg, "head")
         with engine.connect() as conn:
-            assert _alembic_version(conn) == "0003"
+            assert _alembic_version(conn) == "0004"
             assert _constraint_exists(conn, _MIGRATION_SCHEMA)
+            assert _table_exists(conn, "run_interventions")
 
         # 约束真实生效：插入外键链 + 两条同名阶段行，第二条被拒
         with Session(engine) as orm_session:

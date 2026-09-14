@@ -8,6 +8,7 @@ from app.db.models.audit import AuditEntry
 from app.db.models.conflict import Conflict, Verdict
 from app.db.models.evidence import Evidence
 from app.db.models.identity import Team, User
+from app.db.models.intervention import RunIntervention
 from app.db.models.knowledge import KnowledgeEmbedding, KnowledgeItem
 from app.db.models.project import Project
 from app.db.models.report import Report, ReportCitation
@@ -23,6 +24,7 @@ __all__ = [
     "Report",
     "ReportCitation",
     "ResearchRun",
+    "RunIntervention",
     "Stage",
     "SubQuestion",
     "Team",

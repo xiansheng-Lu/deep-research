@@ -5,7 +5,7 @@
 - 语言/运行时：Python 3.11 - 3.12（要求 >=3.11,<3.13）
 - 包管理：[uv](https://docs.astral.sh/uv/)（锁定文件见 `uv.lock`）
 - Web 框架：FastAPI + Uvicorn（异步）
-- 当前里程碑：**M2 进行中：M2-3 实时成本与 M2-4 看板接口已完成**（M1 2026-09-12 关闭；M2-1 意图路由、M2-2 LLM 语义冲突检测/落库/裁决 REST/PostgresSaver 跨请求恢复、M2-3 成本帧与预警、M2-4 看板只读接口/Stage 落库/Metrics 已完成，详见「里程碑与当前状态」）
+- 当前里程碑：**M2 进行中：M2-5 用户介入接口已完成（待前端联调）**（M1 2026-09-12 关闭；M2-1 意图路由、M2-2 LLM 语义冲突检测/落库/裁决 REST/PostgresSaver 跨请求恢复、M2-3 成本帧与预警、M2-4 看板只读接口/Stage 落库/Metrics、M2-5 pause/resume/cancel/intervene 控制点/WS 指令/介入队列/审计留档已完成，详见「里程碑与当前状态」）
 
 ---
 
@@ -189,7 +189,7 @@ backend/
 │   ├── audit/                   # 审计日志
 │   ├── notifications/           # 通知分发
 │   ├── templates/               # 项目 / 报告模板
-│   └── export_openapi.py        # OpenAPI 冻结契约导出（M1 / M2-2 / M2-4 快照）
+│   └── export_openapi.py        # OpenAPI 冻结契约导出（M1 / M2-2 / M2-4 / M2-5 快照）
 ├── tests/                       # pytest 测试（无外部服务依赖）
 ├── pyproject.toml               # 依赖与工具配置（唯一清单）
 ├── uv.lock                      # uv 锁定文件
@@ -382,7 +382,7 @@ high 冲突挂起 `paused@critique`；末条 awaiting_human 冲突裁决后经 A
 uv run python -m app.export_openapi
 ```
 
-脚本导出当前里程碑快照到仓库根目录 `docs/contract/`：M2-4 快照 `openapi-m2-4.json` 为累积超集（20 端点 = M2-2 十五端点 + 看板五端点）。M1/M2-2 历史快照默认冻结不覆盖，如需重写分别加 `--refresh-m1` / `--refresh-m22`。前端可用 openapi-generator（typescript-fetch）生成客户端与类型。
+脚本导出当前里程碑快照到仓库根目录 `docs/contract/`：M2-5 快照 `openapi-m2-5.json` 为累积超集（24 端点 = M2-4 二十端点 + pause/resume/cancel/intervene 四控制端点）。M1/M2-2/M2-4 历史快照默认冻结不覆盖，如需重写分别加 `--refresh-m1` / `--refresh-m22` / `--refresh-m24`。前端可用 openapi-generator（typescript-fetch）生成客户端与类型。
 
 ---
 
@@ -500,7 +500,7 @@ docker run --rm -p 8000:8000 --env-file .env deep-research-backend:dev
 | --- | --- | --- | --- |
 | M0 | 项目基础设施 + 底座 | 项目脚手架与配置体系、多租户基线（租户/用户/项目三层数据模型与鉴权中间件）、模型调用层抽象（主备配对、熔断、token 计量点）、LangGraph 编排引擎骨架、任务追踪与审计雏形 | 已完成 |
 | M1 | 最小链路端到端 demo | 六阶段最简链路（clarify → decompose → retrieve → standardize → critique → report）、Researcher×N 拓扑分层并行与单实例失败隔离、公域检索（博查/Tavily）接入与指纹去重、四段 Markdown 报告、节点级日志与逐阶段 WS 事件、成本闸门自动挂起；支撑工程：ORM 与迁移、鉴权、项目/运行/报告 API、编排执行器、WebSocket、OpenAPI M1 契约冻结 | 已完成（2026-09-12） |
-| M2 | 能力补齐与工程化 | 意图路由 classify 接口、批判收敛与分歧 API、透明看板数据接口、Orchestrator 补齐（依赖检测、回溯、降级、暂停接口）、实时成本计量与审计决策留档完整版、信源元数据抽取、数据点级溯源落库、Postgres checkpointer 与 HITL 恢复闭环、Celery 接管长任务 | 进行中（M2-1 意图路由 + 闲聊 SSE、M2-2 LLM 语义冲突检测/过程数据落库/分歧三端点/PostgresSaver 跨请求恢复已完成；M2-3 实时成本 WS 帧与阈值预警、M2-4 Stage 落库与看板六类只读 GET、Prometheus `/metrics`、openapi-m2-4 累积契约已完成，446 测试通过） |
+| M2 | 能力补齐与工程化 | 意图路由 classify 接口、批判收敛与分歧 API、透明看板数据接口、Orchestrator 补齐（依赖检测、回溯、降级、暂停接口）、实时成本计量与审计决策留档完整版、信源元数据抽取、数据点级溯源落库、Postgres checkpointer 与 HITL 恢复闭环、Celery 接管长任务 | 进行中（M2-1 意图路由 + 闲聊 SSE、M2-2 LLM 语义冲突检测/过程数据落库/分歧三端点/PostgresSaver 跨请求恢复、M2-3 实时成本 WS 帧与阈值预警、M2-4 Stage 落库与看板六类只读 GET/Prometheus `/metrics`、M2-5 pause/resume/cancel/intervene 四控制点 + WS intervene/cancel 指令 + 0004 介入队列表 + 五动作审计留档 + interrupt.requested 澄清帧/openapi-m2-5 累积契约已完成，493 测试通过；M2-6/M2-7 报告、M2-8 审计完整版与 Celery 接管待续） |
 | M3 | 核心 MVP | 档位参数化、领域模板、运营账号与反馈通道等后端接口，整合 M1+M2 能力支撑首批内部试用 | 未开始 |
 | M4 | 体验打磨 | 实时成本推送、暂停/追问/剔除证据等用户介入接口、报告精修与点击回溯、Word/PDF 导出、项目级角色权限 | 未开始 |
 | M5 | 私域能力 | 文档上传连接器（PDF/Word/Markdown/Excel 入库检索）、私域/公域信源区分标注、数据源级权限 | 未开始 |

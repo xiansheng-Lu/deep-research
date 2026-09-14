@@ -97,10 +97,26 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
 
     返回 ``interrupt_reason`` 供条件边回流（LangGraph 无 reducer，verdicts
     必须返回历史全集 + 本跳新增，覆盖式回写）。
+
+    M2-5 修复（AC-5）：clarify 分支必须把 ``human_input.answers`` 合并进
+    ``state.clarification`` 并置 ``needs_clarification=False``，否则回流
+    clarify 节点后因 clarification 仍为空而被再次判需追问，造成挂起死循环
+    （恢复入口对空 answers 已先行 422 拦截，此处保持兜底幂等）。
     """
     reason = str(state.get("interrupt_reason") or "critique")
     if reason != "critique":
-        return {"interrupt_reason": "clarify"}
+        # 延迟导入：避免 nodes 包内潜在循环
+        from app.orchestrator.nodes.clarifier import clarification_to_state_payload
+
+        human_input = state.get("human_input") or {}
+        clarification_patch = clarification_to_state_payload(
+            human_input if isinstance(human_input, dict) else None
+        )
+        return {
+            "interrupt_reason": "clarify",
+            "needs_clarification": False,
+            **clarification_patch,
+        }
 
     run_id = str(state.get("run_id") or "")
     new_verdicts = _parse_verdicts(state)

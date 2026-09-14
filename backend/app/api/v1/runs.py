@@ -15,16 +15,18 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Query, Request, status
+from fastapi import APIRouter, Header, Query, Request, status
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DBSession, SettingsDep
 from app.core.config import Settings
 from app.core.exceptions import NotFoundError, ValidationError
+from app.core.logging import get_logger
 from app.db.models.project import Project
 from app.db.models.report import Report
 from app.db.models.run import ResearchRun
 from app.orchestrator.executor import run_research_async
+from app.orchestrator.registry import get_run_registry
 from app.quota.tiers import classify_cost_level
 from app.realtime.hub import RealtimeHub, get_hub
 from app.schemas.common import MAX_PAGE_SIZE, PaginatedResponse, build_page
@@ -35,8 +37,22 @@ from app.schemas.dashboard import (
     SubQuestionResponse,
 )
 from app.schemas.reports import ReportResponse
-from app.schemas.runs import CreateRunRequest, RunResponse, RunStatus
-from app.services import dashboard
+from app.schemas.runs import (
+    CancelRunRequest,
+    CreateRunRequest,
+    InterruptInfo,
+    InterventionAction,
+    PauseRunRequest,
+    ResumeRunRequest,
+    RunControlResponse,
+    RunResponse,
+    RunStatus,
+)
+from app.services import dashboard, runs_control
+from app.services.conflicts import get_owned_run
+from app.services.interventions import submit_intervention
+
+log = get_logger("api.runs")
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -50,6 +66,14 @@ def _to_run_response(run: ResearchRun) -> RunResponse:
 
 def _to_report_response(report: Report) -> ReportResponse:
     return ReportResponse.model_validate(report)
+
+
+def _normalize_key(value: str | None) -> str | None:
+    """空白 Idempotency-Key 归一为缺省（不启用幂等）。"""
+    if value is None:
+        return None
+    key = value.strip()
+    return key or None
 
 
 def _token_budget_for_tier(settings: Settings, tier: str) -> int:
@@ -154,6 +178,124 @@ async def create_run(
     return response
 
 
+@router.post(
+    "/{run_id}/pause",
+    response_model=RunControlResponse,
+    summary="暂停研究运行（软暂停）",
+)
+async def pause_run(
+    run_id: str,
+    payload: PauseRunRequest,  # reason 随控制动作审计落档（T4 接入写入）
+    current_user: CurrentUser,
+    session: DBSession,
+) -> RunControlResponse:
+    """软暂停运行中的研究。
+
+    - 仅 ``running`` 且存在在途执行协程时可暂停；已暂停 409 RUN_ALREADY_PAUSED，
+      其他终态/孤儿 running 409 RUN_NOT_PAUSABLE；
+    - 暂停为协作式：响应返回后协程在最近 super-step 边界落 paused 并推
+      ``run.finished(status=paused)``，恢复走 POST /resume（M2-5 T2）。
+    """
+    run = await get_owned_run(session, run_id, current_user.id)
+    run = await runs_control.pause_run(
+        session,
+        run=run,
+        registry=get_run_registry(),
+        team_id=current_user.team_id,
+        user_id=current_user.id,
+        reason=payload.reason,
+    )
+    return RunControlResponse(run_id=run.id, status=run.status)
+
+
+@router.post(
+    "/{run_id}/cancel",
+    response_model=RunControlResponse,
+    summary="取消研究运行（硬中断）",
+)
+async def cancel_run(
+    run_id: str,
+    payload: CancelRunRequest,  # reason 随控制动作审计落档（T4 接入写入）
+    current_user: CurrentUser,
+    session: DBSession,
+    request: Request,
+) -> RunControlResponse:
+    """硬取消研究；对 succeeded/failed/cancelled 幂等返回当前状态。
+
+    ``keep_partial=true``（默认）时若已有报告草稿则保留并在响应带回 id。
+    """
+    run = await get_owned_run(session, run_id, current_user.id)
+    run, partial_report_id = await runs_control.cancel_run(
+        session,
+        run=run,
+        registry=get_run_registry(),
+        hub=_get_hub(request),
+        team_id=current_user.team_id,
+        user_id=current_user.id,
+        keep_partial=payload.keep_partial,
+        reason=payload.reason,
+    )
+    return RunControlResponse(
+        run_id=run.id,
+        status=run.status,
+        partial_report_id=partial_report_id,
+    )
+
+
+@router.post(
+    "/{run_id}/resume",
+    response_model=RunControlResponse,
+    summary="恢复研究运行（人类输入统一入口）",
+)
+async def resume_run(
+    run_id: str,
+    payload: ResumeRunRequest,
+    current_user: CurrentUser,
+    session: DBSession,
+    request: Request,
+) -> RunControlResponse:
+    """从暂停/澄清/裁决/成本挂起点恢复。
+
+    空 body 或 ``{human_input:{kind:"proceed"}}`` 为纯继续；澄清挂起必须带
+    非空 answers；载荷校验与 409/422 语义见 M2-5 方案 §5.3。
+    """
+    run = await get_owned_run(session, run_id, current_user.id)
+    run = await runs_control.resume_run(
+        session,
+        run=run,
+        human_input=payload.human_input,
+        user_id=current_user.id,
+        team_id=current_user.team_id,
+        request=request,
+    )
+    return RunControlResponse(run_id=run.id, status=run.status)
+
+
+@router.post(
+    "/{run_id}/intervene",
+    response_model=RunControlResponse,
+    summary="运行中主动介入（追加追问/剔除证据）",
+)
+async def intervene_run(
+    run_id: str,
+    action: InterventionAction,
+    current_user: CurrentUser,
+    session: DBSession,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=64),
+) -> RunControlResponse:
+    """running 中的受控介入；动作语义与可用阶段见 M2-5 方案 §5.5。"""
+    run = await get_owned_run(session, run_id, current_user.id)
+    run = await submit_intervention(
+        session,
+        run=run,
+        user_id=current_user.id,
+        team_id=current_user.team_id,
+        action=action,
+        idempotency_key=_normalize_key(idempotency_key),
+    )
+    return RunControlResponse(run_id=run.id, status=run.status)
+
+
 @router.get(
     "",
     response_model=PaginatedResponse[RunResponse],
@@ -198,14 +340,51 @@ async def get_run(
     run_id: str,
     current_user: CurrentUser,
     session: DBSession,
+    request: Request,
+    settings: SettingsDep,
 ) -> RunResponse:
-    """查询单个研究运行的当前状态。"""
+    """查询单个研究运行的当前状态。
+
+    paused@clarify 时附加 interrupt 澄清上下文（M2-5 §5.4，供刷新恢复澄清卡）。
+    """
     run = await session.scalar(
         select(ResearchRun).where(ResearchRun.id == run_id).where(ResearchRun.creator_id == current_user.id)
     )
     if run is None:
         raise NotFoundError("研究运行不存在")
-    return _to_run_response(run)
+    response = _to_run_response(run)
+    if run.status == "paused":
+        response.interrupt = await _load_interrupt_info(request, run_id, settings)
+    return response
+
+
+async def _load_interrupt_info(request: Request, run_id: str, settings: Settings) -> InterruptInfo | None:
+    """从检查点只读澄清挂起上下文；非澄清挂起/读取失败均返回 None（不阻塞详情）。"""
+    from app.orchestrator.executor import read_run_interrupt
+
+    try:
+        interrupt = await read_run_interrupt(
+            run_id=run_id,
+            session_factory=_get_session_factory(request),
+            checkpointer=getattr(request.app.state, "checkpointer", None),
+            llm=_get_llm(request),
+            retrieval_client=_get_retrieval_client(request),
+        )
+    except Exception as exc:  # noqa: BLE001 - 详情读取挂起上下文失败不致命
+        log.warning("读取澄清挂起上下文失败", extra={"run_id": run_id, "error": repr(exc)})
+        return None
+    if not interrupt or interrupt.get("reason") != "clarify":
+        return None
+    payload = interrupt.get("payload") or {}
+    questions = payload.get("questions")
+    if not isinstance(questions, list) or not questions:
+        return None
+    return InterruptInfo(
+        reason="clarify",
+        questions=questions,
+        defaults=payload.get("defaults") if isinstance(payload.get("defaults"), dict) else {},
+        expires_in_seconds=settings.clarification_expires_seconds,
+    )
 
 
 @router.get(

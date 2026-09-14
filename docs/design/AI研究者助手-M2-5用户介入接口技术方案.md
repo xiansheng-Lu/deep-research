@@ -1,6 +1,6 @@
 # AI 研究者助手 · M2-5 用户介入接口阶段技术方案
 
-- 版本：v0.1（实施前评审稿，2026-09-14；实现冻结后升 v1.0）
+- 版本：v1.0（实现冻结，2026-09-14；实施前评审稿 v0.1 经 T1~T6 全部落地后升版，冻结记录见 §14）
 - 范围：运行软暂停/继续/硬取消四个 REST 控制点、统一 HumanInput 恢复模型、主动介入（追加追问/剔除证据）、澄清挂起真正联通与 `interrupt.requested` 帧、WS 控制指令与 ACK、0004 介入队列表、控制动作审计留档、M2-5 累积 OpenAPI 冻结
 - 上游依据：《AI研究者助手-后端详细设计》§4.2.5/§4.2.5a/§4.2.5b/§4.3.1/§6.5.9/§6.5.10/§6.6；《AI研究者助手-后端契约草案》§6.1/§6.2（已评审定版）；《AI研究者助手-软件开发计划》§3 M2-5、§5.2（A8 审计动作）；《AI研究者助手-前端详细设计》§9.5/§13.1~§13.3；《AI研究者助手-前端M2任务分解与方案设计》WP-15
 
@@ -328,3 +328,38 @@ RunResponse 增量（M2-4 契约的超集变更，仅新增可选字段）：
 3. 文档：实现冻结后本文件升 v1.0 回填实测结论；`backend/README.md` M2 里程碑行回填 M2-5 状态（指针引 SDP §3）；
 4. 联调：`docs/feedback/M2-5用户介入接口交接.md`（前端 WP-15 真实链路回归，重点 AC-1~AC-5、AC-8、AC-9、AC-11），回归关闭后移入 archive/；
 5. 不在本包的动作（revert/mark_doubt、子问题 gate、报告后剔除、跨进程控制）以 §1.1 为准，流转 M4/M2-8，不临时扩包。
+
+## 14. 实现冻结记录（v1.0，2026-09-14）
+
+### 14.1 落地清单（对照 §3 落位表）
+
+| 组件 | 文件 | 落地结论 |
+| --- | --- | --- |
+| 运行任务注册表 | `app/orchestrator/registry.py`（新增） | `RunRegistry` 单例 + pause→cancel 模式只升不降；`test_run_registry.py` 覆盖 |
+| 执行器取消语义/澄清帧 | `app/orchestrator/executor.py`（改造） | 首跑/恢复统一注册；捕获 CancelledError 按 mode 收尾；paused@clarify 在终态帧前推 `interrupt.requested`；`read_run_interrupt` 只读 checkpoint |
+| 澄清回流修复 | `app/orchestrator/nodes/await_human.py`、`clarifier.py`（改造） | clarify 分支经 `clarification_to_state_payload` 合并 answers 并置 needs_clarification=False，真链不二次挂起 |
+| 介入队列表/迁移 | `app/db/models/intervention.py`（新增）、`migrations/versions/0004_run_interventions.py`（新增） | JSONB payload、(run_id,idempotency_key) 唯一索引；真库 upgrade/downgrade 循环验证 |
+| 入队与消费 | `app/services/interventions.py`（新增）、`nodes/researcher_fan_out.py`（改造） | 入队校验/幂等/审计；层边界 pending 拉取→新层补查→mark applied |
+| 结论链剔除 | `nodes/critic.py`、`nodes/reporter.py`（改造） | 渲染前按 DB excluded 集合一次查询过滤 |
+| 控制端点/服务 | `app/api/v1/runs.py`（扩展）、`app/services/runs_control.py`（新增）、`app/schemas/runs.py`（扩展） | pause/resume/cancel/intervene 四端点 + RunResponse.interrupt |
+| WS 指令与握手归属 | `app/realtime/ws.py`（改造） | 握手补 run 创建者校验（§2.1 声称具备但代码缺失，本包补齐）；intervene/cancel 复用同一 service 回 ack/error |
+| 审计 | `app/audit/base.py`（枚举扩展）、`app/audit/logger.py`（改造为真实 ORM 写入） | 五动作 savepoint 内写入；实现期发现 `AuditEntry.created_at` 无默认值导致写入静默失败的缺陷，由写入器统一补时间戳，真库五动作落档验证 |
+| 契约/配置 | `app/export_openapi.py`（`_M25_ENDPOINTS` + `--refresh-m24`）、`docs/contract/openapi-m2-5.json`（24 路径）、`app/core/config.py`、`.env.example` | 见 §14.3 |
+
+### 14.2 与评审稿的实现偏差
+
+1. **WS 握手归属校验为实际新增而非复用**：v0.1 §2.1 记为「已具备」，落地时发现握手只验 JWT 未查 run 归属；本包在 accept 前补 User（存在/未注销）+ run 创建者校验，失败统一 1008（AC-11「归属不符连接已拒」据此满足）。
+2. **WS 错误码层级**：HTTP 业务判别码在 `details.code`，WS error 帧的 `payload.code` 直接放业务判别码（信封无 details 层），与前端 mock engine 先行形态一致；结构非法（Pydantic 拒绝）统一映射 `INVALID_ACTION_PAYLOAD`。
+3. **审计 created_at 由写入器补齐**：模型列与 0001 建表均为 NOT NULL 但无默认值，`write_audit_entry` 不显式赋值会触发 NotNullViolation 并被「失败只告警」口径静默吞掉（审计行实际丢失）；真库集成测试暴露该缺陷，按「写入器是唯一写入口」由 logger 补 `datetime.now(UTC)`，不改 0001 迁移。
+4. **WS 无 Idempotency-Key**：WS 协议只有 `{type,request_id,payload}`，指令通道不传幂等头；服务端对 WS 介入不启用幂等（设计 §5.5 幂等键定义为 REST 头），双击防护以前端防抖为准。
+5. 其余设计取舍（协作式取消、REST 先返回协程后收尾、DB 队列不切 run 状态、不新增 stage cancelled 枚举、不新增 paused/resumed 独立帧）均按 v0.1 实现，无偏离。
+
+### 14.3 门禁与证据
+
+- 全量 `pytest -q`：**493 passed**（离线 486 + 真库集成 7，集成测试库可达时无跳过）。
+- 真库集成：`test_integration_m24.py` 4 用例（m23_*）+ `test_integration_m25.py` 3 用例（m25_*，setup/teardown DROP SCHEMA CASCADE，跑后无残留）。
+- ruff：本批变更文件 check 全净、format 已应用；全仓剩余 109 个告警为 W292/F401 等历史存量，非本批引入。
+- mypy：`mypy app` 57 个错误，相对 dev 基线零新增（差异仅行号漂移）。
+- 契约：`docs/contract/openapi-m2-5.json` 24 路径；四端点请求/响应 schema 与前端 `services/api/types.ts`、`services/realtime/types.ts` 逐字段核对差异为 0（`RunResponse.interrupt` 为可选超集增量）。
+- 交接：`docs/feedback/M2-5用户介入接口交接.md`（待前端 WP-15 真链回归后关闭归档）。
+- 非目标项（§1.1）全部未扩包；revert_stage/mark_doubt 经枚举拦截返回 422。

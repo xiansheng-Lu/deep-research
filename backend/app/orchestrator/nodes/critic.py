@@ -674,6 +674,14 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
     degraded = False
     consumed_tokens = 0
 
+    # M2-5：用户剔除的证据不进入冲突检测与论断生成（已检出的冲突不追溯）
+    if db_session is not None and material:
+        from app.services.interventions import excluded_evidence_ids
+
+        excluded = await excluded_evidence_ids(db_session, run_id)
+        if excluded:
+            material = [ev for ev in material if ev.get("id") not in excluded]
+
     # 若 material 非空但还没派生过 claim（首次进入）→ 派生一次
     if not claims and material:
         claims = generate_draft_claims(material)

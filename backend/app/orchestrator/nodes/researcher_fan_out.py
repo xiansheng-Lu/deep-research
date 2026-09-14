@@ -270,6 +270,10 @@ async def _publish_sub_question_event(
     }
     if event_type == "sub_question.finished":
         payload["evidence_count"] = len(sq.get("evidence_ids") or [])
+    if event_type == "sub_question.created":
+        # M2-5：补查子问题的追问文本与依赖关系随创建帧下发（对齐前端帧类型）
+        payload["question"] = sq.get("question")
+        payload["depends_on"] = list(sq.get("depends_on") or [])
     event = {
         "type": event_type,
         "stage": ResearchStage.RETRIEVE.value,
@@ -320,42 +324,107 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
 
     top_k = top_k_for_tier(state.get("tier"))
 
-    layers = _topological_layers(pending)
     by_id = {s["id"]: s for s in subqs}
     all_evidence: list[EvidenceDict] = list(state.get("evidence") or [])
 
-    for layer in layers:
-        # 调度前逐条发 started（status 固定 running，表示进入检索执行）
-        for sq in layer:
-            await _publish_sub_question_event(
-                hub,
-                run_id=run_id,
-                event_type="sub_question.started",
-                sq={**sq, "status": "running"},
+    # M2-5：拓扑分层改为动态队列——每层完成后在超步边界消费 ask_followup
+    # 介入（追加补查层），followup 同样受 90% 成本闸门约束
+    while True:
+        active = [s for s in by_id.values() if s.get("status") not in _TERMINAL_STATUSES]
+        if not active:
+            break
+        layers = _topological_layers(active)
+        for layer in layers:
+            # 调度前逐条发 started（status 固定 running，表示进入检索执行）
+            for sq in layer:
+                await _publish_sub_question_event(
+                    hub,
+                    run_id=run_id,
+                    event_type="sub_question.started",
+                    sq={**sq, "status": "running"},
+                )
+            results = await asyncio.gather(
+                *[_research_one(sq, retrieval=retrieval, run_id=run_id, top_k=top_k) for sq in layer],
+                return_exceptions=False,
             )
-        results = await asyncio.gather(
-            *[_research_one(sq, retrieval=retrieval, run_id=run_id, top_k=top_k) for sq in layer],
-            return_exceptions=False,
+            updated_sqs: list[SubQuestionDict] = []
+            for updated_sq, evidence in results:
+                by_id[updated_sq["id"]] = updated_sq
+                updated_sqs.append(updated_sq)
+                all_evidence.extend(evidence)
+            if db_session is not None and updated_sqs:
+                # 仅回写子问题执行状态；证据统一在 standardize 分类后落库
+                await persist_sub_questions(db_session, run_id=run_id, items=updated_sqs)
+            # 落库后逐条发 finished（帧在提交前的毫秒级竞态由前端 REST 对齐补偿）
+            for updated_sq in updated_sqs:
+                record_evidence_fetch(source_type="web", status=str(updated_sq.get("status") or "failed"))
+                await _publish_sub_question_event(
+                    hub, run_id=run_id, event_type="sub_question.finished", sq=updated_sq
+                )
+
+        # 超步边界消费介入：返回新追加的 followup 子问题 id（空则结束循环）
+        followup_ids = await _consume_interventions_at_boundary(
+            db_session, hub=hub, run_id=run_id, by_id=by_id
         )
-        updated_sqs: list[SubQuestionDict] = []
-        for updated_sq, evidence in results:
-            by_id[updated_sq["id"]] = updated_sq
-            updated_sqs.append(updated_sq)
-            all_evidence.extend(evidence)
-        if db_session is not None and updated_sqs:
-            # 仅回写子问题执行状态；证据统一在 standardize 分类后落库
-            await persist_sub_questions(db_session, run_id=run_id, items=updated_sqs)
-        # 落库后逐条发 finished（帧在提交前的毫秒级竞态由前端 REST 对齐补偿）
-        for updated_sq in updated_sqs:
-            record_evidence_fetch(source_type="web", status=str(updated_sq.get("status") or "failed"))
-            await _publish_sub_question_event(
-                hub, run_id=run_id, event_type="sub_question.finished", sq=updated_sq
-            )
+        if db_session is not None:
+            # 用户剔除（含本超步内提交）：从 state 证据集移除，保证不进 standardize
+            from app.services.interventions import excluded_evidence_ids
+
+            excluded = await excluded_evidence_ids(db_session, run_id)
+            if excluded:
+                all_evidence = [e for e in all_evidence if e.get("id") not in excluded]
+                for sq in by_id.values():
+                    sq["evidence_ids"] = [
+                        ev_id for ev_id in sq.get("evidence_ids", []) if ev_id not in excluded
+                    ]
+        if not followup_ids:
+            break
 
     return {
         "evidence": all_evidence,
         "sub_questions": list(by_id.values()),
     }
+
+
+async def _consume_interventions_at_boundary(
+    db_session: Any,
+    *,
+    hub: RealtimeHub | None,
+    run_id: str,
+    by_id: dict[str, SubQuestionDict],
+) -> list[str]:
+    """fan-out 层边界消费 pending 的 ask_followup，返回新追加的子问题 id。
+
+    exclude_evidence 在入队时已同步落 DB 标记，不进 pending 队列；state 侧
+    剔除由调用方按 excluded_evidence_ids 统一处理。
+    """
+    if db_session is None:
+        return []
+    from app.services.interventions import mark_applied, pending_interventions
+
+    pending_items = await pending_interventions(db_session, run_id)
+    followup_ids: list[str] = []
+    for item in pending_items:
+        if item.type != "ask_followup":
+            continue
+        new_sq: SubQuestionDict = {
+            "id": new_ulid(),
+            "question": str(item.payload.get("question") or ""),
+            "depends_on": [str(item.payload.get("sub_question_id") or "")],
+            "status": "pending",
+            "evidence_ids": [],
+        }
+        await persist_sub_questions(db_session, run_id=run_id, items=[new_sq])
+        by_id[new_sq["id"]] = new_sq
+        await _publish_sub_question_event(
+            hub,
+            run_id=run_id,
+            event_type="sub_question.created",
+            sq=new_sq,
+        )
+        await mark_applied(db_session, item.id)
+        followup_ids.append(new_sq["id"])
+    return followup_ids
 
 
 __all__ = [

@@ -20,16 +20,19 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import get_settings
 from app.core.context import bind_run_context
 from app.core.logging import get_logger
 from app.db.base import new_ulid
@@ -56,6 +59,7 @@ from app.orchestrator.nodes import (
     user_intervention,
 )
 from app.orchestrator.persistence import apply_stage_transition, ensure_stage_rows
+from app.orchestrator.registry import get_run_registry
 from app.orchestrator.state import ResearchStage, ResearchState
 from app.quota.emitter import RunCostEmitter
 from app.realtime.hub import RealtimeHub
@@ -264,6 +268,13 @@ async def _publish_stage_failed(
     )
 
 
+@dataclass(slots=True)
+class _StopHolder:
+    """跨取消边界传递最后一份 state 快照（pause/cancel 收尾取 token 与草稿）。"""
+
+    snapshot: ResearchState | None = None
+
+
 async def _astream_and_publish(
     graph: Any,
     initial_state: ResearchState | Command[Any],
@@ -275,6 +286,7 @@ async def _astream_and_publish(
     run_id: str,
     stage_rows: dict[str, Stage],
     cost_emitter: RunCostEmitter,
+    stop_holder: _StopHolder,
 ) -> ResearchState | None:
     """流式执行图：逐 super-step 推进阶段行/帧、发射成本帧并做中间提交。
 
@@ -300,6 +312,8 @@ async def _astream_and_publish(
         stream_mode="values",
     ):
         final_state = snapshot
+        # 记录最近完整快照：协作式取消落在本超步中途时，收尾据此取 token/草稿
+        stop_holder.snapshot = snapshot
         # state 中 current_stage 可能是 ResearchStage(StrEnum) 或裸字符串，
         # 统一归一化为字符串，保证去重比对与 WS 载荷均为纯字符串契约。
         raw_stage = snapshot.get("current_stage")
@@ -440,6 +454,136 @@ async def _mark_failed(
             )
 
 
+#: 受控取消条件更新允许的非终态状态
+_STOPPABLE_STATES: tuple[str, ...] = ("pending", "running", "paused")
+
+
+def _affected_rows(result: Any) -> int:
+    """DML 执行结果的影响行数（async Result 需窄化为 CursorResult）。"""
+    return cast(CursorResult[Any], result).rowcount
+
+
+async def _finalize_controlled_stop(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    run_id: str,
+    hub: RealtimeHub,
+    stop_holder: _StopHolder,
+) -> str | None:
+    """协作式取消的协程内收尾（M2-5）：按注册表 mode 落 paused/cancelled。
+
+    在独立会话中执行（被取消的执行会话可能已随 ``async with`` 回滚），收尾后
+    强制补发末帧 token 并推恰好一条 ``run.finished(status=paused|cancelled)``。
+    自然终态（协程在取消信号生效前已完成 succeeded/failed 落库）不覆盖、不重发。
+
+    Returns:
+        最终状态（paused/cancelled）；自然终态/run 不存在返回 None。
+    """
+    registry = get_run_registry()
+    mode = registry.consume_mode(run_id) or "cancel"
+    keep_partial = registry.keep_partial_for(run_id)
+    # 停止信号名 → run 终态状态名（pause→paused，cancel→cancelled）
+    target_status = "paused" if mode == "pause" else "cancelled"
+
+    async with session_factory() as session:
+        run = await session.get(ResearchRun, run_id)
+        if run is None:
+            return None
+        # 自然终态帧已由 _drive_to_terminal 正常路径发出
+        if run.status in ("succeeded", "failed"):
+            return None
+
+        now = datetime.now(tz=UTC)
+        snapshot = stop_holder.snapshot or {}
+        # 取消可能落在 token 写穿之后、中间提交之前：取 DB 值与快照值的较大者
+        used = max(int(run.token_used or 0), int(snapshot.get("token_used") or 0))
+        report_id: str | None = None
+
+        if mode == "cancel":
+            result = await session.execute(
+                update(ResearchRun)
+                .where(ResearchRun.id == run_id, ResearchRun.status.in_(_STOPPABLE_STATES))
+                .values(
+                    status="cancelled",
+                    finished_at=now,
+                    updated_at=now,
+                    token_used=used,
+                )
+            )
+            if _affected_rows(result) == 0:
+                # 并发已落终态（自然完成/被服务端置为非可取消态）：以 DB 为准
+                await session.refresh(run)
+                if run.status != "cancelled":
+                    return None
+            # 条件未命中但状态已是 cancelled（服务端已置位）：token 以快照对齐发帧
+            run.status = "cancelled"
+            run.finished_at = run.finished_at or now
+            run.token_used = used
+        else:
+            # 软暂停：仅 running 可置 paused（控制端点已乐观置位时条件不命中属正常）
+            result = await session.execute(
+                update(ResearchRun)
+                .where(ResearchRun.id == run_id, ResearchRun.status == "running")
+                .values(status="paused", updated_at=now, token_used=used)
+            )
+            if _affected_rows(result) == 0:
+                await session.refresh(run)
+                if run.status == "cancelled":
+                    # pause→cancel 并发升级：改发 cancelled 终态
+                    target_status = "cancelled"
+                    run.finished_at = run.finished_at or now
+                elif run.status != "paused":
+                    return None
+            else:
+                run.status = "paused"
+            # 帧与写穿均以最近快照用量为准（取消可能落在提交前）
+            run.token_used = used
+            run.finished_at = None
+
+        # keep_partial：最终态为 cancelled 且最后快照含非空报告草稿时保留为 draft
+        if target_status == "cancelled" and keep_partial:
+            report_markdown = str(snapshot.get("report_draft") or "")
+            if report_markdown.strip():
+                existing_id = await session.scalar(select(Report.id).where(Report.run_id == run_id))
+                if existing_id is None:
+                    report = Report(
+                        id=new_ulid(),
+                        run_id=run_id,
+                        template_id=run.template_id,
+                        status="draft",
+                        content_md=report_markdown,
+                        content_json={
+                            "claims": list(snapshot.get("report_claims") or []),
+                            "conflicts": list(snapshot.get("conflicts") or []),
+                            "outline": list(snapshot.get("report_outline") or []),
+                        },
+                        token_used=used,
+                    )
+                    session.add(report)
+                    await session.flush()
+                    report_id = report.id
+
+        await session.commit()
+
+        # 终态成本帧与看板数字对齐（paused 同样补发，恢复/轮询读到一致值）
+        final_used = int(run.token_used or 0)
+        await RunCostEmitter(hub=hub, run=run).observe(final_used, force=True)
+        await _publish_event(
+            hub,
+            run_id,
+            {
+                "type": "run.finished",
+                "run_id": run_id,
+                "status": target_status,
+                "current_stage": run.current_stage,
+                "token_used": final_used,
+                "occurred_at": _utcnow_iso(),
+                **({"partial_report_id": report_id} if report_id else {}),
+            },
+        )
+        return target_status
+
+
 async def run_research_async(
     *,
     run_id: str,
@@ -475,59 +619,77 @@ async def run_research_async(
         hub: 实时事件总线；阶段事件 / 终态事件由此推送。
         checkpointer: 应用级持久检查点；None 时退化为一次性内存 saver（测试用）。
     """
-    deps = NodeDeps(
-        run_id=run_id,
-        team_id=team_id,
-        trace_id=trace_id,
-        llm=llm,
-        retrieval_client=retrieval_client,
-        db_session=None,
-    )
-
-    initial_state = _build_initial_state(
-        run_id=run_id,
-        project_id=project_id,
-        question=question,
-        template_id=template_id,
-        tier=tier,
-        token_budget=token_budget,
-        clarification=clarification,
-        trace_id=trace_id,
-    )
-
-    # 让事件订阅者有机会注册（asyncio 调度顺序）
-    await asyncio.sleep(0)
-
-    async with session_factory() as session:
-        run = await _load_run(session, run_id)
-        if run is None:
-            log.error("run 不存在", extra={"run_id": run_id})
-            await _publish_event(
-                hub,
-                run_id,
-                {"type": "run.failed", "run_id": run_id, "error_code": "RUN_NOT_FOUND"},
-            )
-            return
-
-        # 标记运行中并补齐六阶段行（5 pending + clarify 由首个快照置 running）
-        run.status = "running"
-        run.started_at = datetime.now(tz=UTC)
-        run.current_stage = ResearchStage.CLARIFY.value
-        stage_rows = await ensure_stage_rows(session, run_id=run_id)
-        await session.flush()
-
-        graph = _compile_for_deps(deps, checkpointer)
-        await _drive_to_terminal(
-            graph=graph,
-            graph_input=initial_state,
-            run=run,
-            template_id=template_id,
-            session=session,
-            hub=hub,
-            deps=deps,
-            fallback_state=initial_state,
-            stage_rows=stage_rows,
+    registry = get_run_registry()
+    current_task = asyncio.current_task()
+    assert current_task is not None
+    # M2-5：登记在途句柄，pause/cancel 控制端点据此投递协作式取消信号
+    stop_holder = _StopHolder()
+    registry.register(run_id, current_task)
+    try:
+        deps = NodeDeps(
+            run_id=run_id,
+            team_id=team_id,
+            trace_id=trace_id,
+            llm=llm,
+            retrieval_client=retrieval_client,
+            db_session=None,
         )
+
+        initial_state = _build_initial_state(
+            run_id=run_id,
+            project_id=project_id,
+            question=question,
+            template_id=template_id,
+            tier=tier,
+            token_budget=token_budget,
+            clarification=clarification,
+            trace_id=trace_id,
+        )
+
+        # 让事件订阅者有机会注册（asyncio 调度顺序）
+        await asyncio.sleep(0)
+
+        async with session_factory() as session:
+            run = await _load_run(session, run_id)
+            if run is None:
+                log.error("run 不存在", extra={"run_id": run_id})
+                await _publish_event(
+                    hub,
+                    run_id,
+                    {"type": "run.failed", "run_id": run_id, "error_code": "RUN_NOT_FOUND"},
+                )
+                return
+
+            # 标记运行中并补齐六阶段行（5 pending + clarify 由首个快照置 running）
+            run.status = "running"
+            run.started_at = datetime.now(tz=UTC)
+            run.current_stage = ResearchStage.CLARIFY.value
+            stage_rows = await ensure_stage_rows(session, run_id=run_id)
+            await session.flush()
+
+            graph = _compile_for_deps(deps, checkpointer)
+            await _drive_to_terminal(
+                graph=graph,
+                graph_input=initial_state,
+                run=run,
+                template_id=template_id,
+                session=session,
+                hub=hub,
+                deps=deps,
+                fallback_state=initial_state,
+                stage_rows=stage_rows,
+                stop_holder=stop_holder,
+            )
+    except asyncio.CancelledError:
+        # 受控停止（pause/cancel）：独立会话收尾落库并发终态帧，吞掉取消正常退出
+        await _finalize_controlled_stop(
+            session_factory,
+            run_id=run_id,
+            hub=hub,
+            stop_holder=stop_holder,
+        )
+    finally:
+        registry.unregister(run_id)
 
 
 async def _drive_to_terminal(
@@ -541,6 +703,7 @@ async def _drive_to_terminal(
     deps: NodeDeps,
     fallback_state: ResearchState | None,
     stage_rows: dict[str, Stage],
+    stop_holder: _StopHolder,
 ) -> ResearchState | None:
     """驱动图执行到终态并完成落库与终态事件推送（首次执行/恢复共用）。
 
@@ -576,6 +739,7 @@ async def _drive_to_terminal(
             run_id=run_id,
             stage_rows=stage_rows,
             cost_emitter=cost_emitter,
+            stop_holder=stop_holder,
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("graph.astream 执行失败", extra={"run_id": run_id})
@@ -614,7 +778,30 @@ async def _drive_to_terminal(
 
     await session.commit()
 
-    # 终态阶段帧（提交后发出，帧内实体与 REST 快照此时已同源）
+    # 澄清挂起：在 run.finished(paused) 之前推 interrupt.requested（M2-5 §5.4）。
+    # critique 挂起已有 conflict.detected、成本挂起由成本卡 danger 表达，均不发本帧。
+    if run.status == "paused" and final_state is not None:
+        interrupt_reason = final_state.get("interrupt_reason")
+        interrupt_payload = final_state.get("interrupt_payload")
+        if interrupt_reason == "clarify" and isinstance(interrupt_payload, dict):
+            questions = interrupt_payload.get("questions")
+            if isinstance(questions, list) and questions:
+                await _publish_event(
+                    hub,
+                    run_id,
+                    {
+                        "type": "interrupt.requested",
+                        "stage": "clarify",
+                        "payload": {
+                            "reason": "clarify",
+                            "questions": questions,
+                            "defaults": interrupt_payload.get("defaults", {}),
+                            "expires_in_seconds": get_settings().clarification_expires_seconds,
+                        },
+                    },
+                )
+
+    # 终态阶段帧（提交后发出，帧内实体与 REST 此时已同源）
     if run.status == "succeeded":
         report_row = stage_rows.get(ResearchStage.REPORT.value)
         if report_row is not None:
@@ -651,6 +838,46 @@ async def _drive_to_terminal(
     return final_state
 
 
+async def read_run_interrupt(
+    *,
+    run_id: str,
+    session_factory: async_sessionmaker[AsyncSession],
+    checkpointer: BaseCheckpointSaver[Any] | None,
+    llm: Any,
+    retrieval_client: Any,
+) -> dict[str, Any] | None:
+    """只读挂起线程的 interrupt_reason/interrupt_payload（M2-5）。
+
+    用 ``aget_state`` 读检查点而不驱动图执行，供 resume 载荷校验与
+    ``GET /runs/{id}`` 的澄清卡刷新恢复使用；无挂起上下文返回 None。
+    """
+    async with session_factory() as session:
+        run = await _load_run(session, run_id)
+        if run is None:
+            return None
+        team_id = await session.scalar(select(Project.team_id).where(Project.id == run.project_id))
+        deps = NodeDeps(
+            run_id=run_id,
+            team_id=str(team_id or ""),
+            trace_id=run_id,
+            llm=llm,
+            retrieval_client=retrieval_client,
+            db_session=None,
+        )
+        graph = _compile_for_deps(deps, checkpointer)
+        thread_config: dict[str, Any] = {"configurable": {"thread_id": run_id}}
+        state_snapshot = await graph.aget_state(thread_config)
+        values: dict[str, Any] = dict(getattr(state_snapshot, "values", None) or {})
+        reason = values.get("interrupt_reason")
+        payload = values.get("interrupt_payload")
+        if reason is None and not isinstance(payload, dict):
+            return None
+        return {
+            "reason": str(reason) if reason else None,
+            "payload": payload if isinstance(payload, dict) else {},
+        }
+
+
 async def resume_research_async(
     *,
     run_id: str,
@@ -669,88 +896,107 @@ async def resume_research_async(
 
     仅 ``paused`` 状态的 run 可恢复；非挂起调用直接忽略（幂等保护）。
     """
-    await asyncio.sleep(0)
+    registry = get_run_registry()
+    current_task = asyncio.current_task()
+    assert current_task is not None
+    # 恢复任务同样登记句柄：恢复途中允许再 pause/cancel
+    stop_holder = _StopHolder()
+    registry.register(run_id, current_task)
+    try:
+        await asyncio.sleep(0)
 
-    async with session_factory() as session:
-        run = await _load_run(session, run_id)
-        if run is None:
-            log.error("恢复目标 run 不存在", extra={"run_id": run_id})
-            await _publish_event(
-                hub,
-                run_id,
-                {"type": "run.failed", "run_id": run_id, "error_code": "RUN_NOT_FOUND"},
-            )
-            return
-        if run.status != "paused":
-            log.warning(
-                "非 paused 状态忽略恢复请求",
-                extra={"run_id": run_id, "status": run.status},
-            )
-            return
+        async with session_factory() as session:
+            run = await _load_run(session, run_id)
+            if run is None:
+                log.error("恢复目标 run 不存在", extra={"run_id": run_id})
+                await _publish_event(
+                    hub,
+                    run_id,
+                    {"type": "run.failed", "run_id": run_id, "error_code": "RUN_NOT_FOUND"},
+                )
+                return
+            if run.status != "paused":
+                log.warning(
+                    "非 paused 状态忽略恢复请求",
+                    extra={"run_id": run_id, "status": run.status},
+                )
+                return
 
-        try:
-            team_id = await session.scalar(select(Project.team_id).where(Project.id == run.project_id))
-            deps = NodeDeps(
-                run_id=run_id,
-                team_id=str(team_id or ""),
-                trace_id=run_id,
-                llm=llm,
-                retrieval_client=retrieval_client,
-                db_session=None,
-            )
-            graph = _compile_for_deps(deps, checkpointer)
-            thread_config: dict[str, Any] = {"configurable": {"thread_id": run_id}}
+            try:
+                team_id = await session.scalar(select(Project.team_id).where(Project.id == run.project_id))
+                deps = NodeDeps(
+                    run_id=run_id,
+                    team_id=str(team_id or ""),
+                    trace_id=run_id,
+                    llm=llm,
+                    retrieval_client=retrieval_client,
+                    db_session=None,
+                )
+                graph = _compile_for_deps(deps, checkpointer)
+                thread_config: dict[str, Any] = {"configurable": {"thread_id": run_id}}
 
-            # 把人类输入显式写入挂起线程状态，供 await_human 节点读取
-            await graph.aupdate_state(thread_config, {"human_input": human_input})
+                # 把人类输入显式写入挂起线程状态，供 await_human 节点读取
+                await graph.aupdate_state(thread_config, {"human_input": human_input})
 
-            run.status = "running"
-            run.error_code = None
-            run.error_message = None
-            run.finished_at = None
-            # 恢复路径同样补齐六阶段行（幂等取回既有行，succeeded 不回退）
-            stage_rows = await ensure_stage_rows(session, run_id=run_id)
-            await session.flush()
+                run.status = "running"
+                run.error_code = None
+                run.error_message = None
+                run.finished_at = None
+                # 恢复路径同样补齐六阶段行（幂等取回既有行，succeeded 不回退）
+                stage_rows = await ensure_stage_rows(session, run_id=run_id)
+                await session.flush()
 
-            await _drive_to_terminal(
-                graph=graph,
-                graph_input=Command(resume=human_input),
-                run=run,
-                template_id=run.template_id,
-                session=session,
-                hub=hub,
-                deps=deps,
-                fallback_state=None,
-                stage_rows=stage_rows,
-            )
-        except Exception as exc:  # noqa: BLE001 - 恢复护栏：任何异常都落 failed + 终态帧（TR-8.3）
-            log.exception("HITL 恢复执行失败", extra={"run_id": run_id})
-            await _mark_failed(
-                session,
-                run,
-                error_code=exc.__class__.__name__,
-                error_message=repr(exc),
-                partial_state=None,
-            )
-            await session.commit()
-            await _publish_event(
-                hub,
-                run_id,
-                {
-                    "type": "run.finished",
-                    "run_id": run_id,
-                    "status": "failed",
-                    "current_stage": run.current_stage,
-                    "error_code": run.error_code,
-                    "error_message": run.error_message,
-                    "occurred_at": _utcnow_iso(),
-                },
-            )
+                await _drive_to_terminal(
+                    graph=graph,
+                    graph_input=Command(resume=human_input),
+                    run=run,
+                    template_id=run.template_id,
+                    session=session,
+                    hub=hub,
+                    deps=deps,
+                    fallback_state=None,
+                    stage_rows=stage_rows,
+                    stop_holder=stop_holder,
+                )
+            except Exception as exc:  # noqa: BLE001 - 恢复护栏：任何异常都落 failed + 终态帧（TR-8.3）
+                log.exception("HITL 恢复执行失败", extra={"run_id": run_id})
+                await _mark_failed(
+                    session,
+                    run,
+                    error_code=exc.__class__.__name__,
+                    error_message=repr(exc),
+                    partial_state=None,
+                )
+                await session.commit()
+                await _publish_event(
+                    hub,
+                    run_id,
+                    {
+                        "type": "run.finished",
+                        "run_id": run_id,
+                        "status": "failed",
+                        "current_stage": run.current_stage,
+                        "error_code": run.error_code,
+                        "error_message": run.error_message,
+                        "occurred_at": _utcnow_iso(),
+                    },
+                )
+    except asyncio.CancelledError:
+        # 恢复途中受控停止：与首跑同一路径收尾
+        await _finalize_controlled_stop(
+            session_factory,
+            run_id=run_id,
+            hub=hub,
+            stop_holder=stop_holder,
+        )
+    finally:
+        registry.unregister(run_id)
 
 
 __all__ = [
     "run_research_async",
     "resume_research_async",
+    "read_run_interrupt",
     "_drive_to_terminal",
     "_build_initial_state",
     "_compile_for_deps",

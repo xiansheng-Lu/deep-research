@@ -25,6 +25,7 @@ from app.orchestrator.executor import (
     resume_research_async,
     run_research_async,
 )
+from app.orchestrator.registry import get_run_registry
 from app.orchestrator.schemas import ClarificationSchema, SubQuestionListSchema
 from app.orchestrator.state import ResearchStage
 from app.provider.client import LLMClient, StructuredCompletion
@@ -841,3 +842,468 @@ async def test_resume_research_async_ignores_non_paused_run() -> None:
 
     assert run.status == "succeeded"
     assert mock_session.commit.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# M2-5：协作式暂停/取消（RunRegistry + CancelledError 受控收尾）
+# ---------------------------------------------------------------------------
+
+
+class _GatedAsyncGraphStream:
+    """产出给定快照后在 gate 上挂起的假图（取消信号在 gate await 点生效）。"""
+
+    def __init__(self, snapshots: list[dict[str, Any]], gate: asyncio.Event) -> None:
+        self._snapshots = snapshots
+        self._gate = gate
+
+    def astream(self, initial_state: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ARG002
+        assert kwargs.get("stream_mode") == "values"
+        snapshots = self._snapshots
+        gate = self._gate
+
+        class _Iterator:
+            def __init__(self) -> None:
+                self._idx = 0
+
+            def __aiter__(self) -> _Iterator:
+                return self
+
+            async def __anext__(self) -> dict[str, Any]:
+                if self._idx < len(snapshots):
+                    snap = snapshots[self._idx]
+                    self._idx += 1
+                    return snap
+                # 模拟执行中的长 IO 节点：gate 不 set，只等取消信号打断
+                await gate.wait()
+                raise StopAsyncIteration
+
+        return _Iterator()
+
+
+def _build_control_mocks(run: ResearchRun, finalize_status: str) -> tuple[AsyncMock, MagicMock, list[Any]]:
+    """构造执行会话与收尾会话两个 mock（模拟独立 DB 连接的不同视角）。
+
+    - 执行会话：_load_run 的 scalar 返回 run（执行器随后置 running）；
+    - 收尾会话：session.get 重读时模拟 DB 已被控制端点置为 finalize_status，
+      查既有 Report 的 scalar 返回 None，条件 UPDATE 统一返回 rowcount=0。
+    """
+    added: list[Any] = []
+
+    exec_session = AsyncMock()
+    exec_session.scalar.return_value = run
+    exec_session.add = MagicMock(side_effect=added.append)
+    exec_session.flush = AsyncMock()
+    exec_session.commit = AsyncMock()
+    _scalars_result = MagicMock()
+    _scalars_result.all.return_value = []
+    exec_session.scalars = AsyncMock(return_value=_scalars_result)
+
+    finalize_session = AsyncMock()
+
+    async def _get(_model: Any, _pk: Any) -> ResearchRun:
+        # 模拟独立连接读到控制端点已提交的状态
+        run.status = finalize_status
+        return run
+
+    async def _scalar(_statement: Any) -> None:
+        # 收尾会话仅查 select(Report.id)，无既有报告
+        return None
+
+    finalize_session.get = AsyncMock(side_effect=_get)
+    finalize_session.scalar = AsyncMock(side_effect=_scalar)
+    finalize_session.add = MagicMock(side_effect=added.append)
+    finalize_session.flush = AsyncMock()
+    finalize_session.commit = AsyncMock()
+    finalize_session.refresh = AsyncMock()
+    finalize_session.execute = AsyncMock(return_value=MagicMock(rowcount=0))
+
+    mock_factory = MagicMock()
+    mock_factory.return_value.__aenter__ = AsyncMock(side_effect=[exec_session, finalize_session])
+    mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+    return exec_session, mock_factory, added
+
+
+async def _collect_until_finished(
+    hub: RealtimeHub, run_id: str
+) -> tuple[list[dict[str, Any]], asyncio.Task[None]]:
+    events: list[dict[str, Any]] = []
+
+    async def _collect() -> None:
+        async for event in hub.subscribe(f"runs:{run_id}"):
+            events.append(event)
+            if event.get("type") == "run.finished":
+                break
+
+    return events, asyncio.create_task(_collect())
+
+
+async def _drain_collector(collect_task: asyncio.Task[None]) -> None:
+    """等收集器消费完 run.finished 自然退出，避免协程跨事件循环泄漏。"""
+    await asyncio.wait_for(collect_task, timeout=2.0)
+
+
+def _run_kwargs(
+    run_id: str,
+    mock_factory: MagicMock,
+    hub: RealtimeHub,
+) -> dict[str, Any]:
+    return dict(
+        run_id=run_id,
+        project_id="proj-001",
+        template_id="generic",
+        tier="standard",
+        question="测试问题",
+        token_budget=1000,
+        clarification=None,
+        team_id="team-001",
+        creator_id="user-001",
+        trace_id="trace-001",
+        session_factory=mock_factory,
+        llm=None,
+        retrieval_client=None,
+        hub=hub,
+    )
+
+
+def _control_snapshot(run_id: str, stage: ResearchStage, used: int, draft: str) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "current_stage": stage,
+        "token_used": used,
+        "stage_attempts": {},
+        "report_draft": draft,
+        "report_claims": [],
+        "conflicts": [],
+        "report_outline": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_research_async_pause_finalizes_paused() -> None:
+    """AC-1：pause 信号在下一 await 点生效，落 paused 并发 run.finished(paused)。"""
+    from datetime import UTC, datetime, timedelta
+
+    run_id = "test-run-pause"
+    registry = get_run_registry()
+    registry.unregister(run_id)  # 防御性清理
+
+    gate = asyncio.Event()
+    run = ResearchRun(
+        id=run_id,
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="standard",
+        question="测试问题",
+        status="running",
+        current_stage="retrieve",
+        token_budget=1000,
+        token_used=100,
+        started_at=datetime.now(tz=UTC) - timedelta(seconds=5),
+    )
+    # 收尾的独立连接读到 pause 端点已置位的 paused
+    _mock_session, mock_factory, added = _build_control_mocks(run, "paused")
+    hub = RealtimeHub()
+    events, collect_task = await _collect_until_finished(hub, run_id)
+    snapshot = _control_snapshot(run_id, ResearchStage.RETRIEVE, 100, "")
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(
+            "app.orchestrator.executor._compile_for_deps",
+            lambda deps, checkpointer=None: _GatedAsyncGraphStream([snapshot], gate),
+        )
+        task = asyncio.create_task(run_research_async(**_run_kwargs(run_id, mock_factory, hub)))
+        # 等第一超步处理完（阶段帧 + 中间提交）
+        await asyncio.sleep(0.1)
+        assert registry.is_active(run_id)
+
+        # 投递 pause 信号（端点的乐观置位由收尾会话 get 侧效模拟）
+        assert registry.request_stop(run_id, "pause") is True
+        await asyncio.wait_for(task, timeout=2.0)
+
+    await asyncio.sleep(0.05)
+    await _drain_collector(collect_task)
+    assert registry.is_active(run_id) is False
+
+    finished = [e for e in events if e["type"] == "run.finished"]
+    assert len(finished) == 1
+    assert finished[0]["status"] == "paused"
+    # 暂停不是终态：不写 finished_at；token 末帧与快照一致
+    assert run.finished_at is None
+    token_frames = [e for e in events if e["type"] == "token.usage.update"]
+    assert token_frames[-1]["payload"]["used"] == 100
+    # 暂停路径不落报告（阶段行 add 属正常首跑补齐）
+    assert [obj for obj in added if isinstance(obj, Report)] == []
+
+
+@pytest.mark.asyncio
+async def test_run_research_async_cancel_keeps_partial_draft() -> None:
+    """AC-3/AC-4：cancel 落 cancelled；快照含草稿且 keep_partial 时落 draft 报告。"""
+    from datetime import UTC, datetime, timedelta
+
+    run_id = "test-run-cancel"
+    registry = get_run_registry()
+    registry.unregister(run_id)
+
+    gate = asyncio.Event()
+    finished_at = datetime.now(tz=UTC) - timedelta(seconds=1)
+    run = ResearchRun(
+        id=run_id,
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="standard",
+        question="测试问题",
+        status="running",
+        current_stage="report",
+        token_budget=1000,
+        token_used=500,
+        started_at=datetime.now(tz=UTC) - timedelta(seconds=5),
+        finished_at=finished_at,
+    )
+    # 收尾的独立连接读到 cancel 端点已置位的 cancelled
+    _mock_session, mock_factory, added = _build_control_mocks(run, "cancelled")
+    hub = RealtimeHub()
+    events, collect_task = await _collect_until_finished(hub, run_id)
+    snapshot = _control_snapshot(run_id, ResearchStage.REPORT, 500, "## 未完成的草稿报告")
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(
+            "app.orchestrator.executor._compile_for_deps",
+            lambda deps, checkpointer=None: _GatedAsyncGraphStream([snapshot], gate),
+        )
+        task = asyncio.create_task(run_research_async(**_run_kwargs(run_id, mock_factory, hub)))
+        await asyncio.sleep(0.1)
+        assert registry.request_stop(run_id, "cancel", keep_partial=True) is True
+        await asyncio.wait_for(task, timeout=2.0)
+
+    await asyncio.sleep(0.05)
+    await _drain_collector(collect_task)
+    assert registry.is_active(run_id) is False
+
+    finished = [e for e in events if e["type"] == "run.finished"]
+    assert len(finished) == 1
+    assert finished[0]["status"] == "cancelled"
+    assert finished[0]["partial_report_id"] is not None
+    # 服务端已写的 finished_at 不被覆盖
+    assert run.finished_at == finished_at
+    # 草稿报告落库
+    reports = [obj for obj in added if isinstance(obj, Report)]
+    assert len(reports) == 1
+    assert reports[0].status == "draft"
+    assert "未完成的草稿报告" in reports[0].content_md
+
+
+@pytest.mark.asyncio
+async def test_run_research_async_cancel_without_partial_creates_no_report() -> None:
+    """keep_partial=False 时即使快照含草稿也不落 Report。"""
+    run_id = "test-run-cancel-no-partial"
+    registry = get_run_registry()
+    registry.unregister(run_id)
+
+    gate = asyncio.Event()
+    run = ResearchRun(
+        id=run_id,
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="standard",
+        question="测试问题",
+        status="running",
+        current_stage="report",
+        token_budget=1000,
+        token_used=300,
+    )
+    _mock_session, mock_factory, added = _build_control_mocks(run, "cancelled")
+    hub = RealtimeHub()
+    events, collect_task = await _collect_until_finished(hub, run_id)
+    snapshot = _control_snapshot(run_id, ResearchStage.REPORT, 300, "## 草稿")
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(
+            "app.orchestrator.executor._compile_for_deps",
+            lambda deps, checkpointer=None: _GatedAsyncGraphStream([snapshot], gate),
+        )
+        task = asyncio.create_task(run_research_async(**_run_kwargs(run_id, mock_factory, hub)))
+        await asyncio.sleep(0.1)
+        assert registry.request_stop(run_id, "cancel", keep_partial=False) is True
+        await asyncio.wait_for(task, timeout=2.0)
+
+    await asyncio.sleep(0.05)
+    await _drain_collector(collect_task)
+    finished = [e for e in events if e["type"] == "run.finished"]
+    assert len(finished) == 1
+    assert finished[0]["status"] == "cancelled"
+    assert "partial_report_id" not in finished[0]
+    assert [obj for obj in added if isinstance(obj, Report)] == []
+
+
+# ---------------------------------------------------------------------------
+# M2-5 T2：澄清挂起 → answers 恢复不二次挂起 + interrupt.requested 帧
+# ---------------------------------------------------------------------------
+
+
+class _ClarificationGateLLM(LLMClient):
+    """首次 clarify 判定需追问；恢复后 clarify 跳过，后续 schema 走默认结构化产出。"""
+
+    def __init__(self, tokens_per_call: int = 60) -> None:
+        # 跳过父类 __init__：避免熔断器/注册表副作用
+        self.tokens_per_call = tokens_per_call
+        self.clarify_calls = 0
+        self.call_tags: list[str] = []
+
+    async def complete_structured(  # type: ignore[override]
+        self,
+        *,
+        schema: Any,
+        messages: list[Any] | None = None,  # noqa: ARG002
+        system_prompt: str | None = None,  # noqa: ARG002
+        user_prompt: str | None = None,  # noqa: ARG002
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        tags: list[str] | None = None,
+    ) -> StructuredCompletion:
+        self.call_tags.append(",".join(tags or []))
+        usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": self.tokens_per_call,
+        }
+        if schema is ClarificationSchema:
+            self.clarify_calls += 1
+            if self.clarify_calls == 1:
+                return StructuredCompletion(
+                    parsed=ClarificationSchema(
+                        requires_user_input=True,
+                        questions=[
+                            {
+                                "key": "scope",
+                                "text": "请补充研究的时间范围",
+                                "options": ["近一年", "近三年"],
+                                "recommended": 1,
+                            }
+                        ],
+                        defaults={},
+                        structured_question={},
+                    ),
+                    usage=usage,
+                    model="stub-clarify-gate",
+                    raw="",
+                )
+            return StructuredCompletion(
+                parsed=ClarificationSchema(
+                    requires_user_input=False,
+                    questions=[],
+                    defaults={},
+                    structured_question={"goal": "兜底目标", "scope": "", "key_concepts": []},
+                ),
+                usage=usage,
+                model="stub-clarify-gate",
+                raw="",
+            )
+        return StructuredCompletion(
+            parsed=SubQuestionListSchema(
+                sub_questions=[{"question": "澄清恢复验证子问题", "depends_on": [], "rationale": "测试"}]
+            ),
+            usage=usage,
+            model="stub-clarify-gate",
+            raw="",
+        )
+
+
+@pytest.mark.asyncio
+async def test_clarification_pause_resume_with_answers_completes_once() -> None:
+    """AC-5：澄清挂起 → interrupt.requested 帧 → answers 恢复后一路 succeeded，不二次挂起。"""
+    run_id = "test-run-clarify-resume"
+    run = ResearchRun(
+        id=run_id,
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="standard",
+        question="光伏产业趋势如何",
+        status="pending",
+        token_budget=100_000,
+    )
+
+    mock_session = AsyncMock()
+    mock_session.scalar.side_effect = [run, run, "team-001"]
+    mock_session.add = MagicMock()
+    mock_session.flush = AsyncMock()
+    mock_session.commit = AsyncMock()
+    _scalars_result = MagicMock()
+    _scalars_result.all.return_value = []
+    mock_session.scalars = AsyncMock(return_value=_scalars_result)
+
+    mock_factory = MagicMock()
+    mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    hub = RealtimeHub()
+    shared_saver = InMemorySaver()
+
+    async def _collect_one() -> list[dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
+        async for event in hub.subscribe(f"runs:{run_id}"):
+            collected.append(event)
+            if event.get("type") == "run.finished":
+                break
+        return collected
+
+    llm = _ClarificationGateLLM(tokens_per_call=60)
+
+    collect_first = asyncio.create_task(_collect_one())
+    await run_research_async(
+        run_id=run_id,
+        project_id="proj-001",
+        template_id="generic",
+        tier="standard",
+        question="光伏产业趋势如何",
+        token_budget=100_000,
+        clarification=None,
+        team_id="team-001",
+        creator_id="user-001",
+        trace_id="trace-clarify",
+        session_factory=mock_factory,
+        llm=llm,
+        retrieval_client=_OfflineRetrievalClient(),
+        hub=hub,
+        checkpointer=shared_saver,
+    )
+    first_events = await collect_first
+
+    # 首跑停在澄清挂起
+    assert run.status == "paused"
+    interrupt_events = [e for e in first_events if e["type"] == "interrupt.requested"]
+    assert len(interrupt_events) == 1
+    payload = interrupt_events[0]["payload"]
+    assert payload["reason"] == "clarify"
+    assert payload["questions"][0]["key"] == "scope"
+    assert payload["expires_in_seconds"] == 900
+    # 帧序：interrupt.requested 先于 run.finished(paused)
+    type_order = [e["type"] for e in first_events]
+    assert type_order.index("interrupt.requested") < type_order.index("run.finished")
+    assert first_events[-1]["status"] == "paused"
+
+    # 恢复：提交澄清答案
+    collect_resume = asyncio.create_task(_collect_one())
+    await asyncio.sleep(0)
+    await resume_research_async(
+        run_id=run_id,
+        human_input={"answers": {"scope": "近三年"}},
+        session_factory=mock_factory,
+        checkpointer=shared_saver,
+        llm=llm,
+        retrieval_client=_OfflineRetrievalClient(),
+        hub=hub,
+    )
+    resume_events = await collect_resume
+
+    assert run.status == "succeeded"
+    assert run.current_stage == "report"
+    # 恢复后 clarify 节点被跳过（仅首跑那一次 LLM 澄清判定），未二次挂起
+    assert llm.clarify_calls == 1
+    assert not [e for e in resume_events if e["type"] == "interrupt.requested"]
+    finished = [e for e in resume_events if e["type"] == "run.finished"]
+    assert len(finished) == 1
+    assert finished[0]["status"] == "succeeded"

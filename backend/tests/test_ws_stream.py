@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.responses import ORJSONResponse
 from fastapi.testclient import TestClient
+from test_runs_control_api import _ControlFakeSession, _run, _user
 
 from app.api.v1 import api_v1_router
 from app.core.config import Settings, get_settings
@@ -26,11 +27,32 @@ _FAKE_USER_ID = "01HZX7YK9P3M2V4N5J8XQRCWT6"
 _FAKE_RUN_ID = "01JATESTRUNID00000000000001"
 
 
+class _SessionFactory:
+    """测试会话工厂：``async with factory() as session`` 恒返回内存假会话。"""
+
+    def __init__(self, session: _ControlFakeSession) -> None:
+        self._session = session
+
+    def __call__(self) -> _SessionFactory._CM:
+        outer = self
+
+        class _CM:
+            async def __aenter__(self) -> _ControlFakeSession:
+                return outer._session
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        return _CM()
+
+
 def _build_test_app(settings: Settings) -> FastAPI:
-    """构造完整 app（挂 v1 路由含 WS 端点）。"""
+    """构造完整 app（挂 v1 路由含 WS 端点），注入归属校验用内存会话工厂。"""
     app = FastAPI(default_response_class=ORJSONResponse)
     app.state.settings = settings
     app.state.hub = get_hub()
+    # M2-5：WS 握手新增 run 归属校验，需提供会话工厂（run 归属于当前 token 用户）
+    app.state.session_factory = _SessionFactory(_ControlFakeSession([_user()], [_run("running")]))
     app.include_router(api_v1_router)
     return app
 
@@ -64,18 +86,22 @@ def client(app: FastAPI) -> TestClient:
 
 def test_ws_without_token_rejected(client: TestClient) -> None:
     """无 token → 1008 拒绝。"""
-    with pytest.raises(Exception, match=None), client.websocket_connect(  # noqa: B017
-        f"/api/v1/ws/runs/{_FAKE_RUN_ID}/stream"
+    with (
+        pytest.raises(Exception, match=None),
+        client.websocket_connect(  # noqa: B017
+            f"/api/v1/ws/runs/{_FAKE_RUN_ID}/stream"
+        ),
     ):
         pass
 
 
-def test_ws_invalid_token_rejected(
-    settings: Settings, client: TestClient
-) -> None:
+def test_ws_invalid_token_rejected(settings: Settings, client: TestClient) -> None:
     """无效 token → 1008 拒绝。"""
-    with pytest.raises(Exception, match=None), client.websocket_connect(  # noqa: B017
-        f"/api/v1/ws/runs/{_FAKE_RUN_ID}/stream?token=invalid.jwt.token"
+    with (
+        pytest.raises(Exception, match=None),
+        client.websocket_connect(  # noqa: B017
+            f"/api/v1/ws/runs/{_FAKE_RUN_ID}/stream?token=invalid.jwt.token"
+        ),
     ):
         pass
 
@@ -90,16 +116,22 @@ def test_ws_valid_token_receives_events_and_closes(
     async def _publish_events() -> None:
         # 等待 WS 订阅就绪
         await asyncio.sleep(0.1)
-        await hub.publish(channel, {
-            "type": "stage.started",
-            "stage": "clarify",
-            "run_id": _FAKE_RUN_ID,
-        })
-        await hub.publish(channel, {
-            "type": "run.finished",
-            "run_id": _FAKE_RUN_ID,
-            "status": "succeeded",
-        })
+        await hub.publish(
+            channel,
+            {
+                "type": "stage.started",
+                "stage": "clarify",
+                "run_id": _FAKE_RUN_ID,
+            },
+        )
+        await hub.publish(
+            channel,
+            {
+                "type": "run.finished",
+                "run_id": _FAKE_RUN_ID,
+                "status": "succeeded",
+            },
+        )
 
     with client.websocket_connect(
         f"/api/v1/ws/runs/{_FAKE_RUN_ID}/stream",

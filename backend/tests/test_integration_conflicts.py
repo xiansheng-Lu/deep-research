@@ -45,6 +45,7 @@ from app.orchestrator.executor import (
     _build_initial_state,
     _compile_for_deps,
     _drive_to_terminal,
+    _StopHolder,
 )
 from app.orchestrator.nodes import await_human, critic
 from app.orchestrator.persistence import ensure_stage_rows
@@ -497,6 +498,7 @@ async def test_full_graph_pauses_with_frame_before_finished(
             deps=deps,
             fallback_state=initial_state,
             stage_rows=await ensure_stage_rows(session, run_id=run_id),
+            stop_holder=_StopHolder(),
         )
         await asyncio.wait_for(collector, timeout=10.0)
 

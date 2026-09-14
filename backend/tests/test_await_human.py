@@ -1,7 +1,8 @@
-"""await_human 节点单元测试（M2-2 Task 5）。
+"""await_human 节点单元测试（M2-2 Task 5 / M2-5 澄清回流修复）。
 
 覆盖 critique 回流：从 human_input.answers.verdicts 解析裁决、按 conflict_id
-去重、conflict.verdicts WS 帧推送；clarify 分支只回传 interrupt_reason。
+去重、conflict.verdicts WS 帧推送；M2-5 起 clarify 分支把 answers 合并进
+state.clarification 并关闭 needs_clarification，防止恢复后重复挂起。
 """
 
 from __future__ import annotations
@@ -37,9 +38,18 @@ def _answers(verdicts: dict[str, dict[str, Any]]) -> dict[str, Any]:
 
 class TestParseVerdicts:
     @pytest.mark.asyncio
-    async def test_clarify_branch_keeps_reason(self) -> None:
+    async def test_clarify_branch_without_answers_closes_gate(self) -> None:
+        """空 answers（入口已 422 拦截，此处兜底）：关追问标记但不构造 clarification。"""
         patch = await await_human.run(_state(reason="clarify", human_input={"answers": {}}))
-        assert patch == {"interrupt_reason": "clarify"}
+        assert patch == {"interrupt_reason": "clarify", "needs_clarification": False}
+
+    @pytest.mark.asyncio
+    async def test_clarify_branch_merges_answers_into_clarification(self) -> None:
+        """M2-5 AC-5：非空 answers 合并为 clarification._human_answers，回流不再二次挂起。"""
+        patch = await await_human.run(_state(reason="clarify", human_input={"answers": {"scope": "近三年"}}))
+        assert patch["interrupt_reason"] == "clarify"
+        assert patch["needs_clarification"] is False
+        assert patch["clarification"] == {"_human_answers": {"scope": "近三年"}}
 
     @pytest.mark.asyncio
     async def test_no_human_input_returns_empty_verdicts(self) -> None:

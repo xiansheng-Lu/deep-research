@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     # M2-3 Prometheus 指标端点开关：false 时不注册 GET /metrics
     metrics_enabled: bool = Field(default=True, alias="METRICS_ENABLED")
 
+    # ===== HITL 用户介入（M2-5）=====
+    # 澄清挂起的展示超时秒数：仅写入 interrupt.requested 帧与 RunResponse.interrupt
+    # 供前端呈现倒计时；后端不做超时自动续跑
+    clarification_expires_seconds: int = Field(default=900, alias="CLARIFICATION_EXPIRES_SECONDS")
+
     # ===== 种子账号（仅 dev/staging 联调，prod 下脚本拒绝执行） =====
     seed_team_name: str = Field(default="默认团队", alias="SEED_TEAM_NAME")
     seed_user_email: str = Field(default="dev@example.com", alias="SEED_USER_EMAIL")
