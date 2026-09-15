@@ -1,0 +1,16 @@
+frontend/src/services/http/http.ts
+  h_cca0f9f09404ed 145-152,155-160
+frontend/src/services/i18n/zh-CN.ts
+  h_cca0f9f09404ed 20-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "c12f17ba327d5d6bd223b725513e3c0be6ce7bb3",
+  "prompts": {},
+  "humans": {
+    "h_cca0f9f09404ed": {
+      "author": "Lu Wen Long <19988433671@163.com>"
+    }
+  }
+}
