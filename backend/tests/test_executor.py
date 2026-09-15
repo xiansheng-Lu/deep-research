@@ -10,6 +10,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,6 +26,7 @@ from app.db.models.report import Report, ReportCitation
 from app.db.models.run import ResearchRun
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.executor import (
+    _astream_and_publish,
     _build_initial_state,
     _compile_for_deps,
     _drive_to_terminal,
@@ -31,6 +35,7 @@ from app.orchestrator.executor import (
     run_research_async,
 )
 from app.orchestrator.lease import RunLease
+from app.orchestrator.persistence import STAGE_ORDER
 from app.orchestrator.registry import (
     RedisRunRegistry,
     get_run_registry,
@@ -1611,3 +1616,189 @@ async def test_redis_provider_unavailable_propagates_without_failed_terminal(
         )
     # 未在本步落 failed/failed 帧
     session.commit.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# M2-8b 交接 §7.4 P2：resume 续跑不重放挂起阶段时，首个业务帧收口残留 running 行
+# ---------------------------------------------------------------------------
+
+
+class _RecoveryGraphStream:
+    """模拟手动暂停@clarify 后 Command(resume) 续跑：clarify 节点不重放，
+    首个业务 task 直接是 decompose，随后逐超步推进到 report。"""
+
+    def __init__(self, stages: list[str]) -> None:
+        self._stages = stages
+
+    def astream(self, initial_state: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ARG002
+        stages = self._stages
+
+        def _snapshot(stage: str, index: int) -> dict[str, Any]:
+            return {
+                "run_id": "run-recover-1",
+                "current_stage": stage,
+                "token_used": 100 * (index + 1),
+                "stage_attempts": {},
+                "report_draft": "",
+            }
+
+        class _Iterator:
+            def __init__(self) -> None:
+                self._idx = 0
+                self._phase = 0
+
+            def __aiter__(self) -> _Iterator:
+                return self
+
+            async def __anext__(self) -> Any:
+                if self._idx >= len(stages):
+                    raise StopAsyncIteration
+                name = stages[self._idx]
+                if self._phase == 0:
+                    self._phase = 1
+                    return ("debug", {"type": "task", "payload": {"name": name}})
+                snap = _snapshot(name, self._idx)
+                self._phase = 0
+                self._idx += 1
+                return ("values", snap)
+
+        return _Iterator()
+
+
+def _stage_row(name: str, status: str) -> SimpleNamespace:
+    """轻量阶段行替身（apply_stage_transition 只操作这些属性）。"""
+    return SimpleNamespace(
+        name=name,
+        status=status,
+        attempt=1,
+        started_at=datetime.now(tz=UTC) if status == "running" else None,
+        finished_at=None,
+        token_used=0,
+        error_code=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_first_frame_closes_stale_running_stage_rows() -> None:
+    """clarify 手动暂停后续跑不重放：首个 decompose 帧必须补发 clarify 收口，
+    stages 表不残留 running，且不重发 clarify 的 started 帧。"""
+    run = ResearchRun(
+        id="run-recover-1",
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="standard",
+        question="测试问题",
+        status="running",
+        current_stage="clarify",
+        token_budget=1000,
+        token_used=0,
+    )
+    stage_rows = {
+        name: _stage_row(name, "running" if name == "clarify" else "pending") for name in STAGE_ORDER
+    }
+    session = MagicMock()
+    session.commit = AsyncMock()
+    hub = RealtimeHub()
+    events: list[dict[str, Any]] = []
+
+    async def _collect() -> None:
+        async for event in hub.subscribe("runs:run-recover-1"):
+            events.append(event)
+
+    collector = asyncio.create_task(_collect())
+    await asyncio.sleep(0)
+
+    # 续跑顺序：clarify 不重放，从 decompose 一直推进到 report
+    recovered_stages = ["decompose", "retrieve", "standardize", "critique", "report"]
+    cost_emitter = MagicMock()
+    cost_emitter.observe = AsyncMock()
+    try:
+        await _astream_and_publish(
+            _RecoveryGraphStream(recovered_stages),
+            {},
+            {"configurable": {"thread_id": "run-recover-1"}},
+            run=run,
+            session=session,
+            hub=hub,
+            run_id="run-recover-1",
+            stage_rows=stage_rows,
+            cost_emitter=cost_emitter,
+            stop_holder=_StopHolder(),
+            registry=get_run_registry(),
+        )
+        await asyncio.sleep(0.05)
+    finally:
+        collector.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await collector
+        await hub.aclose()
+
+    # 残留的 clarify 行与后续各阶段全部收口 succeeded；report 由终态路径另行收口
+    for name in ("clarify", "decompose", "retrieve", "standardize", "critique"):
+        row = stage_rows[name]
+        assert row.status == "succeeded", f"{name} 未收口: {row.status}"
+        assert row.finished_at is not None, f"{name} 缺少 finished_at"
+    assert stage_rows["report"].status == "running"
+
+    finished_stages = [str(e.get("stage")) for e in events if e.get("type") == "stage.finished"]
+    started_stages = [str(e.get("stage")) for e in events if e.get("type") == "stage.started"]
+    # clarify 被首个 decompose 帧补发收口；没有重放就没有 clarify started
+    assert finished_stages == ["clarify", "decompose", "retrieve", "standardize", "critique"]
+    assert started_stages == ["decompose", "retrieve", "standardize", "critique", "report"]
+
+
+@pytest.mark.asyncio
+async def test_first_run_first_frame_does_not_close_prior_rows() -> None:
+    """首跑/澄清重放（首帧即 clarify）：前面无阶段，不得收口任何行，正常打开 clarify。"""
+    run = ResearchRun(
+        id="run-first-1",
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="standard",
+        question="测试问题",
+        status="running",
+        current_stage="clarify",
+        token_budget=1000,
+        token_used=0,
+    )
+    stage_rows = {name: _stage_row(name, "pending") for name in STAGE_ORDER}
+    session = MagicMock()
+    session.commit = AsyncMock()
+    hub = RealtimeHub()
+    events: list[dict[str, Any]] = []
+
+    async def _collect() -> None:
+        async for event in hub.subscribe("runs:run-first-1"):
+            events.append(event)
+
+    collector = asyncio.create_task(_collect())
+    await asyncio.sleep(0)
+
+    cost_emitter = MagicMock()
+    cost_emitter.observe = AsyncMock()
+    try:
+        await _astream_and_publish(
+            _RecoveryGraphStream(["clarify"]),
+            {},
+            {"configurable": {"thread_id": "run-first-1"}},
+            run=run,
+            session=session,
+            hub=hub,
+            run_id="run-first-1",
+            stage_rows=stage_rows,
+            cost_emitter=cost_emitter,
+            stop_holder=_StopHolder(),
+            registry=get_run_registry(),
+        )
+        await asyncio.sleep(0.05)
+    finally:
+        collector.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await collector
+        await hub.aclose()
+
+    assert stage_rows["clarify"].status == "running"
+    assert [e for e in events if e.get("type") == "stage.finished"] == []
+    assert [str(e.get("stage")) for e in events if e.get("type") == "stage.started"] == ["clarify"]

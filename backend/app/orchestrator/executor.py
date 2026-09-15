@@ -358,9 +358,20 @@ async def _astream_and_publish(
                 # resume 回流重跑同阶段（如 clarify）：不重开、不重发 started
                 continue
             attempts = (final_state or {}).get("stage_attempts") or {}
+            # 本帧之前应已完成、需要收口为 succeeded 的阶段：
+            # - 流内已打开过阶段（last_stage 非空）：仅收口该单行（M2-4 语义）；
+            # - resume 后首个业务帧（last_stage 为空）：手动暂停后 Command(resume)
+            #   续跑时，挂起阶段超步可能已在检查点完成、节点不重放，首个 task
+            #   直接是更后阶段（如 clarify 暂停后从 decompose 续跑）。图既已推进
+            #   到新阶段，排在它之前仍 running 的残留行按图语义必然已完成，统一
+            #   补发收口，避免 stages 表残留 running（M2-8b 交接 §7.4 P2）。
             if last_stage is not None:
-                old_row = stage_rows.get(last_stage)
-                if old_row is not None and old_row.status != "succeeded":
+                prior_stages = [last_stage]
+            else:
+                prior_stages = list(STAGE_ORDER[: STAGE_ORDER.index(stage)])
+            for prior_stage in prior_stages:
+                old_row = stage_rows.get(prior_stage)
+                if old_row is not None and old_row.status == "running":
                     apply_stage_transition(
                         old_row,
                         status="succeeded",
