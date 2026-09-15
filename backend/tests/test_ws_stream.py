@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 
 import pytest
 from fastapi import FastAPI
@@ -77,8 +78,11 @@ def app(settings: Settings) -> FastAPI:
 
 
 @pytest.fixture
-def client(app: FastAPI) -> TestClient:
-    return TestClient(app)
+def client(app: FastAPI) -> Iterator[TestClient]:
+    # 必须以 context manager 持有：不显式关闭 anyio portal 时，WS 会话退出阶段
+    # 后台 future 被回收会偶发 CancelledError（顺序相关 flaky）。
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 # ====== 测试用例 ======
