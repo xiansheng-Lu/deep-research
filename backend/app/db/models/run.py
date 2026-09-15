@@ -81,6 +81,11 @@ class Stage(Base, IdMixin, TimestampMixin):
     attempt: Mapped[int] = mapped_column(nullable=False, default=1)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 口径：「截至本阶段完成时」的 run 级 token 累计快照（与 ResearchRun.token_used
+    # 同源写入），不是本阶段自身消耗；无 LLM 调用的阶段（retrieve/standardize）
+    # 与上一阶段恒等。阶段自身消耗需按 STAGE_ORDER 对相邻已完成行取差值。
+    # StageResponse 不输出本字段（成本走 run/cost 专属通道）；M3 看板若要展示
+    # 阶段消耗，应新增 delta 字段而非直接读本行（2026-09-15 token 记账排查结论）。
     token_used: Mapped[int] = mapped_column(nullable=False, default=0)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     output: Mapped[dict | None] = mapped_column(JSON, nullable=True)

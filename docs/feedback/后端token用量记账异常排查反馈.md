@@ -70,11 +70,11 @@ M2-8b 交接 §7.4 观察 1 的 P2 残留行收口逻辑（2026-09-15 早些时�
 - 链路审查未发现「全部节点系统性记 0」的现行路径。最可能的当时诱因：LLM 密钥/Provider 注入瞬态或意图 2s 竞速导致整 run 走降级（降级 token=0 是设计行为，但 run 仍可能成功）。
 - 处置：不修改记账主链路；建议补一条低成本观测（见 §4.1），若再次出现可立即定位是「降级」还是「usage 真缺失」。
 
-## 4. 挂后续项（不阻断 M3 启动）
+## 4. 挂后续项处置（2026-09-15 全部收敛）
 
-1. **【硬化，建议 M3 顺手做】usage=0 可观测**：`complete_structured` 成功返回但 `total_tokens=0` 且非显式降级时打 warning（含 model/finish_reason/run_id 上下文）；节点把「LLM 真实调用但 usage 缺失」与「降级启发式」在 state/帧上区分为两种计数来源。当前零观测手段是 M2-8a 无法回溯的直接原因。
-2. **【口径，需产品/前端确认】stages.token_used 是累计快照**：若看板/报告要展示「各阶段自身消耗」，应由相邻阶段快照差值计算（或后端 stages 出 `stage_tokens_delta`），不能直接读本行；当前前端 `mapStages` 仅用于状态映射（succeeded→done），未消费该数值做金额/用量展示，无现存错误展示。
-3. **【测试基建，既有问题】test_executor + test_ws_commands 联跑存在顺序相关 flaky**：基线代码 3 次中 2 次有 1 个 WS 用例失败（失败用例不固定），单文件/全量随机顺序均通过；疑似全局内存 registry/WS portal loop 残留。与本修复无关，建议 M3 测试治理时收敛（WS 用例统一注入独立 registry 或 fixture 复位全局单例）。
+1. **【已修复】usage=0 可观测**：`LLMClient.chat`（所有非流式调用的唯一收口，主/备/structured 全覆盖）成功返回但 `total_tokens<=0` 时打 warning，extra 带 provider/model/run_id/stage/latency_ms/finish_reason；同时修复重构中发现的备用路径 usage 双重 record 隐患（`_fallback` 内部与 `chat` 外层各记一次，现统一收口一次）。节点侧「真实调用 usage 缺失 vs 显式降级」不再扩 state 字段——降级路径各节点已有 result=None 分支日志，client warning 已提供缺失侧唯一观测点，扩字段无消费者属过度设计。补 3 个单测（零 usage warning/非零不打/fallback 仅计 backup 一次）。
+2. **【已核实，无需功能改动】stages.token_used 累计快照口径**：复核 M2-4 契约——`StageResponse` 刻意不输出 `token_used`（成本走 run/cost 专属通道），前端无任何代码消费该数值，**不存在错误展示，不是缺陷**。处置：在 `Stage` ORM 模型字段注释固化口径（累计快照、非阶段消耗、相邻行差值算法、不得直接暴露本行），M3 看板若要展示「阶段自身消耗」，届时在 StageResponse 新增可选 `tokens_delta` 字段并走契约/前端 types 原子同步，不提前加无消费者的死字段。
+3. **【已修复】WS 测试顺序相关 flaky**：根因为 `TestClient(app)` 未以 context manager 持有，内部 anyio blocking portal 跨 WebSocketTestSession 复用、不显式关闭时后台 future 在 WS 退出阶段被回收偶发 `CancelledError`（机器负载高时高发，联跑复现率约 1/3，失败时耗时翻倍）。修复：test_ws_commands 的 `_client` 改为 `@contextmanager`（7 个用例统一 `with _client() as`）、test_ws_stream 的 client fixture 改为 yield fixture 内 `with TestClient(app)`；三文件联跑 10/10 全过且耗时稳定 7.7-8.4s（修复前 7.5-15s 抖动）。
 
 ## 5. 影响面评估
 
