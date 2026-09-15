@@ -13,19 +13,30 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import fakeredis
+import fakeredis.aioredis
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from app.core.exceptions import ProviderUnavailableError
 from app.db.models.report import Report, ReportCitation
 from app.db.models.run import ResearchRun
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.executor import (
     _build_initial_state,
     _compile_for_deps,
+    _drive_to_terminal,
+    _StopHolder,
     resume_research_async,
     run_research_async,
 )
-from app.orchestrator.registry import get_run_registry
+from app.orchestrator.lease import RunLease
+from app.orchestrator.registry import (
+    RedisRunRegistry,
+    get_run_registry,
+    reset_run_registry,
+    set_run_registry,
+)
 from app.orchestrator.schemas import ClarificationSchema, SubQuestionListSchema
 from app.orchestrator.state import ResearchStage
 from app.provider.client import LLMClient, StructuredCompletion
@@ -1039,7 +1050,7 @@ async def test_run_research_async_pause_finalizes_paused() -> None:
 
     run_id = "test-run-pause"
     registry = get_run_registry()
-    registry.unregister(run_id)  # 防御性清理
+    await registry.unregister(run_id)  # 防御性清理
 
     gate = asyncio.Event()
     run = ResearchRun(
@@ -1069,15 +1080,15 @@ async def test_run_research_async_pause_finalizes_paused() -> None:
         task = asyncio.create_task(run_research_async(**_run_kwargs(run_id, mock_factory, hub)))
         # 等第一超步处理完（阶段帧 + 中间提交）
         await asyncio.sleep(0.1)
-        assert registry.is_active(run_id)
+        assert await registry.is_active(run_id)
 
         # 投递 pause 信号（端点的乐观置位由收尾会话 get 侧效模拟）
-        assert registry.request_stop(run_id, "pause") is True
+        assert await registry.request_stop(run_id, "pause") is True
         await asyncio.wait_for(task, timeout=2.0)
 
     await asyncio.sleep(0.05)
     await _drain_collector(collect_task)
-    assert registry.is_active(run_id) is False
+    assert await registry.is_active(run_id) is False
 
     finished = [e for e in events if e["type"] == "run.finished"]
     assert len(finished) == 1
@@ -1097,7 +1108,7 @@ async def test_run_research_async_cancel_keeps_partial_draft() -> None:
 
     run_id = "test-run-cancel"
     registry = get_run_registry()
-    registry.unregister(run_id)
+    await registry.unregister(run_id)
 
     gate = asyncio.Event()
     finished_at = datetime.now(tz=UTC) - timedelta(seconds=1)
@@ -1128,12 +1139,12 @@ async def test_run_research_async_cancel_keeps_partial_draft() -> None:
         )
         task = asyncio.create_task(run_research_async(**_run_kwargs(run_id, mock_factory, hub)))
         await asyncio.sleep(0.1)
-        assert registry.request_stop(run_id, "cancel", keep_partial=True) is True
+        assert await registry.request_stop(run_id, "cancel", keep_partial=True) is True
         await asyncio.wait_for(task, timeout=2.0)
 
     await asyncio.sleep(0.05)
     await _drain_collector(collect_task)
-    assert registry.is_active(run_id) is False
+    assert await registry.is_active(run_id) is False
 
     finished = [e for e in events if e["type"] == "run.finished"]
     assert len(finished) == 1
@@ -1153,7 +1164,7 @@ async def test_run_research_async_cancel_without_partial_creates_no_report() -> 
     """keep_partial=False 时即使快照含草稿也不落 Report。"""
     run_id = "test-run-cancel-no-partial"
     registry = get_run_registry()
-    registry.unregister(run_id)
+    await registry.unregister(run_id)
 
     gate = asyncio.Event()
     run = ResearchRun(
@@ -1180,7 +1191,7 @@ async def test_run_research_async_cancel_without_partial_creates_no_report() -> 
         )
         task = asyncio.create_task(run_research_async(**_run_kwargs(run_id, mock_factory, hub)))
         await asyncio.sleep(0.1)
-        assert registry.request_stop(run_id, "cancel", keep_partial=False) is True
+        assert await registry.request_stop(run_id, "cancel", keep_partial=False) is True
         await asyncio.wait_for(task, timeout=2.0)
 
     await asyncio.sleep(0.05)
@@ -1361,3 +1372,242 @@ async def test_clarification_pause_resume_with_answers_completes_once() -> None:
     finished = [e for e in resume_events if e["type"] == "run.finished"]
     assert len(finished) == 1
     assert finished[0]["status"] == "succeeded"
+
+
+# ---------------------------------------------------------------------------
+# M2-8b T3：Redis 控制键跨进程 pause/cancel（worker 超步边界自取消，B-AC-2）
+# 与任务重投递租约幂等（B-AC-6）
+# ---------------------------------------------------------------------------
+
+
+class _MidGateGraphStream:
+    """产出第一份快照后在 gate 挂起；放行后再产出第二份快照。
+
+    控制键在挂起期间由「API 侧」写入，第二帧进入循环时被超步边界轮询发现，
+    用于验证 worker 不依赖外部 task.cancel，自主在边界协作收尾。
+    """
+
+    def __init__(self, snapshots: list[dict[str, Any]], gate: asyncio.Event) -> None:
+        self._snapshots = snapshots
+        self._gate = gate
+
+    def astream(self, initial_state: Any, config: Any = None, **kwargs: Any) -> Any:  # noqa: ARG002
+        snapshots = self._snapshots
+        gate = self._gate
+
+        class _Iterator:
+            def __init__(self) -> None:
+                self._idx = 0
+                self._phase = 0
+                self._gated = False
+
+            def __aiter__(self) -> _Iterator:
+                return self
+
+            async def __anext__(self) -> Any:
+                if self._idx >= len(snapshots):
+                    raise StopAsyncIteration
+                snap = snapshots[self._idx]
+                if self._phase == 0:
+                    self._phase = 1
+                    # 第一份快照产出后挂起，等待控制键写入与 gate 放行
+                    if self._idx == 1 and not self._gated:
+                        self._gated = True
+                        await gate.wait()
+                    stage = snap.get("current_stage")
+                    return (
+                        "debug",
+                        {"type": "task", "payload": {"name": getattr(stage, "value", stage)}},
+                    )
+                self._phase = 0
+                self._idx += 1
+                return ("values", snap)
+
+        return _Iterator()
+
+
+@pytest.fixture
+async def _redis_control_env():
+    """注入 fakeredis 支撑的 RedisRunRegistry；用例后恢复内存态单例。"""
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    lease = RunLease(client, worker_id="worker-test", ttl_seconds=30)
+    registry = RedisRunRegistry(lease)
+    set_run_registry(registry)
+    yield registry
+    reset_run_registry()
+    await client.aclose()
+
+
+def _redis_control_run(run_id: str, stage: ResearchStage, used: int, finalize: str) -> ResearchRun:
+    from datetime import UTC, datetime, timedelta
+
+    return ResearchRun(
+        id=run_id,
+        project_id="proj-001",
+        creator_id="user-001",
+        template_id="generic",
+        tier="standard",
+        question="测试问题",
+        status="running",
+        current_stage=stage.value if isinstance(stage, ResearchStage) else stage,
+        token_budget=1000,
+        token_used=used,
+        started_at=datetime.now(tz=UTC) - timedelta(seconds=5),
+    )
+
+
+@pytest.mark.asyncio
+async def test_redis_pause_via_control_key_worker_self_cancels(_redis_control_env) -> None:
+    """B-AC-2：API 只写 control 键；worker 在第二帧边界自行协作落 paused。"""
+    run_id = "test-run-redis-pause"
+    registry = _redis_control_env
+
+    run = _redis_control_run(run_id, ResearchStage.RETRIEVE, 100, "paused")
+    _mock_session, mock_factory, _added = _build_control_mocks(run, "paused")
+    hub = RealtimeHub()
+    events, collect_task = await _collect_until_finished(hub, run_id)
+    snap1 = _control_snapshot(run_id, ResearchStage.RETRIEVE, 100, "")
+    snap2 = _control_snapshot(run_id, ResearchStage.STANDARDIZE, 120, "")
+
+    gate = asyncio.Event()
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(
+            "app.orchestrator.executor._compile_for_deps",
+            lambda deps, checkpointer=None: _MidGateGraphStream([snap1, snap2], gate),
+        )
+        kwargs = _run_kwargs(run_id, mock_factory, hub)
+        task = asyncio.create_task(run_research_async(owner_id="task-pause-1", **kwargs))
+        await asyncio.sleep(0.1)
+        # 租约已由 worker（执行器）抢占且新鲜
+        assert await registry.is_active(run_id) is True
+
+        # 模拟 API 进程：仅写控制键（不接触 worker 任务对象）
+        assert await registry.request_stop(run_id, "pause") is True
+        gate.set()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    await asyncio.sleep(0.05)
+    await _drain_collector(collect_task)
+    finished = [e for e in events if e["type"] == "run.finished"]
+    assert len(finished) == 1
+    assert finished[0]["status"] == "paused"
+    # 收尾后租约释放、控制键清除
+    assert await registry.is_active(run_id) is False
+    assert await registry.peek_mode(run_id) is None
+
+
+@pytest.mark.asyncio
+async def test_redis_cancel_via_control_key_keeps_partial_draft(_redis_control_env) -> None:
+    """B-AC-2：control cancel(keep_partial) 在边界走 cancelled + draft 分支。"""
+    run_id = "test-run-redis-cancel"
+    registry = _redis_control_env
+
+    run = _redis_control_run(run_id, ResearchStage.REPORT, 500, "cancelled")
+    _mock_session, mock_factory, added = _build_control_mocks(run, "cancelled")
+    hub = RealtimeHub()
+    events, collect_task = await _collect_until_finished(hub, run_id)
+    snap1 = _control_snapshot(run_id, ResearchStage.REPORT, 500, "## 未完成的草稿报告")
+    snap2 = _control_snapshot(run_id, ResearchStage.REPORT, 520, "## 未完成的草稿报告")
+
+    gate = asyncio.Event()
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(
+            "app.orchestrator.executor._compile_for_deps",
+            lambda deps, checkpointer=None: _MidGateGraphStream([snap1, snap2], gate),
+        )
+        kwargs = _run_kwargs(run_id, mock_factory, hub)
+        task = asyncio.create_task(run_research_async(owner_id="task-cancel-1", **kwargs))
+        await asyncio.sleep(0.1)
+        assert await registry.request_stop(run_id, "cancel", keep_partial=True) is True
+        gate.set()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    await asyncio.sleep(0.05)
+    await _drain_collector(collect_task)
+    finished = [e for e in events if e["type"] == "run.finished"]
+    assert len(finished) == 1
+    assert finished[0]["status"] == "cancelled"
+    assert finished[0]["partial_report_id"] is not None
+    reports = [obj for obj in added if isinstance(obj, Report)]
+    assert len(reports) == 1 and reports[0].status == "draft"
+    assert await registry.is_active(run_id) is False
+    assert await registry.peek_mode(run_id) is None
+
+
+@pytest.mark.asyncio
+async def test_redis_run_duplicate_delivery_acks_without_driving(_redis_control_env) -> None:
+    """B-AC-6：租约被他者持有时重投 execute/resume，安全退出、不驱动、不夺约。"""
+    registry = _redis_control_env
+    run_id = "test-run-redis-dup"
+
+    # 先由「原执行者」持约
+    assert await registry.register(run_id, "original-task") is None
+
+    mock_factory = MagicMock()
+    hub = RealtimeHub()
+    # execute_run 重投：未抢到租约，快速返回，未触 DB/图
+    await asyncio.wait_for(
+        asyncio.create_task(
+            run_research_async(owner_id="redelivered-task", **_run_kwargs(run_id, mock_factory, hub))
+        ),
+        timeout=2.0,
+    )
+    # 租约仍属原执行者，重投者未夺约
+    assert await registry.is_owner(run_id, "original-task") is True
+    assert await registry.is_owner(run_id, "redelivered-task") is False
+
+    # resume_run 重投同理（恢复在租约未释放时被双击/重投）
+    await asyncio.wait_for(
+        asyncio.create_task(
+            resume_research_async(
+                run_id=run_id,
+                human_input={"kind": "proceed"},
+                session_factory=mock_factory,
+                checkpointer=None,
+                llm=None,
+                retrieval_client=None,
+                hub=hub,
+                owner_id="redelivered-resume",
+            )
+        ),
+        timeout=2.0,
+    )
+    assert await registry.is_owner(run_id, "original-task") is True
+    assert await registry.is_owner(run_id, "redelivered-resume") is False
+
+
+@pytest.mark.asyncio
+async def test_redis_provider_unavailable_propagates_without_failed_terminal(
+    _redis_control_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B-AC-7：Redis 态下 Provider 瞬时故障不落 failed，直接上抛交 Celery 重试。"""
+    registry = _redis_control_env
+    run_id = "test-run-redis-provider"
+    run = _redis_control_run(run_id, ResearchStage.RETRIEVE, 10, "running")
+    hub = RealtimeHub()
+    stop_holder = _StopHolder()
+    boom = ProviderUnavailableError("provider down")
+    monkeypatch.setattr(
+        "app.orchestrator.executor._astream_and_publish",
+        AsyncMock(side_effect=boom),
+    )
+    session = MagicMock()
+    session.commit = AsyncMock()
+    deps = NodeDeps(run_id=run_id, team_id="t1", trace_id="tr1")
+
+    with pytest.raises(ProviderUnavailableError):
+        await _drive_to_terminal(
+            graph=MagicMock(),
+            graph_input={},
+            run=run,
+            template_id="generic",
+            session=session,
+            hub=hub,
+            deps=deps,
+            fallback_state=None,
+            stage_rows={},
+            stop_holder=stop_holder,
+            registry=registry,
+        )
+    # 未在本步落 failed/failed 帧
+    session.commit.assert_not_awaited()

@@ -1,13 +1,14 @@
-# 精简联调依赖栈（低内存机器专用）：仅 PostgreSQL 16 + pgvector
+# 精简联调依赖栈（低内存机器专用）：PostgreSQL 16 + pgvector、Redis 7、Celery worker
 #
 # 适用场景：16GB 内存且 IDE/浏览器占用较高的 Windows 联调机。
-# 裁剪依据（M1 阶段，见 app/core/lifespan.py）：
-# - 研究运行通过进程内 asyncio.create_task 调度，不经过 Celery，无需 Redis；
-# - 报告写入数据库，对象存储 MinIO 到 M2 知识库阶段才使用；
-# - 应用启动链路只强依赖 PostgreSQL。
+# M2-8b 起执行迁移到 Celery worker，最小真实形态需要 Redis（broker/result +
+# Pub/Sub 事件桥 + 租约/控制键）；API（uvicorn）仍在 WSL 主机前台运行以
+# 便无 --reload 重启排查，worker 在容器内常驻（阶段方案 §16.6）。
+# MinIO 到 M2 知识库阶段才加入（用 docker-compose.dev.yml）。
 #
 # 使用：
-#   docker compose -f docker-compose.min.yml up -d
+#   docker compose -f docker-compose.min.yml up -d --build
+#   # 主机 WSL：uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 # 数据卷与完整栈（docker-compose.dev.yml）共用 postgres_data，
 # 两套 compose 不可同时启动（容器名与 5432 端口相同），按阶段二选一。
 services:
@@ -47,5 +48,42 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: dr_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: deep-research-worker:dev
+    container_name: dr_worker
+    command: ["deep-research-worker"]
+    # 其余配置（SECRET_KEY/LLM/对象存储等）从仓库本地 .env 读取
+    env_file:
+      - .env
+    environment:
+      DB_ASYNC_URL: postgresql+asyncpg://deep_research:deep_research@postgres:5432/deep_research
+      DB_SYNC_URL: postgresql://deep_research:deep_research@postgres:5432/deep_research
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      WORKER_ENABLE_REDIS: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  redis_data:

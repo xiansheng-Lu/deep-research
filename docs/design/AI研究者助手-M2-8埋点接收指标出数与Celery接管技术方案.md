@@ -1,6 +1,6 @@
-﻿# AI 研究者助手 · M2-8 埋点接收/指标出数与 Celery 接管长任务阶段技术方案
+# AI 研究者助手 · M2-8 埋点接收/指标出数与 Celery 接管长任务阶段技术方案
 
-- 版本：v0.2 + M2-8a 实现冻结（2026-09-15；a 段已落地，门禁证据见 §13.3；b 段 Celery 接管仍待编码，§14~§23 维持评审稿）
+- 版本：v1.0 实现冻结（2026-09-15；M2-8a 门禁证据见 §13.3，M2-8b 门禁证据见 §23.3，a/b 两段均已落地）
 - 范围：
   - **M2-8a 埋点接收与指标出数**：前端 Telemetry 批量接收端点（`POST /telemetry/batch`，WP-18 已在发数、当前 404 静默失败）、`telemetry_events` 表与 0006 迁移、A8 三指标聚合出数端点（`GET /telemetry/metrics`）。
   - **M2-8b Celery 接管长任务 + 跨进程事件 + 孤儿 run 清扫**：研究/恢复执行从 API 进程内 `asyncio.create_task` 迁出到独立 worker；Redis 承载跨进程 RealtimeHub 扇出与在途 run 租约/控制信号；启动期孤儿 run 清扫（收敛 M2-5 挂账的无协程 pause 409）。
@@ -548,17 +548,47 @@ WS 帧：无增删改。M2-7 快照转默认冻结（`--refresh-m27`）。
 4. **min 联调栈是否纳入 redis+worker**：本方案裁决纳入（docker-compose.min.yml 补两服务），保证联调即真实形态；若希望 min 栈继续轻量，则需提供单进程开关（WORKER_ENABLE_REDIS=false + create_task 回退）作为显式双模，评审定（本方案倾向不保留长期双模，仅测试态回退）。
 5. **worker 副本数**：内部试用固定 1 research worker（不做抢占调度），评审确认容量是否够。
 
-## 23. M2-8b 实现冻结记录（v1.0，待落地回填）
+## 23. M2-8b 实现冻结记录（v1.0，2026-09-15）
 
-### 23.1 落地清单
+### 23.1 落地清单（对照 §15）
 
-（8b 实现完成后对照 §15 回填）
+| 组件 | 位置 | 结论 |
+| --- | --- | --- |
+| Redis 客户端 | `app/core/redis.py`（新增） | `build_redis`（decode_responses=True）/`close_redis` 工厂，API 与 worker 各自生命周期持有 |
+| Redis Hub | `app/realtime/hub.py`（改造） | 双态：无 redis 内存直连（旧行为）；有 redis 构造即起后台桥接协程 `PSUBSCRIBE runs:*`，publish 本地直投 + PUBLISH 扇出，origin node_id 丢弃回环，channel 语义不变 |
+| 在途租约/信号 | `app/orchestrator/lease.py`（新增） | `lease:run:{id}` SET NX PX + WATCH 事务 owner 校验续期/释放；`control:run:{id}` 只升不降（pause→cancel）+1h 兜底 TTL；不引入 Lua（fakeredis 无 lupa） |
+| 跨进程 Registry | `app/orchestrator/registry.py`（改造） | `RunRegistryLike` Protocol 双态：内存态 M2-5 语义全保留；`RedisRunRegistry` 以租约/控制键适配，reserve/restore/is_reserved 空操作（DB 翻转 + 租约 NX 承接），get/set 工厂注入 |
+| executor 接线 | `app/orchestrator/executor.py`（改造） | 新增 `owner_id`；register NX 失败幂等退出；`_poll_stop_signal` 在每个 debug/values 超步帧前读控制键并对本任务 `task.cancel()`，复用 M2-5 CancelledError 收尾；Redis 态 `ProviderUnavailableError` 上抛交 Celery 有限重试，不落 failed；ask_followup fan-out 窗口逻辑零改动 |
+| Celery 任务 | `app/workers/tasks/research.py`（改造） | 同步薄外壳 `asyncio.run`；独立心跳协程（10s 续 Redis 租约 + 低频写 PG 镜像，不被业务 await 阻塞）；execute 参数全部从 run 行重载；resume 载荷随任务重放；max_retries=2，预算耗尽独立收敛 failed+帧 |
+| Worker 引导 | `app/workers/bootstrap.py`（新增） | `worker_context` 任务级装配（DB/checkpointer/Redis/Hub/lease/registry/LLM/检索）；WORKER_ENABLE_REDIS=false 或 ping 失败快速失败，不静默内存态；不 import app.api |
+| API 调度改造 | `app/api/v1/runs.py`、`app/services/runs_control.py`（改造） | 两处 create_task 按 registry 双态分派：Redis 态 `execute_run.delay` / 条件 UPDATE+`clear_stop_signal`+`resume_run.delay`，内存态保持 create_task；pause 孤儿码 Redis 态细化（见 23.2） |
+| 孤儿清扫 | `app/workers/reaper.py`（新增） | 扫 pending/running 且 created_at 早于 grace、lease_until 为空或过期的 run：checkpoint interrupt→paused；final 报告→succeeded/draft→cancelled；无报告→failed(RUN_WORKER_LOST)；pending 未启动 Redis 计数重投一次超限 failed；全部写 `run.orphan_recovered` 审计、best-effort 补发终态帧 |
+| 迁移 | 0007（新增）+ `db/models/run.py`（改造） | research_runs 增 execution_owner(String64)/lease_until(timestamptz)，均可空；ix_runs_status_lease(status, lease_until)；downgrade 往返 |
+| 配置 | `config.py`、`.env.example`（改造） | §20 七项全部落地；celery_app 补 `task_routes` 前缀路由（research/report/ingestion），否则消息落默认 celery 队列无人消费 |
+| 部署 | `docker-compose.dev.yml`、`docker-compose.min.yml`（改造） | min 栈纳入 redis+worker（评审拍板项 4），worker 容器 build 同镜像、depends_on healthy；API 仍在主机前台便于排查 |
+| 测试 | test_lease(8)/test_hub_redis(5)/test_workers_research(6)/test_orphan_reaper(7)/test_executor 新增(4)/test_run_registry 新增(6)/test_runs_control_api 新增(2)/test_integration_m28b(2) | B-AC-1~B-AC-10、B-AC-12 覆盖；既有 8a/各套件在双态下保持全绿 |
 
 ### 23.2 与评审稿（v0.2）的实现偏差
 
-（实现完成后回填）
+1. **清扫触发点**（§16.5）：方案表述为「worker 进程启动时执行一次」，实现为「**每个 prefork 子进程的第一个任务执行前**扫一次」（`sweep_once_at_startup` 挂在 `_execute`/`_resume` 入口，进程级 `_startup_swept` 保证每子进程仅一次）。原因：worker 依赖为任务级装配，清扫需要 checkpointer/DB/Redis 全部就绪后才能判定 checkpoint 挂起。语义差异：worker 空转（无任务投递）时不扫，首个任务到达时**先清扫后执行**；收敛与触发任务在同一任务体内顺序完成。
+2. **任务级依赖装配**（§14.2）：采用方案允许的「任务体内 asyncio.run」形态，未选「worker 启动时常驻 loop/常驻依赖」。engine/checkpointer 连接池、Redis Hub 每任务建拆。本机 Windows+WSL drvfs 实测冷启动 11.9s（其中 LLM provider 模块首次导入 11.7s，redis/db/checkpointer 合计 <1s），投递到 running 翻转约 13s；ext4/容器部署预期显著更快。进程级常驻 loop 池化为后续优化项，不改变正确性。
+3. **PG 租约镜像写回方式**（§16.2）：方案设想「随超步提交捎带」，实现为心跳协程每 `RUN_LEASE_HEARTBEAT_SECONDS`（10s）一次独立事务写 execution_owner/lease_until；与图超步事务解耦，单 run 写频率固定 10s。
+4. **B-AC-9 孤儿码按双态区分**（§16.5/§18.5）：Redis 态 running 无新鲜租约返回 409 `RUN_ORPHAN_RECOVERING`；内存态（WORKER_ENABLE_REDIS=false，仅单进程/离线测试）保留 M2-5 原码 `RUN_NOT_PAUSABLE`——内存态无跨进程租约概念，不触发新码。
+5. **reaper 审计主体**：audit_entries 无用户/团队外键，`run.orphan_recovered` 的 team_id/user_id 统一写 `"system"`（评审拍板项 3 落地）。
+6. **Celery 队列路由**（§14.2 补充）：`celery_app.py` 显式 `task_routes`（research.*/report.*/ingestion.* → 同名队列）。既有骨架仅在 worker 侧 `-Q` 声明消费队列，发送端无路由时消息会落到默认 `celery` 队列导致无人消费；本批补齐。
 
 ### 23.3 门禁证据
 
-（8b 实现完成后回填：pytest 总数、Redis/真库用例结论、三进程真链 B-AC-11 证据、ruff/mypy、openapi 仍 27 路径）
+- **全量 pytest：695 passed**（M2-8a 冻结基线 655，净增 40），零跳过；其中真库/Redis 集成：`test_integration_m28b.py` 2 个（m28b_orm 孤儿扫描新鲜度过滤+三类收敛+审计+二次超限、0007 列/索引 upgrade/downgrade/upgrade 往返）真实执行未 skip。
+- **离线 Redis 替身**：fakeredis 2.38（dev 依赖新增），租约 NX/TTL/WATCH 事务、Hub 双节点跨进程扇出/回环去重/频道隔离、worker_context 强校验、Celery 外壳重试全部离线覆盖。
+- **ruff**：本批 32 个变更 py 文件 check 全净、format 已应用（含清除 test_hub_redis.py 误带的 UTF-8 BOM）。
+- **mypy**：53 errors / 28 files，相对 dev 基线 54 errors / 29 files **零新增**；净减 1 条为 execute_run 装饰器加精确 `# type: ignore[untyped-decorator]`；jose stub 缺失 note 随检查文件集合挂点漂移（非 error，基线同样存在）。
+- **OpenAPI**：`export_openapi` 仍 **27 路径**，openapi-m2-8.json 与 dev blob 零差异（b 段零契约增量，不产新快照）。
+- **B-AC-11 三进程真链**（docker min 栈 PG+Redis，主机 WSL 单并发 worker `--concurrency=1` + uvicorn，WORKER_ENABLE_REDIS=true，alembic head=0007，2026-09-15）：
+  1. **pause→resume→succeeded**：run `01M2HR3W8NA20VEMAZ4DQ4C9MB`。worker 从 research 队列取任务驱动；running 中 pause（clarify 阶段）收 `run.finished(paused)`；kind=proceed 恢复（条件 UPDATE+删控制键+resume_run 任务）后收全量跨进程帧——五阶段 stage.started/finished、5 个 sub_question、20 条 evidence.fetched、token.usage.update、`run.finished(succeeded)`，事件全部经 worker→Redis Pub/Sub→API 桥接→WS 到达。
+  2. **cancel keep_partial**：run `01M2HR540W5D4KXXJ12BB2WW3R` → `run.finished(cancelled)`。
+  3. **worker 重启孤儿清扫**：SQL 注入 running 且 lease_until=NULL 的孤儿 `01M28BORPHAN0000000000001`，grace=0 重启 worker 并投递触发 run `01M2HRBNJGGJEXGXEPVM5DDVCW`；触发任务先 sweep：孤儿 05:24:24.44 收敛 failed(RUN_WORKER_LOST)，终态帧经 Redis 送达已提前订阅的 WS、finished_at 落库、`run.orphan_recovered` 审计落库；触发 run 随后 05:24:24.47 正常抢约执行（后 cancel 收尾）。
+  4. 首次启动清扫在真实联调库另演绎 §16.5 第 3 类：历史 pending 未启动 run `01M2HJZEJTPN9TC9YCN2X2CZ1F` 被重投一次并自然 succeeded；清扫后当日无 running/pending 残留（4 个历史 paused 属合法 HITL 挂起，不扫）。
+  5. 观察（非缺陷）：prefork 子进程 structlog 业务日志在重定向文件下未见输出（Celery MainProcess 日志正常）；容器化部署 stdout 由 Docker 收集，排查以 run 行 owner/lease 列、Redis 键与 WS 帧为准。
+- **联调前置**：`alembic upgrade head`（0006→0007）；min 栈新增 redis/worker 两服务（`docker compose -f docker-compose.min.yml up -d --build`）；主机需同时常驻 uvicorn 与 `deep-research-worker`（环境手册 §7）。
 

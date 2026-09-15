@@ -144,32 +144,40 @@ async def create_run(
     # 否则在请求依赖的统一提交发生前任务即被调度，会读不到本行（RUN_NOT_FOUND 竞态）
     await session.commit()
 
-    # 后台调度 executor（不阻塞响应）
+    # 后台调度 executor（不阻塞响应）：Redis 态投递 Celery（worker 从 run 行
+    # 重载全部参数，§14.1）；内存态（WORKER_ENABLE_REDIS=false/单进程）保持
+    # 进程内 create_task。
     factory = _get_session_factory(request)
     hub = _get_hub(request)
     llm = _get_llm(request)
     retrieval_client = _get_retrieval_client(request)
     checkpointer = getattr(request.app.state, "checkpointer", None)
+    registry = get_run_registry()
 
-    asyncio.create_task(
-        run_research_async(
-            run_id=run.id,
-            project_id=run.project_id,
-            template_id=run.template_id,
-            tier=run.tier,
-            question=run.question,
-            token_budget=run.token_budget,
-            clarification=None,
-            team_id=current_user.team_id,
-            creator_id=current_user.id,
-            trace_id=request.headers.get("x-trace-id", run.id),
-            session_factory=factory,
-            llm=llm,
-            retrieval_client=retrieval_client,
-            hub=hub,
-            checkpointer=checkpointer,
+    if registry.is_redis_backed:
+        from app.workers.tasks.research import execute_run as execute_run_task
+
+        execute_run_task.delay(run.id)
+    else:
+        asyncio.create_task(
+            run_research_async(
+                run_id=run.id,
+                project_id=run.project_id,
+                template_id=run.template_id,
+                tier=run.tier,
+                question=run.question,
+                token_budget=run.token_budget,
+                clarification=None,
+                team_id=current_user.team_id,
+                creator_id=current_user.id,
+                trace_id=request.headers.get("x-trace-id", run.id),
+                session_factory=factory,
+                llm=llm,
+                retrieval_client=retrieval_client,
+                hub=hub,
+                checkpointer=checkpointer,
+            )
         )
-    )
 
     return response
 

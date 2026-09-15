@@ -31,7 +31,7 @@ from app.core.security import decode_token
 from app.db.models.identity import User
 from app.db.models.run import ResearchRun
 from app.observability.metrics import ws_active_connections
-from app.orchestrator.registry import RunRegistry, get_run_registry
+from app.orchestrator.registry import RunRegistryLike, get_run_registry
 from app.realtime.hub import RealtimeHub, get_hub
 from app.schemas.runs import CancelRunRequest, InterventionAction
 from app.services import runs_control
@@ -142,7 +142,7 @@ async def _handle_client_command(
     websocket: WebSocket,
     *,
     factory: Any,
-    registry: RunRegistry,
+    registry: RunRegistryLike,
     hub: RealtimeHub,
     run_id: str,
     user_id: str,

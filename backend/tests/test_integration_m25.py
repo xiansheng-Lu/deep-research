@@ -216,7 +216,7 @@ async def test_control_actions_write_audit_entries_real_db(
     # 非执行器的占位在途任务：pause 仅需句柄可寻址、可 cancel（协程收尾由执行器
     # 单测覆盖，此处只验证控制服务的状态机与审计落库）
     wait_task = asyncio.create_task(gate.wait())
-    registry.register(run_a_id, wait_task)
+    await registry.register(run_a_id, wait_task)  # type: ignore[arg-type]
 
     async with orm_factory() as session:
         run_a_row = await session.get(ResearchRun, run_a_id)

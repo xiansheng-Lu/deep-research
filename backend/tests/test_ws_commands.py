@@ -23,6 +23,7 @@ from test_runs_control_api import (
     USER_ID,
     _ControlFakeSession,
     _FakeTask,
+    _register_sync,
     _run,
     _subq,
     _user,
@@ -164,7 +165,7 @@ def test_ws_cancel_command_returns_ack(_clean_registry: Any) -> None:
     """AC-11：cancel 指令 → ack cancelled，在途任务收到取消信号。"""
     client, _, run = _client()
     fake_task = _FakeTask()
-    _clean_registry.register(RUN_ID, fake_task)  # type: ignore[arg-type]
+    _register_sync(_clean_registry, RUN_ID, fake_task)
     with _connect(client) as ws:
         ws.send_json(_command("cancel", "req-004", {"reason": "user_cancel"}))
         ack = ws.receive_json()

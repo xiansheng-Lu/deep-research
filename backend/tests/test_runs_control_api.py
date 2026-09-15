@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 
+import fakeredis
+import fakeredis.aioredis
 import pytest
 from fastapi import FastAPI
 from fastapi.responses import ORJSONResponse
@@ -24,7 +27,13 @@ from app.db.models.evidence import Evidence
 from app.db.models.identity import User
 from app.db.models.intervention import RunIntervention
 from app.db.models.run import ResearchRun, SubQuestion
-from app.orchestrator.registry import RunRegistry
+from app.orchestrator.lease import RunLease
+from app.orchestrator.registry import (
+    RedisRunRegistry,
+    RunHandle,
+    RunRegistry,
+    RunRegistryLike,
+)
 
 USER_ID = "01HZX7YK9P3M2V4N5J8XQRCWT6"
 TEAM_ID = "01HZX7YK9P3M2V4N5J8XQRCWT7"
@@ -72,6 +81,12 @@ class _FakeTask:
     def cancel(self) -> bool:
         self.cancel_calls += 1
         return True
+
+
+def _register_sync(registry: RunRegistry, run_id: str, task: Any) -> None:
+    """同步 TestClient 用例直接构造内存态句柄（register 的无占位分支不触事件循环，
+    避免 asyncio.run 在主线程新建/关闭 loop 与 TestClient 遗留 portal 形成 GC 噪声）。"""
+    registry._handles[run_id] = RunHandle(task=task)  # type: ignore[arg-type]
 
 
 class _UpdateResult:
@@ -197,7 +212,7 @@ class _ControlFakeSession:
 
 def _client(
     runs: list[ResearchRun],
-    registry: RunRegistry,
+    registry: RunRegistryLike,
     *,
     sub_questions: list[SubQuestion] | None = None,
     evidences: list[Evidence] | None = None,
@@ -254,7 +269,7 @@ def test_pause_running_with_active_task_returns_200(auth: dict[str, str]) -> Non
     run = _run("running")
     registry = RunRegistry()
     fake_task = _FakeTask()
-    registry.register(RUN_ID, fake_task)  # type: ignore[arg-type]
+    _register_sync(registry, RUN_ID, fake_task)
     client = _client([run], registry)
     resp = client.post(f"/runs/{RUN_ID}/pause", json={"reason": "user_action"}, headers=auth)
     assert resp.status_code == 200
@@ -282,7 +297,7 @@ def test_pause_terminal_state_conflict(auth: dict[str, str]) -> None:
 
 
 def test_pause_running_without_active_task_conflict(auth: dict[str, str]) -> None:
-    """running 行但注册表无句柄（孤儿）→ 409，不假暂停。"""
+    """running 行但注册表无句柄（内存态孤儿）→ 409 RUN_NOT_PAUSABLE，不假暂停。"""
     run = _run("running")
     client = _client([run], RunRegistry())
     resp = client.post(f"/runs/{RUN_ID}/pause", json={}, headers=auth)
@@ -291,12 +306,59 @@ def test_pause_running_without_active_task_conflict(auth: dict[str, str]) -> Non
     assert run.status == "running"
 
 
+def _redis_registry() -> tuple[RedisRunRegistry, Any]:
+    """构造 fakeredis 支撑的 Redis 态注册表。
+
+    异步客户端供 TestClient 门户事件循环内的端点使用；同步客户端共享同一
+    FakeServer，供用例在循环外预置租约键/读取控制键（fakeredis 官方测试模式）。
+    """
+    server = fakeredis.FakeServer()
+    client = fakeredis.aioredis.FakeRedis(server=server, decode_responses=True)
+    sync_client = fakeredis.FakeStrictRedis(server=server, decode_responses=True)
+    lease = RunLease(client, worker_id="api-test", ttl_seconds=30)
+    return RedisRunRegistry(lease), sync_client
+
+
+def test_pause_redis_orphan_returns_recovering_code(auth: dict[str, str]) -> None:
+    """B-AC-9：Redis 态 running 但无新鲜租约（worker 失联孤儿）→ 409
+    RUN_ORPHAN_RECOVERING，run 行不被置位，与内存态孤儿码区分。"""
+    run = _run("running")
+    registry, _sync_redis = _redis_registry()
+    client = _client([run], registry)
+    resp = client.post(f"/runs/{RUN_ID}/pause", json={}, headers=auth)
+    assert resp.status_code == 409
+    assert resp.json()["details"]["code"] == "RUN_ORPHAN_RECOVERING"
+    assert run.status == "running"
+
+
+def test_pause_redis_fresh_lease_returns_200_and_sets_control(
+    auth: dict[str, str],
+) -> None:
+    """B-AC-9：Redis 态租约新鲜时正常暂停（200），并把 pause 写入控制键。"""
+    run = _run("running")
+    registry, sync_redis = _redis_registry()
+    # 模拟 worker 已抢到在途租约（同步侧预置，端点经异步客户端同 server 可见）
+    sync_redis.set(
+        f"lease:run:{RUN_ID}",
+        '{"worker_id":"worker-1","task_id":"worker-task-1","started_at":"2026-09-15T00:00:00+00:00"}',
+        px=30000,
+    )
+
+    client = _client([run], registry)
+    resp = client.post(f"/runs/{RUN_ID}/pause", json={"reason": "user_action"}, headers=auth)
+    assert resp.status_code == 200
+    assert run.status == "paused"
+    # 控制键已由 pause_run 经 RedisRunRegistry 写入，worker 超步边界据此协作收尾
+    signal = json.loads(sync_redis.get(f"control:run:{RUN_ID}"))
+    assert signal["mode"] == "pause"
+
+
 def test_cancel_running_with_active_task_returns_200(auth: dict[str, str]) -> None:
     """AC-3：running 取消 → 200 cancelled + finished_at + 取消信号。"""
     run = _run("running")
     registry = RunRegistry()
     fake_task = _FakeTask()
-    registry.register(RUN_ID, fake_task)  # type: ignore[arg-type]
+    _register_sync(registry, RUN_ID, fake_task)
     client = _client([run], registry)
     resp = client.post(f"/runs/{RUN_ID}/cancel", json={}, headers=auth)
     assert resp.status_code == 200
@@ -342,7 +404,7 @@ def test_control_requires_auth() -> None:
 def test_pause_reason_too_long_422(auth: dict[str, str]) -> None:
     run = _run("running")
     registry = RunRegistry()
-    registry.register(RUN_ID, _FakeTask())  # type: ignore[arg-type]
+    _register_sync(registry, RUN_ID, _FakeTask())
     client = _client([run], registry)
     resp = client.post(f"/runs/{RUN_ID}/pause", json={"reason": "x" * 257}, headers=auth)
     assert resp.status_code == 422
@@ -365,7 +427,7 @@ def _neutralize_resume_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _no_resume(**kwargs: Any) -> None:
         from app.orchestrator.registry import get_run_registry
 
-        get_run_registry().unregister(kwargs["run_id"])
+        await get_run_registry().unregister(kwargs["run_id"])
         return None
 
     monkeypatch.setattr("app.orchestrator.executor.resume_research_async", _no_resume)

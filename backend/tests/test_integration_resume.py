@@ -704,7 +704,7 @@ async def test_resume_service_answers_branch_drives_to_succeeded(context: dict[s
         # 终态后恢复占位必须已由真实协程注销（注册表无残留）
         from app.orchestrator.registry import get_run_registry
 
-        assert get_run_registry().is_active(run_id) is False
+        assert await get_run_registry().is_active(run_id) is False
     finally:
         await pool.close()
 

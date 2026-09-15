@@ -47,6 +47,9 @@ class ResearchRun(Base, IdMixin, TimestampMixin):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # M2-8b 租约观测镜像（权威在 Redis；仅作清扫扫描输入，历史 run 留空）
+    execution_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     project: Mapped[Project] = relationship(back_populates="runs")
     stages: Mapped[list[Stage]] = relationship(back_populates="run")
@@ -56,6 +59,8 @@ class ResearchRun(Base, IdMixin, TimestampMixin):
     __table_args__ = (
         Index("ix_runs_project_status", "project_id", "status"),
         Index("ix_runs_creator", "creator_id"),
+        # M2-8b 孤儿清扫：按 status 过滤后顺序扫描 lease_until
+        Index("ix_runs_status_lease", "status", "lease_until"),
     )
 
 

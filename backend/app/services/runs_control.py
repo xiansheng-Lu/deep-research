@@ -1,7 +1,9 @@
 """研究运行控制域服务（M2-5）：软暂停与硬取消。
 
-- ``pause_run``：仅 running 且存在在途协程时受理；条件 UPDATE 乐观置 paused 后
+- ``pause_run``：仅 running 且存在在途执行者时受理；条件 UPDATE 乐观置 paused 后
   经注册表投递协作式取消信号，协程在 super-step 边界落 paused 并发终态帧。
+  Redis 态下 running 但租约过期（worker 失联孤儿）返回 409
+  ``RUN_ORPHAN_RECOVERING``，由 worker 启动清扫自动收敛（M2-8b §16.5/B-AC-9）。
 - ``cancel_run``：pending/running/paused 可取消，终态（succeeded/failed/cancelled）
   幂等返回当前状态；有在途协程时由协程收尾落库发帧，无协程（如暂停孤儿）时
   服务端直接置终态并发帧。
@@ -26,7 +28,7 @@ from app.core.exceptions import ConflictError, ValidationError
 from app.core.logging import get_logger
 from app.db.models.report import Report
 from app.db.models.run import ResearchRun
-from app.orchestrator.registry import RunRegistry, get_run_registry
+from app.orchestrator.registry import RunRegistryLike, get_run_registry
 from app.realtime.hub import get_hub
 from app.schemas.runs import HumanInput
 
@@ -58,7 +60,7 @@ async def pause_run(
     session: AsyncSession,
     *,
     run: ResearchRun,
-    registry: RunRegistry,
+    registry: RunRegistryLike,
     team_id: str,
     user_id: str,
     reason: str | None = None,
@@ -69,9 +71,16 @@ async def pause_run(
         raise ConflictError("研究运行已处于暂停状态", details={"code": "RUN_ALREADY_PAUSED"})
     if current_status != "running":
         raise ConflictError("当前研究运行状态不允许暂停", details={"code": "RUN_NOT_PAUSABLE"})
-    if not registry.is_active(run.id):
-        # running 行但无在途协程（进程重启孤儿）：暂停语义无法保证，拒绝而非制造
-        # "暂停后永远停在 running" 的假成功；孤儿治理在 M2-8
+    if not await registry.is_active(run.id):
+        # running 行但无在途执行者：拒绝而非制造「暂停后永远停在 running」的假成功。
+        # Redis 态租约过期即 worker 失联孤儿，worker 启动清扫会自动收敛
+        # （§16.5），返回专属码让前端提示刷新；内存态（单进程/离线测试）保持
+        # M2-5 原码 RUN_NOT_PAUSABLE。
+        if registry.is_redis_backed:
+            raise ConflictError(
+                "任务执行进程失联，系统正在自动恢复，请刷新后重试",
+                details={"code": "RUN_ORPHAN_RECOVERING"},
+            )
         raise ConflictError("当前研究运行状态不允许暂停", details={"code": "RUN_NOT_PAUSABLE"})
 
     now = datetime.now(tz=UTC)
@@ -100,7 +109,7 @@ async def pause_run(
     await session.commit()
     await session.refresh(run)
     # 乐观置位已提交；协程收尾时以 DB 状态为准补帧，信号投递失败不影响暂停事实
-    registry.request_stop(run.id, "pause")
+    await registry.request_stop(run.id, "pause")
     log.info("研究运行已软暂停", extra={"run_id": run.id})
     return run
 
@@ -109,7 +118,7 @@ async def cancel_run(
     session: AsyncSession,
     *,
     run: ResearchRun,
-    registry: RunRegistry,
+    registry: RunRegistryLike,
     hub: RealtimeHub | None,
     team_id: str,
     user_id: str,
@@ -143,7 +152,7 @@ async def cancel_run(
     )
     await session.commit()
     await session.refresh(run)
-    signalled = registry.request_stop(run.id, "cancel", keep_partial=keep_partial)
+    signalled = await registry.request_stop(run.id, "cancel", keep_partial=keep_partial)
     partial_report_id = await _find_report_id(session, run.id)
 
     if not signalled:
@@ -225,10 +234,10 @@ async def resume_run(
     # 既有句柄若为已收到停止信号、正在收尾的首跑协程，属合法交接；
     # 其余在途句柄（已存在恢复占位/恢复协程）按重复恢复拒绝。
     registry = get_run_registry()
-    prior = registry.reserve(run.id)
+    prior = await registry.reserve(run.id)
     if prior is not None and not _is_finalizing_first_run(prior):
         # 已存在恢复协程等非收尾句柄：放回旧句柄，本次抢占作废
-        registry.restore(run.id, prior)
+        await registry.restore(run.id, prior)
         raise ConflictError(
             "研究运行恢复已在调度中，请勿重复恢复",
             details={"code": "RUN_NOT_RESUMABLE"},
@@ -267,21 +276,31 @@ async def resume_run(
         await session.commit()
     except Exception:
         # 抢占未成功：释放本请求的恢复占位（仅当句柄仍是占位），避免恢复位卡死
-        if registry.is_reserved(run.id):
-            registry.unregister(run.id)
+        if await registry.is_reserved(run.id):
+            await registry.unregister(run.id)
         raise
 
-    asyncio.create_task(
-        resume_research_async(
-            run_id=run.id,
-            human_input=normalized,
-            session_factory=factory,
-            checkpointer=checkpointer,
-            llm=llm,
-            retrieval_client=retrieval_client,
-            hub=hub,
+    # 调度恢复：Redis 态先 DEL 旧控制键（pause 信号随恢复作废，cancel 无法到
+    # paused 行；双击防护由条件 UPDATE + 租约 NX 承接，§16.3），再投 Celery；
+    # 内存态保持进程内 create_task。
+    if registry.is_redis_backed:
+        await registry.clear_stop_signal(run.id)
+
+        from app.workers.tasks.research import resume_run as resume_run_task
+
+        resume_run_task.delay(run.id, normalized)
+    else:
+        asyncio.create_task(
+            resume_research_async(
+                run_id=run.id,
+                human_input=normalized,
+                session_factory=factory,
+                checkpointer=checkpointer,
+                llm=llm,
+                retrieval_client=retrieval_client,
+                hub=hub,
+            )
         )
-    )
     log.info("研究运行已调度恢复", extra={"run_id": run.id, "reason": reason or "manual"})
     # 响应语义：恢复已抢占（200 running）；最终成败以帧/REST 收敛
     run.status = "running"

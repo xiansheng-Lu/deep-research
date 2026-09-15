@@ -429,6 +429,10 @@ async def test_alembic_0003_upgrade_downgrade_cycle(
             assert _constraint_exists(conn, _MIGRATION_SCHEMA)
             assert _table_exists(conn, "run_interventions")
 
+        # ORM 插入前升到当前 head：模型可能含 0004 之后的新列（如 0007 租约列），
+        # 约束本身的迁移循环在上面已按 0002-0004 钉版本验证完毕。
+        command.upgrade(cfg, "head")
+
         # 约束真实生效：插入外键链 + 两条同名阶段行，第二条被拒
         with Session(engine) as orm_session:
             team = Team(id=new_ulid(), name="迁移验证团队", plan="free", settings={})

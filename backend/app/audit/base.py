@@ -26,6 +26,8 @@ class AuditAction(StrEnum):
     REPORT_EXPORT = "report.export"
     CONNECTOR_BIND = "connector.bind"
     CONNECTOR_SYNC = "connector.sync"
+    # M2-8b：worker 启动孤儿清扫收敛（paused/succeeded/failed 三类）
+    RUN_ORPHAN_RECOVERED = "run.orphan_recovered"
 
 
 @dataclass(slots=True)

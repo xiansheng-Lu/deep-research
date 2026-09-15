@@ -49,6 +49,29 @@ services:
       timeout: 5s
       retries: 5
 
+  # M2-8b：Celery worker（API/uvicorn 仍在主机前台运行）
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: deep-research-worker:dev
+    container_name: dr_worker
+    command: ["deep-research-worker"]
+    env_file:
+      - .env
+    environment:
+      DB_ASYNC_URL: postgresql+asyncpg://deep_research:deep_research@postgres:5432/deep_research
+      DB_SYNC_URL: postgresql://deep_research:deep_research@postgres:5432/deep_research
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      WORKER_ENABLE_REDIS: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:

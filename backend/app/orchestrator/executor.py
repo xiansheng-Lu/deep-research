@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.context import bind_run_context
+from app.core.exceptions import ProviderUnavailableError
 from app.core.logging import get_logger
 from app.db.base import new_ulid
 from app.db.models.project import Project
@@ -63,7 +64,7 @@ from app.orchestrator.persistence import (
     apply_stage_transition,
     ensure_stage_rows,
 )
-from app.orchestrator.registry import get_run_registry
+from app.orchestrator.registry import RunRegistryLike, get_run_registry
 from app.orchestrator.state import ResearchStage, ResearchState
 from app.quota.emitter import RunCostEmitter
 from app.realtime.hub import RealtimeHub
@@ -280,6 +281,29 @@ class _StopHolder:
     snapshot: ResearchState | None = None
 
 
+async def _poll_stop_signal(registry: RunRegistryLike, run_id: str) -> None:
+    """超步边界读取停止信号（M2-8b 跨进程）：有 pause/cancel 则对当前任务投递
+    协作式取消，复用 M2-5 既有的 CancelledError 收尾路径。
+
+    - 内存态：pause/cancel 端点已同步 ``task.cancel()``，此处为等价兜底；
+    - Redis 态：信号由 API 进程写入 ``control:run:{id}``，worker 在此边界感知，
+      不在节点执行中途打断（ask_followup 受理窗口仍只在 retrieve 扇出层边界，
+      阶段方案 §16.3，M2-7 口径不回退）。
+    """
+    mode = await registry.peek_mode(run_id)
+    if mode is None:
+        return
+    task = asyncio.current_task()
+    assert task is not None
+    log.info(
+        "超步边界感知停止信号，投递协作式取消",
+        extra={"run_id": run_id, "mode": mode},
+    )
+    task.cancel()
+    # 立即让出控制权，使 CancelledError 在本 await 点生效，不再处理本帧
+    await asyncio.sleep(0)
+
+
 async def _astream_and_publish(
     graph: Any,
     initial_state: ResearchState | Command[Any],
@@ -292,6 +316,7 @@ async def _astream_and_publish(
     stage_rows: dict[str, Stage],
     cost_emitter: RunCostEmitter,
     stop_holder: _StopHolder,
+    registry: RunRegistryLike,
 ) -> ResearchState | None:
     """流式执行图：逐 super-step 推进阶段行/帧、发射成本帧并做中间提交。
 
@@ -318,6 +343,8 @@ async def _astream_and_publish(
         config=thread_config,
         stream_mode=["debug", "values"],
     ):
+        # 每个超步帧处理前先看停止信号：命中则本帧不再处理，协作收尾
+        await _poll_stop_signal(registry, run_id)
         if mode == "debug":
             # 仅在六阶段业务节点「开始执行」时切换阶段行；failure_recovery /
             # await_human / user_intervention / cost_checkpoint 不产生阶段帧
@@ -531,8 +558,8 @@ async def _finalize_controlled_stop(
         最终状态（paused/cancelled）；自然终态/run 不存在返回 None。
     """
     registry = get_run_registry()
-    mode = registry.consume_mode(run_id) or "cancel"
-    keep_partial = registry.keep_partial_for(run_id)
+    mode = (await registry.consume_mode(run_id)) or "cancel"
+    keep_partial = await registry.keep_partial_for(run_id)
     # 停止信号名 → run 终态状态名（pause→paused，cancel→cancelled）
     target_status = "paused" if mode == "pause" else "cancelled"
 
@@ -652,6 +679,7 @@ async def run_research_async(
     retrieval_client: Any,
     hub: RealtimeHub,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
+    owner_id: str | None = None,
 ) -> None:
     """后台异步执行研究流程（首次执行）。
 
@@ -669,15 +697,25 @@ async def run_research_async(
         llm / retrieval_client: 节点共享依赖；缺省时节点走降级路径。
         hub: 实时事件总线；阶段事件 / 终态事件由此推送。
         checkpointer: 应用级持久检查点；None 时退化为一次性内存 saver（测试用）。
+        owner_id: Redis 态下的租约持有者标识（Celery task_id）；缺省时以当前
+            asyncio 任务为句柄（内存态/单进程）。
     """
     registry = get_run_registry()
     current_task = asyncio.current_task()
     assert current_task is not None
-    # M2-5：登记在途句柄，pause/cancel 控制端点据此投递协作式取消信号
+    owner_ref: Any = current_task if owner_id is None else owner_id
+    # M2-5：登记在途句柄，pause/cancel 控制端点据此投递协作式取消信号；
+    # M2-8b Redis 态即对 lease:run:{id} 的 NX 抢占
     stop_holder = _StopHolder()
     # 返回值忽略：首跑为 run 的第一个驱动者，正常无旧句柄；恢复占位场景
     # 不会走到首跑入口
-    registry.register(run_id, current_task)
+    prior = await registry.register(run_id, owner_ref)
+    if registry.is_redis_backed and prior is not None:
+        # 租约 NX 失败（任务重投递/重复投递，B-AC-6）：已有执行者持约，
+        # 本次未抢到租约，直接安全退出不驱动图；finally 中 is_owner 为假，
+        # 不会误放他人租约/误清信号。
+        log.warning("run 租约已被持有，本次执行幂等退出", extra={"run_id": run_id})
+        return
     try:
         deps = NodeDeps(
             run_id=run_id,
@@ -732,12 +770,13 @@ async def run_research_async(
                 fallback_state=initial_state,
                 stage_rows=stage_rows,
                 stop_holder=stop_holder,
+                registry=registry,
             )
     except asyncio.CancelledError:
         # 受控停止（pause/cancel）：仅当句柄仍属于本协程时收尾落库并发终态帧；
         # 被恢复占位/恢复协程接管时静默退出（暂停状态已由控制服务提交，
         # 后续由恢复链路接管）
-        if registry.is_owner(run_id, current_task):
+        if await registry.is_owner(run_id, owner_ref):
             await _finalize_controlled_stop(
                 session_factory,
                 run_id=run_id,
@@ -745,7 +784,10 @@ async def run_research_async(
                 stop_holder=stop_holder,
             )
     finally:
-        registry.unregister(run_id, owner=current_task)
+        # 终态帧已发布后再清信号、释放租约（阶段方案 §16.1 顺序）
+        if await registry.is_owner(run_id, owner_ref):
+            await registry.clear_stop_signal(run_id)
+        await registry.unregister(run_id, owner=owner_ref)
 
 
 async def _drive_to_terminal(
@@ -760,6 +802,7 @@ async def _drive_to_terminal(
     fallback_state: ResearchState | None,
     stage_rows: dict[str, Stage],
     stop_holder: _StopHolder,
+    registry: RunRegistryLike,
 ) -> ResearchState | None:
     """驱动图执行到终态并完成落库与终态事件推送（首次执行/恢复共用）。
 
@@ -796,8 +839,18 @@ async def _drive_to_terminal(
             stage_rows=stage_rows,
             cost_emitter=cost_emitter,
             stop_holder=stop_holder,
+            registry=registry,
         )
     except Exception as exc:  # noqa: BLE001
+        # Redis 态（Celery worker）：瞬时 Provider 故障不落 failed，向上抛交
+        # 调度器有限重试（§16.4/B-AC-7）；中间超步已幂等提交，续跑从检查点
+        # 接上。内存态无调度器重试，仍按既有口径直接收敛 failed。
+        if registry.is_redis_backed and isinstance(exc, ProviderUnavailableError):
+            log.warning(
+                "Provider 瞬时不可用，交调度器有限重试，本超步不落 failed",
+                extra={"run_id": run_id, "error": repr(exc)},
+            )
+            raise
         log.exception("graph.astream 执行失败", extra={"run_id": run_id})
         await _mark_failed(
             session,
@@ -944,6 +997,7 @@ async def resume_research_async(
     llm: Any,
     retrieval_client: Any,
     hub: RealtimeHub,
+    owner_id: str | None = None,
 ) -> None:
     """从 HITL 挂起点恢复研究（澄清答案 / 分歧裁决 / 纯继续）。
 
@@ -962,11 +1016,16 @@ async def resume_research_async(
     registry = get_run_registry()
     current_task = asyncio.current_task()
     assert current_task is not None
+    owner_ref: Any = current_task if owner_id is None else owner_id
     # 恢复任务同样登记句柄：恢复途中允许再 pause/cancel。register 会取代
     # 恢复服务预先写入的占位（或暂停首跑协程的旧句柄），并沿用占位上已到达
-    # 的停止信号。
+    # 的停止信号；Redis 态为对租约的 NX 抢占。
     stop_holder = _StopHolder()
-    prior = registry.register(run_id, current_task)
+    prior = await registry.register(run_id, owner_ref)
+    if registry.is_redis_backed and prior is not None:
+        # 恢复任务重投递且租约已被持有：幂等退出，不等待进程外任务、不驱动图
+        log.warning("resume 租约已被持有，本次恢复幂等退出", extra={"run_id": run_id})
+        return
     try:
         # 被暂停的首跑协程可能仍在 CancelledError 收尾：等待其退出，避免两个
         # 驱动循环并发；旧协程经属主检查会自行放弃落库收尾（暂停状态已由
@@ -1001,10 +1060,11 @@ async def resume_research_async(
                 return
             # 微窗口内 pause/cancel 已落在恢复占位上：不驱动图，直接按信号
             # 收尾（DB 已由控制服务置 paused/cancelled）
-            if registry.peek_mode(run_id) is not None:
+            pending_mode = await registry.peek_mode(run_id)
+            if pending_mode is not None:
                 log.info(
                     "恢复协程启动前已收到停止信号，按受控停止收尾",
-                    extra={"run_id": run_id, "mode": registry.peek_mode(run_id)},
+                    extra={"run_id": run_id, "mode": pending_mode},
                 )
                 await _finalize_controlled_stop(
                     session_factory,
@@ -1052,6 +1112,7 @@ async def resume_research_async(
                     fallback_state=None,
                     stage_rows=stage_rows,
                     stop_holder=stop_holder,
+                    registry=registry,
                 )
             except Exception as exc:  # noqa: BLE001 - 恢复护栏：任何异常都落 failed + 终态帧（TR-8.3）
                 log.exception("HITL 恢复执行失败", extra={"run_id": run_id})
@@ -1079,7 +1140,7 @@ async def resume_research_async(
     except asyncio.CancelledError:
         # 恢复途中受控停止：仅当句柄仍属于本协程时收尾；被更新的恢复任务或
         # 占位接管时本协程静默退出，不做落库/发帧（避免覆盖新状态）
-        if registry.is_owner(run_id, current_task):
+        if await registry.is_owner(run_id, owner_ref):
             await _finalize_controlled_stop(
                 session_factory,
                 run_id=run_id,
@@ -1087,7 +1148,9 @@ async def resume_research_async(
                 stop_holder=stop_holder,
             )
     finally:
-        registry.unregister(run_id, owner=current_task)
+        if await registry.is_owner(run_id, owner_ref):
+            await registry.clear_stop_signal(run_id)
+        await registry.unregister(run_id, owner=owner_ref)
 
 
 __all__ = [

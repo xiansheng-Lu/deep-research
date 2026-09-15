@@ -59,6 +59,19 @@ class Settings(BaseSettings):
     celery_broker_url: str = Field(alias="CELERY_BROKER_URL")
     celery_result_backend: str = Field(alias="CELERY_RESULT_BACKEND")
 
+    # ===== M2-8b 长任务接管（worker/跨进程） =====
+    # true：RealtimeHub 走 Redis Pub/Sub、registry 走租约/控制键（生产 worker 必须）；
+    # false：退回进程内内存 Hub/registry（仅离线测试/单进程）
+    worker_enable_redis: bool = Field(default=True, alias="WORKER_ENABLE_REDIS")
+    # worker 标识（多副本时由部署注入；缺省用主机名+pid 兜底）
+    worker_id: str = Field(default="", alias="WORKER_ID")
+    run_lease_ttl_seconds: int = Field(default=30, alias="RUN_LEASE_TTL_SECONDS")
+    run_lease_heartbeat_seconds: int = Field(default=10, alias="RUN_LEASE_HEARTBEAT_SECONDS")
+    run_orphan_grace_seconds: int = Field(default=60, alias="RUN_ORPHAN_GRACE_SECONDS")
+    # worker 启动时清扫孤儿 run；周期 beat 默认不开（仅启动扫一次）
+    run_orphan_sweep_enabled: bool = Field(default=True, alias="RUN_ORPHAN_SWEEP_ENABLED")
+    celery_task_max_retries: int = Field(default=2, alias="CELERY_TASK_MAX_RETRIES")
+
     # ===== 对象存储 =====
     object_storage_endpoint: str = Field(alias="OBJECT_STORAGE_ENDPOINT")
     object_storage_access_key: str = Field(alias="OBJECT_STORAGE_ACCESS_KEY")

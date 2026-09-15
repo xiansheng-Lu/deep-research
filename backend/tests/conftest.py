@@ -34,6 +34,8 @@ _REQUIRED_ENV: dict[str, str] = {
     "OBJECT_STORAGE_BUCKET": "test-bucket",
     # M2-6：离线测试不发真实页面抓取；补采行为在 test_page_metadata 专门开启
     "SOURCE_PAGE_METADATA_ENABLED": "false",
+    # M2-8b：单测/集成默认内存态 Hub/注册表，不依赖外部 Redis/Celery
+    "WORKER_ENABLE_REDIS": "false",
 }
 
 

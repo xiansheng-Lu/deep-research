@@ -359,7 +359,10 @@ def _index_exists(sync_conn: Any, index: str) -> bool:
 
 @pytest.mark.asyncio
 async def test_alembic_0006_telemetry_table_cycle(migration_dsn: str) -> None:
-    """AC-12：head(0006) 表+四索引 → downgrade -1 回 0005 消失 → upgrade 恢复。"""
+    """AC-12：钉 0006 验证表+四索引 → downgrade -1 回 0005 消失 → upgrade 恢复。
+
+    不随后续 head（0007+）漂移：始终显式升到/验到 0006 版本。
+    """
     from alembic import command
     from alembic.config import Config
     from sqlalchemy import create_engine
@@ -368,7 +371,7 @@ async def test_alembic_0006_telemetry_table_cycle(migration_dsn: str) -> None:
     cfg.set_main_option("script_location", str(_BACKEND_DIR / "app" / "db" / "migrations"))
     cfg.set_main_option("path_separator", "os")
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0006")
     engine = create_engine(migration_dsn)
     try:
         with engine.connect() as conn:
@@ -389,7 +392,7 @@ async def test_alembic_0006_telemetry_table_cycle(migration_dsn: str) -> None:
             assert version is not None and version[0] == "0005"
             assert not _table_exists(conn, "telemetry_events")
 
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0006")
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).first()
             assert version is not None and version[0] == "0006"
