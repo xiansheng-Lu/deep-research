@@ -1,0 +1,18 @@
+backend/app/orchestrator/executor.py
+  h_cca0f9f09404ed 337-340,364-390,422-458
+backend/tests/test_executor.py
+  h_cca0f9f09404ed 1742,1744-1746,1752-1754
+docs/feedback/后端token用量记账异常排查反馈.md
+  h_cca0f9f09404ed 1-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "e3a712234f791838a60408a490f0f08784bc426a",
+  "prompts": {},
+  "humans": {
+    "h_cca0f9f09404ed": {
+      "author": "Lu Wen Long <19988433671@163.com>"
+    }
+  }
+}
