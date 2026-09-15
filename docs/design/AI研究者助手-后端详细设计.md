@@ -850,7 +850,7 @@ action 命名空间（契约草案 §13.3）：`<domain>.<verb>`，例如 `run.s
 | `annotation.created` `annotation.updated` `annotation.deleted` | 即时 | 沿用契约草案 §4.5（是否启用由后端评审决定，前端两侧均兼容） |
 | `run.finished` | 即时 | status, summary |
 
-> **事件实现状态（2026-09-13 核对）**：M1/M2-2 实际推送的帧为 stage.started、run.finished（含 status=paused 语义）、conflict.detected、conflict.verdicts；表中 stage.finished/failed、sub_question.*、evidence.fetched、token.usage.update、cost.warning 为 M2-3/M2-4 设计目标，report.chunk/report.finished 为 M2-7 数据点级溯源设计目标；以各阶段技术方案与届时冻结契约为准。其中 **report.chunk 报告流 SSE 未进入 M1 冻结契约、M2 不实现**（见 §4.4 状态说明）。
+> **事件实现状态（2026-09-15 M2 全工作包关闭后核对）**：M1~M2-8b 实际经 WS 推送的帧为 stage.started/finished/failed、sub_question.created/started/finished、evidence.fetched、interrupt.requested、conflict.detected/verdicts、token.usage.update、cost.warning、run.finished（含 status=paused/succeeded/failed/cancelled 语义；M2-8b 起跨进程经 Redis Pub/Sub 桥接）。**`report.chunk`、`report.finished`、`report.replace` 与 `annotation.*` 整组 M2 未实现**：后端无任何发射点（reporter 终稿落库后只发 run.finished），终稿可读由 run.finished(succeeded) + REST 报告端点（M2-7 起含 outline/blocks/citations）收敛，前端运行代码亦未订阅该组帧；逐 token 报告流（含本节与 §4.4 的 SSE `report/stream` 形态）整体挂 M4 体验打磨，以届时冻结契约为准。
 
 **客户端发送**（受控消息）：
 
@@ -1827,7 +1827,7 @@ async def reporter(state: ResearchState, *, deps: NodeDeps) -> dict:
 
 > `stream_section` 每次产出为一个文本块（`str`）；逐 token 实时推送通过 `on_token` 回调挂接 `deps.sse`（§8.4）实现，`push_report_chunk` 内部维护已推送字数以计算 position。
 
-> **M2-7 实现口径（非流式）**：上方逐 section 流式为 M2+ 目标态；M2-7 实际落地为一次 `complete_structured`（温度 0）产出三值 blocks 计划（conclusion/evidence/limitation，无 dispute），经 `app/reporting/blocks.py` 确定性绑定引擎补 marker/snippet/缺源降级/数字断言审计后由引擎注入 dispute 块并派生语义 outline；LLM 不可用（未配置/超时/脏返回）走 `reporter_degraded` 机械映射，不抛穿 run。`report_draft` 旧 Markdown 链路保留用于留档，结构化 blocks/outline/audit 经 `NodeDeps.report_assembly` 交 executor 落 final 报告与 report_citations（§5.3.9）。SSE 报告流与 report.finished 帧不在 M2-7 范围。
+> **M2-7 实现口径（非流式）**：上方逐 section 流式为 M2+ 目标态；M2-7 实际落地为一次 `complete_structured`（温度 0）产出三值 blocks 计划（conclusion/evidence/limitation，无 dispute），经 `app/reporting/blocks.py` 确定性绑定引擎补 marker/snippet/缺源降级/数字断言审计后由引擎注入 dispute 块并派生语义 outline；LLM 不可用（未配置/超时/脏返回）走 `reporter_degraded` 机械映射，不抛穿 run。`report_draft` 旧 Markdown 链路保留用于留档，结构化 blocks/outline/audit 经 `NodeDeps.report_assembly` 交 executor 落 final 报告与 report_citations（§5.3.9）。SSE 报告流与 report.finished/report.chunk 帧在 M1~M2-8b 全工作包均未实现（后端无发射点，终稿可读由 run.finished + REST 报告端点收敛），整体挂 M4。
 
 #### 6.5.8 cost_checkpoint
 

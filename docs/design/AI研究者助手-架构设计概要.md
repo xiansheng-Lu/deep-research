@@ -371,6 +371,8 @@ Orchestrator 各节点通过 `EventBus` 发布事件：
 | `report.chunk` | SSE | 报告阅读页 |
 | `report.finished` | WebSocket | 全局通知 |
 
+> 上表最后两行为 M4 预留：M1~M2-8b（2026-09-15 核对）后端无 `report.chunk`/`report.finished` 发射点，报告 SSE 流未实现，终稿可读由 `run.finished` + REST 报告端点（M2-7 起含 outline/blocks/citations）收敛；M2 实时事件实际集以《后端详细设计》§4 实现状态注为准。
+
 ---
 
 ## 8. API 契约概要

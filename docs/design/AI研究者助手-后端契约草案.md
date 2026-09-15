@@ -150,6 +150,8 @@
 
 ### 4.3 SSE `report/stream` 帧形态定版
 
+> **实现状态（2026-09-15 M2 全工作包关闭后核对）**：该 SSE 报告流端点与 `report.chunk`/`done` 帧**整组 M2 未实现**（M1~M2-8b 后端无发射点，前端运行代码未订阅）；终稿可读由 `run.finished(succeeded)` + REST 报告端点（M2-7 起含 outline/blocks/citations）收敛。本节为逐 token 报告流的预留设计，挂 M4 体验打磨，以届时冻结契约为准。
+
 统一为：**所有事件帧 `data` 都是完整 envelope 的 JSON**，`event` 字段与 `data.type` 保持一致（冗余，便于事件源过滤），`id` 字段为 `event_id`：
 
 ```jsonc
