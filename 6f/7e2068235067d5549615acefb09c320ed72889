@@ -1,0 +1,14 @@
+docs/feedback/archive/M2-8b长任务接管接口交接.md
+  h_cca0f9f09404ed 9,71-79,99-141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "6f7e2068235067d5549615acefb09c320ed72889",
+  "prompts": {},
+  "humans": {
+    "h_cca0f9f09404ed": {
+      "author": "Lu Wen Long <19988433671@163.com>"
+    }
+  }
+}
