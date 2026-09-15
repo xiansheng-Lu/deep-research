@@ -4,20 +4,22 @@
 """
 
 from contextlib import asynccontextmanager
+from datetime import UTC
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
+from app import __version__
 from app.api.v1 import api_v1_router
 from app.core.config import Settings, get_settings
 from app.core.context import bind_request_context
 from app.core.exceptions import AppError
 from app.core.lifespan import lifespan as default_lifespan
 from app.core.logging import get_logger
+from app.observability.metrics import install_http_metrics
 from app.schemas.common import HealthResponse
-from app import __version__
 
 log = get_logger("app.main")
 
@@ -47,6 +49,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # M2-3：Prometheus 指标面（可经 METRICS_ENABLED=false 整体关闭）
+    if cfg.metrics_enabled:
+        install_http_metrics(app)
+        from app.api.metrics import router as metrics_router
+
+        app.include_router(metrics_router)
 
     @app.middleware("http")
     async def _trace_middleware(request: Request, call_next: Any):
@@ -97,6 +106,6 @@ def _new_trace_id() -> str:
 
 
 def _utcnow():
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)

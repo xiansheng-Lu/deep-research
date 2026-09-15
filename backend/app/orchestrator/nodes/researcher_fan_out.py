@@ -13,8 +13,9 @@
       ``evidence_ids=[]``。
     - 跨子问题去重：按 ``app.retrieval.dedup.fingerprint`` 去重，避免同一 URL 在
       多子问题下重复落库。
-    - 落库（可选）：``deps.db_session`` 不为空时把 ``EvidenceDict`` 同步插入；
-      为空时仅生成 ``EvidenceDict`` 写入 state，由外层在 checkpoint 时统一持久化。
+    - 落库（可选，M2-2）：``deps.db_session`` 不为空时仅 upsert 子问题执行状态；
+      证据统一在 standardize 节点完成分类后幂等写入，避免固化 retrieve 阶段的
+      临时分级（见 ``app.orchestrator.persistence``）。
     - 重复执行：已终止状态（succeeded / failed / evidence_short）的子问题跳过，
       保持幂等。
 
@@ -26,22 +27,30 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from app.core.logging import get_logger
 from app.db.base import new_ulid
+from app.observability.metrics import record_evidence_fetch
 from app.orchestrator.dependencies import NodeDeps
 from app.orchestrator.nodes._base import instrument
+from app.orchestrator.persistence import persist_sub_questions
 from app.orchestrator.state import (
+    EvidenceDict,
     ResearchStage,
     ResearchState,
     SubQuestionDict,
 )
 from app.quota.tiers import Tier
-from app.retrieval.base import RetrievalRequest, RetrievalSource
+from app.retrieval.base import RetrievalRequest
 from app.retrieval.client import RetrievalClient, get_default_client
 from app.retrieval.dedup import fingerprint
+from app.retrieval.page_metadata import fetch_page_metadata
+from app.retrieval.ranker import blend_score, score_relevance
+
+if TYPE_CHECKING:
+    from app.realtime.hub import RealtimeHub
 
 log = get_logger("orchestrator.researcher_fan_out")
 
@@ -129,16 +138,19 @@ def _hit_to_evidence_dict(
     hit_url: str | None,
     hit_title: str,
     hit_snippet: str,
-    hit_source: RetrievalSource,
     hit_published_at: datetime | None,
     hit_fetched_at: datetime | None,
     sub_question_id: str,
     fingerprint_str: str,
-) -> dict[str, Any]:
-    """把 ``RetrievalHit`` 序列化成 ``EvidenceDict`` 友好形态。"""
+    relevance_score: float,
+) -> EvidenceDict:
+    """把 ``RetrievalHit`` 序列化成 ``EvidenceDict`` 形态。
+
+    retrieve 阶段只写中性占位（source_type=search / level=tertiary /
+    credibility=C）；权威类型与分级由 standardizer 节点按域名规则落定。
+    """
     url = hit_url or ""
     domain = _extract_domain(url)
-    source_type = "news" if hit_source == RetrievalSource.WEB else "search"
     return {
         "id": new_ulid(),
         "sub_question_id": sub_question_id,
@@ -146,13 +158,14 @@ def _hit_to_evidence_dict(
         "domain": domain,
         "title": (hit_title or "").strip()[:512],
         "snippet": (hit_snippet or "").strip()[:500],
-        # 标 source_type；source_level / credibility 由 standardizer 节点重新判定
-        "source_type": source_type,
+        # 占位值不伪装分类结果；standardizer 按 source_rules 重新判定
+        "source_type": "search",
         "source_level": "tertiary",
         "credibility": "C",
         "fingerprint": fingerprint_str,
         "published_at": hit_published_at.isoformat() if hit_published_at else None,
         "fetched_at": (hit_fetched_at or datetime.now(tz=UTC)).isoformat(),
+        "relevance_score": relevance_score,
     }
 
 
@@ -162,7 +175,7 @@ async def _research_one(
     retrieval: RetrievalClient,
     run_id: str,
     top_k: int,
-) -> tuple[SubQuestionDict, list[dict[str, Any]]]:
+) -> tuple[SubQuestionDict, list[EvidenceDict]]:
     """处理单个子问题：search → extract → 去重 → 转 EvidenceDict。
 
     返回 ``(更新后的子问题, 证据列表)``。任何异常都会被捕获：子问题标
@@ -192,9 +205,7 @@ async def _research_one(
         )
 
     try:
-        extracted = await asyncio.wait_for(
-            retrieval.extract(hits), timeout=_PER_SUB_QUESTION_TIMEOUT
-        )
+        extracted = await asyncio.wait_for(retrieval.extract(hits), timeout=_PER_SUB_QUESTION_TIMEOUT)
     except TimeoutError:
         log.warning(
             "researcher_fan_out 单子问题 extract 超时",
@@ -210,24 +221,71 @@ async def _research_one(
 
     # 单子问题内部仍按 fingerprint 去重
     seen_fps: set[str] = set()
-    evidence: list[dict[str, Any]] = []
+    deduped_hits = []
     for hit in extracted:
         fp = fingerprint(hit)
         if fp in seen_fps:
             continue
         seen_fps.add(fp)
-        evidence.append(
-            _hit_to_evidence_dict(
-                hit_url=hit.url,
-                hit_title=hit.title,
-                hit_snippet=hit.snippet,
-                hit_source=hit.source,
-                hit_published_at=hit.published_at,
-                hit_fetched_at=hit.fetched_at,
-                sub_question_id=subq_id,
-                fingerprint_str=fp,
+        deduped_hits.append((hit, fp))
+
+    # M2-6 T3：对 provider 未给发布时间的命中，小预算抓取页面补采元数据；
+    # 失败静默（published_at 保持 None），不影响子问题成功状态
+    missing_date_urls = [hit.url for hit, _fp in deduped_hits if not hit.published_at and hit.url]
+    page_meta: dict[str, Any] = {}
+    if missing_date_urls:
+        try:
+            page_meta = await fetch_page_metadata(missing_date_urls)
+        except Exception as exc:  # noqa: BLE001 - 补采整体异常也降级为空
+            log.warning(
+                "页面元数据补采异常，按无补采处理",
+                extra={"run_id": run_id, "sub_question_id": subq_id, "error": repr(exc)},
             )
+            page_meta = {}
+
+    evidence: list[EvidenceDict] = []
+    for hit, fp in deduped_hits:
+        published_at = hit.published_at
+        published_source = "provider" if published_at is not None else "null"
+        site_name: str | None = None
+        if published_at is None and hit.url:
+            meta = page_meta.get(hit.url)
+            if meta is not None and meta.published_at is not None:
+                published_at = meta.published_at
+                published_source = "page"
+                site_name = meta.site_name
+        # M2-6 T2：按子问题计算词面相关性并与 provider 分融合
+        lexical = score_relevance(
+            subq["question"],
+            title=hit.title,
+            snippet=hit.snippet,
+            content=hit.content,
         )
+        relevance = blend_score(hit.score, lexical)
+        ev = _hit_to_evidence_dict(
+            hit_url=hit.url,
+            hit_title=hit.title,
+            hit_snippet=hit.snippet,
+            hit_published_at=published_at,
+            hit_fetched_at=hit.fetched_at,
+            sub_question_id=subq_id,
+            fingerprint_str=fp,
+            relevance_score=relevance,
+        )
+        # retrieve 阶段先留打分/日期来源留痕；分类依据由 standardizer 补写
+        ev["metadata_"] = {
+            "relevance": {
+                "provider": round(float(hit.score or 0.0), 3),
+                "lexical": lexical,
+                "blended": relevance,
+            },
+            "published_at_source": published_source,
+            **({"site_name": site_name} if site_name else {}),
+        }
+        evidence.append(ev)
+
+    # M2-6 T2：子问题内部证据按相关性降序（standardizer 仍以可信度为首要序）
+    evidence.sort(key=lambda e: float(e.get("relevance_score") or 0.0), reverse=True)
 
     if not evidence:
         return (
@@ -244,40 +302,44 @@ async def _research_one(
     )
 
 
-def _persist_evidence(
-    db_session: Any,
+async def _publish_sub_question_event(
+    hub: RealtimeHub | None,
     *,
     run_id: str,
-    items: list[dict[str, Any]],
-) -> int:
-    """把 EvidenceDict 列表落库（同步会话下使用）；返回写入条数。"""
-    # 延迟导入避免节点模块级依赖 sqlalchemy
-    from app.db.models.evidence import Evidence
+    event_type: str,
+    sq: SubQuestionDict,
+) -> None:
+    """推送子问题生命周期帧（retrieve 阶段）。
 
-    inserted = 0
-    for item in items:
-        db_session.add(
-            Evidence(
-                id=item["id"],
-                run_id=run_id,
-                sub_question_id=item["sub_question_id"],
-                url=item["url"],
-                domain=item["domain"],
-                title=item["title"],
-                snippet=item["snippet"],
-                content=None,
-                source_type=item["source_type"],  # type: ignore[arg-type]
-                source_level=item["source_level"],  # type: ignore[arg-type]
-                credibility=item["credibility"],  # type: ignore[arg-type]
-                fingerprint=item["fingerprint"],
-                published_at=datetime.fromisoformat(item["published_at"])
-                if item["published_at"]
-                else None,
-                fetched_at=datetime.fromisoformat(item["fetched_at"]),
-            )
+    - ``sub_question.started``：每层调度前，status=running；
+    - ``sub_question.finished``：层结果落库后，带终态 status 与 evidence_count，
+      succeeded/failed/evidence_short 均如实携带（M2-4 §7）。
+    """
+    if hub is None:
+        return
+    payload: dict[str, Any] = {
+        "sub_question_id": sq["id"],
+        "status": sq.get("status") or "pending",
+    }
+    if event_type == "sub_question.finished":
+        payload["evidence_count"] = len(sq.get("evidence_ids") or [])
+    if event_type == "sub_question.created":
+        # M2-5：补查子问题的追问文本与依赖关系随创建帧下发（对齐前端帧类型）
+        payload["question"] = sq.get("question")
+        payload["depends_on"] = list(sq.get("depends_on") or [])
+    event = {
+        "type": event_type,
+        "stage": ResearchStage.RETRIEVE.value,
+        "payload": payload,
+    }
+    try:
+        await hub.publish(f"runs:{run_id}", event)
+    except Exception as exc:  # noqa: BLE001 - 实时事件失败不阻断主链路
+        log.warning(
+            "%s 推送失败",
+            event_type,
+            extra={"run_id": run_id, "sub_question_id": sq["id"], "error": repr(exc)},
         )
-        inserted += 1
-    return inserted
 
 
 @instrument(ResearchStage.RETRIEVE)
@@ -286,7 +348,7 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
 
     返回值会被 LangGraph 自动合并到 ``ResearchState`` 中。
     """
-    subqs = list(state.get("sub_questions") or [])
+    subqs: list[SubQuestionDict] = list(state.get("sub_questions") or [])
     if not subqs:
         return {"evidence": list(state.get("evidence") or [])}
 
@@ -296,39 +358,126 @@ async def run(state: ResearchState, *, deps: NodeDeps | None = None) -> dict[str
         return {"evidence": list(state.get("evidence") or [])}
 
     retrieval = _resolve_retrieval(deps)
+    db_session = getattr(deps, "db_session", None) if deps is not None else None
+    hub: RealtimeHub | None = getattr(deps, "hub", None) if deps is not None else None
+    run_id = str(state.get("run_id") or "")
     if retrieval is None:
         log.warning("researcher_fan_out 未获取到检索客户端，全部子问题标记 failed")
-        failed = [{**s, "status": "failed", "evidence_ids": []} for s in pending]
-        by_id = {s["id"]: s for s in subqs}
+        failed: list[SubQuestionDict] = [{**s, "status": "failed", "evidence_ids": []} for s in pending]
+        by_id: dict[str, SubQuestionDict] = {s["id"]: s for s in subqs}
         by_id.update({f["id"]: f for f in failed})
+        if db_session is not None:
+            # 失败状态同样落库，保证看板/恢复链路可见终态
+            await persist_sub_questions(db_session, run_id=run_id, items=list(by_id.values()))
+        # 未实际调度：只发终态帧，前端看板据此把行收敛到 failed
+        for f in failed:
+            record_evidence_fetch(source_type="web", status="failed")
+            await _publish_sub_question_event(hub, run_id=run_id, event_type="sub_question.finished", sq=f)
         return {"evidence": list(state.get("evidence") or []), "sub_questions": list(by_id.values())}
 
-    db_session = getattr(deps, "db_session", None) if deps is not None else None
-    run_id = str(state.get("run_id") or "")
     top_k = top_k_for_tier(state.get("tier"))
 
-    layers = _topological_layers(pending)
-    by_id: dict[str, SubQuestionDict] = {s["id"]: s for s in subqs}
-    all_evidence: list[dict[str, Any]] = list(state.get("evidence") or [])
+    by_id = {s["id"]: s for s in subqs}
+    all_evidence: list[EvidenceDict] = list(state.get("evidence") or [])
 
-    for layer in layers:
-        results = await asyncio.gather(
-            *[
-                _research_one(sq, retrieval=retrieval, run_id=run_id, top_k=top_k)
-                for sq in layer
-            ],
-            return_exceptions=False,
+    # M2-5：拓扑分层改为动态队列——每层完成后在超步边界消费 ask_followup
+    # 介入（追加补查层），followup 同样受 90% 成本闸门约束
+    while True:
+        active = [s for s in by_id.values() if s.get("status") not in _TERMINAL_STATUSES]
+        if not active:
+            break
+        layers = _topological_layers(active)
+        for layer in layers:
+            # 调度前逐条发 started（status 固定 running，表示进入检索执行）
+            for sq in layer:
+                await _publish_sub_question_event(
+                    hub,
+                    run_id=run_id,
+                    event_type="sub_question.started",
+                    sq={**sq, "status": "running"},
+                )
+            results = await asyncio.gather(
+                *[_research_one(sq, retrieval=retrieval, run_id=run_id, top_k=top_k) for sq in layer],
+                return_exceptions=False,
+            )
+            updated_sqs: list[SubQuestionDict] = []
+            for updated_sq, evidence in results:
+                by_id[updated_sq["id"]] = updated_sq
+                updated_sqs.append(updated_sq)
+                all_evidence.extend(evidence)
+            if db_session is not None and updated_sqs:
+                # 仅回写子问题执行状态；证据统一在 standardize 分类后落库
+                await persist_sub_questions(db_session, run_id=run_id, items=updated_sqs)
+            # 落库后逐条发 finished（帧在提交前的毫秒级竞态由前端 REST 对齐补偿）
+            for updated_sq in updated_sqs:
+                record_evidence_fetch(source_type="web", status=str(updated_sq.get("status") or "failed"))
+                await _publish_sub_question_event(
+                    hub, run_id=run_id, event_type="sub_question.finished", sq=updated_sq
+                )
+
+        # 超步边界消费介入：返回新追加的 followup 子问题 id（空则结束循环）
+        followup_ids = await _consume_interventions_at_boundary(
+            db_session, hub=hub, run_id=run_id, by_id=by_id
         )
-        for updated_sq, evidence in results:
-            by_id[updated_sq["id"]] = updated_sq
-            all_evidence.extend(evidence)
-            if db_session is not None and evidence:
-                _persist_evidence(db_session, run_id=run_id, items=evidence)
+        if db_session is not None:
+            # 用户剔除（含本超步内提交）：从 state 证据集移除，保证不进 standardize
+            from app.services.interventions import excluded_evidence_ids
+
+            excluded = await excluded_evidence_ids(db_session, run_id)
+            if excluded:
+                all_evidence = [e for e in all_evidence if e.get("id") not in excluded]
+                for sq in by_id.values():
+                    sq["evidence_ids"] = [
+                        ev_id for ev_id in sq.get("evidence_ids", []) if ev_id not in excluded
+                    ]
+        if not followup_ids:
+            break
 
     return {
         "evidence": all_evidence,
         "sub_questions": list(by_id.values()),
     }
+
+
+async def _consume_interventions_at_boundary(
+    db_session: Any,
+    *,
+    hub: RealtimeHub | None,
+    run_id: str,
+    by_id: dict[str, SubQuestionDict],
+) -> list[str]:
+    """fan-out 层边界消费 pending 的 ask_followup，返回新追加的子问题 id。
+
+    exclude_evidence 在入队时已同步落 DB 标记，不进 pending 队列；state 侧
+    剔除由调用方按 excluded_evidence_ids 统一处理。
+    """
+    if db_session is None:
+        return []
+    from app.services.interventions import mark_applied, pending_interventions
+
+    pending_items = await pending_interventions(db_session, run_id)
+    followup_ids: list[str] = []
+    for item in pending_items:
+        if item.type != "ask_followup":
+            continue
+        new_sq: SubQuestionDict = {
+            "id": new_ulid(),
+            "question": str(item.payload.get("question") or ""),
+            "depends_on": [str(item.payload.get("sub_question_id") or "")],
+            "status": "pending",
+            "evidence_ids": [],
+        }
+        await persist_sub_questions(db_session, run_id=run_id, items=[new_sq])
+        by_id[new_sq["id"]] = new_sq
+        await _publish_sub_question_event(
+            hub,
+            run_id=run_id,
+            event_type="sub_question.created",
+            sq=new_sq,
+        )
+        await mark_applied(db_session, item.id)
+        followup_ids.append(new_sq["id"])
+    return followup_ids
 
 
 __all__ = [

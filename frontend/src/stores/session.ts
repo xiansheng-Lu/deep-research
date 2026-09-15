@@ -7,6 +7,7 @@ import {
   refreshTokenPair
 } from '@/services/api/auth'
 import { setAuthProvider } from '@/services/http/http'
+import { isAuthError, type ApiError } from '@/services/http/error'
 import type { CurrentUser, TokenPair } from '@/services/api/types'
 import { useProjectStore } from '@/stores/project'
 
@@ -24,6 +25,9 @@ export const useSessionStore = defineStore('session', () => {
   const accessToken = ref<string | null>(null)
   const refreshToken = ref<string | null>(loadRefresh())
   const user = ref<CurrentUser | null>(null)
+  // 最近一次静默恢复遇到的连接类故障（网络错误/5xx）：
+  // 非空表示“凭据状态未知但用户不应被登出”，守卫放行、页面展示无法连接错误态
+  const restoreError = ref<ApiError | null>(null)
 
   const isAuthenticated = computed(() => Boolean(accessToken.value))
 
@@ -37,6 +41,7 @@ export const useSessionStore = defineStore('session', () => {
     accessToken.value = null
     refreshToken.value = null
     user.value = null
+    restoreError.value = null
     localStorage.removeItem(REFRESH_KEY)
   }
 
@@ -44,6 +49,7 @@ export const useSessionStore = defineStore('session', () => {
   async function login(email: string, password: string): Promise<void> {
     const pair = await apiLogin({ email, password })
     applyTokens(pair)
+    restoreError.value = null
     user.value = await getCurrentUser()
   }
 
@@ -63,16 +69,26 @@ export const useSessionStore = defineStore('session', () => {
     user.value = await getCurrentUser()
   }
 
-  // http 层 401 刷新流程调用：用 refresh token 换新令牌对
+  // http 层 401 刷新流程调用：用 refresh token 换新令牌对。
+  // 401/403（refresh token 失效）返回 null，由 http 层触发 onAuthExpired 跳登录；
+  // 网络错误/5xx 向上抛出，调用请求随失败进入错误态，绝不静默登出
   async function refreshWithStoredToken(): Promise<string | null> {
     const current = refreshToken.value
     if (!current) return null
-    const pair = await refreshTokenPair(current)
-    applyTokens(pair)
-    return pair.access_token
+    try {
+      const pair = await refreshTokenPair(current)
+      applyTokens(pair)
+      restoreError.value = null
+      return pair.access_token
+    } catch (err) {
+      if (isAuthError(err)) return null
+      throw err
+    }
   }
 
-  // 静默恢复：有 refresh token 则换新对并拉用户；失败清会话
+  // 静默恢复：有 refresh token 则换新对并拉用户。
+  // 仅 401/403（凭据明确失效）清会话；网络错误/5xx 保留 refresh token 并记录
+  // restoreError，由守卫放行到目标页错误态，后端恢复后经页面重试自动拉回会话
   async function doRestore(): Promise<boolean> {
     if (accessToken.value) return true
     if (!refreshToken.value) return false
@@ -80,9 +96,16 @@ export const useSessionStore = defineStore('session', () => {
       const pair = await refreshTokenPair(refreshToken.value)
       applyTokens(pair)
       user.value = await getCurrentUser()
+      restoreError.value = null
       return true
-    } catch {
-      clear()
+    } catch (err) {
+      if (isAuthError(err)) {
+        clear()
+        return false
+      }
+      // 连接类故障（网络/5xx）保留会话；其余非鉴权异常同样不主动登出，
+      // 交由具体页面错误态呈现，避免一次偶发故障把用户踢回登录页
+      restoreError.value = err as ApiError
       return false
     }
   }
@@ -119,6 +142,7 @@ export const useSessionStore = defineStore('session', () => {
     accessToken,
     refreshToken,
     user,
+    restoreError,
     isAuthenticated,
     login,
     logout,

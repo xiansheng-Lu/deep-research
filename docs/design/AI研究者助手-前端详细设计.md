@@ -363,7 +363,7 @@ frontend/
 |---|---|---|
 | `UiButton` | `variant=primary/secondary/danger/ghost`、`size=sm/md/lg`、`loading`、`disabled`、`icon` | M0 |
 | `UiInput` / `UiTextarea` | `modelValue`、`error`、`label`、`hint`、`autofocus` | M0 |
-| `UiSelect` | 浮层列表、`searchable`、键盘导航 | M0 |
+| （无独立 UiSelect） | 下拉选择由 `UiDropdown` 承担（浮层列表 + 键盘导航；带搜索的模板选择器在其上封装），M0 起即不单列 UiSelect 组件 | M0 |
 | `UiTabs` | 下划线样式，受控/非受控 | M0 |
 | `UiDialog` | 模态，`size`，遮罩点击/ESC 关闭，焦点困于面板 | M0 |
 | `UiDrawer` | 右侧抽屉（`RightDrawer` 抽象复用），`--shadow-drawer` | M0 |
@@ -375,7 +375,7 @@ frontend/
 | `UiBadge` / `UiTag` | 状态/信源/里程碑标签 | M0 |
 | `UiCard` | 边框卡片（不用阴影区分层级） | M0 |
 | `UiSkeleton` / `UiEmpty` / `UiErrorState` | 加载≤3s 骨架屏、空状态、错误+重试 | M0 |
-| `AvatarStack` | 协作者头像堆叠 | M1 |
+| `AvatarStack` | 协作者头像堆叠（M1 规划，实际未实现，顺延至 M3/M4 协作能力窗口，不占 M2 范围） | M3 |
 | `Kbd` | 快捷键提示（命令面板） | M3 |
 
 ### 6.2 通用组件约定（对全部基础组件生效）
@@ -485,7 +485,7 @@ export function useRunStream(runId: string) {
 1. **流式预览**：由 `useReportDraft(runId)` 消费 SSE `report.chunk` 的 `delta/position`，维护只读文本缓冲，渲染层每 N 帧 flush 到视图（防抖 100ms，避免逐 token 重渲染）。
 2. **结构化终稿**：由 `useReportBlocks(reportId)` 拉取 `GET /reports/{report_id}` 的 JSON 结构，构建 blocks/claims/citations 索引（claim 级查找表），是角标回溯/筛选/批注锚点的唯一数据源。
 
-两条通道通过 report `status`（`draft/final`）切换；`draft→final` 时用 `report.finished` 事件触发从 draft 模式无损切换到 blocks 模式（保留滚动位置到最近可映射区块）。
+两条通道通过 report `status`（`draft/final`）与终稿响应形态切换。M2-7 冻结口径：真链 WS 不发 `report.finished` 帧，切换由 `run.finished(status=succeeded)` 驱动——ReportView 先 `GET /runs/{id}` 判定状态，succeeded 后并行拉取报告超集/citations/conflicts，按 blocks 是否非空分流（422 报告未生成时 3s 轮询）；mock demo_full 剧本保留 `report.finished` 帧仅作模拟演示。
 
 ### 7.5 缓存与失效
 
@@ -588,7 +588,7 @@ envelope 校验通过后按 `type` 分发；`stage` 用于快速过滤（未订�
 | `token.usage.update` | 1s | 更新 `cost {used, budget, model_breakdown}` | 指挥舱成本卡 |
 | `cost.warning` | 即时 | 右下角警告卡（70% 提示 / 90% danger） | 指挥舱 |
 | `report.chunk` | 即时 | 转发给报告预览通道（若本页订阅） | 报告流式预览 |
-| `report.finished` | 即时 | 触发 draft→final 切换 + 全局通知 | 报告页 |
+| `report.finished` | 即时 | mock 剧本帧：真链 M2-7 不发送，blocks 轨切换以 `run.finished(status=succeeded)` 为准 | 报告页（仅 mock） |
 | `run.finished` | 即时 | 全局 toast/通知、首页"进行中"更新 | 全局 |
 
 ### 9.3 连接生命周期与断线补齐
@@ -825,7 +825,7 @@ export type ReportAnchor =
 **数据流（双轨，§7.4）**：
 
 - 生成中：`useReportDraft` 订阅 SSE；无终稿时不展示角标与筛选（简化实现），仅"实时输出 + 光标"；顶部提供"报告生成中"状态条。
-- `report.finished` → 切换 `useReportBlocks`：拉取 `GET /reports/{id}` 与 `GET /reports/{id}/citations`，渲染 blocks 视图并高亮迁移点；保留阅读进度（尝试滚动到最近章节）。
+- 真链 M2-7 不发 `report.finished`：`run.finished(status=succeeded)` 后进入本页，先 `GET /runs/{id}` 判定状态，再并行拉取 `GET /reports/{run_id}`（markdown+outline/blocks 超集）、`GET /reports/{run_id}/citations` 与 run 冲突列表，按 blocks 是否非空分流（422 报告未生成时 3s 轮询）；mock demo_full 的 `report.finished` 帧仅作模拟演示。
 - `status=superseded`（M4 `report.replace`）→ 顶栏提示"内容已更新（标存疑后重生成）"，锚点重映射（§10.4）。
 
 **区块渲染**（blocks 引擎）：
@@ -1085,11 +1085,11 @@ export type ReportAnchor =
 | M0 | 脚手架/CI/规范、tokens.css 迁移、@layer 主题机制、基础组件库（§6 表） | §3、§5、§6 | SDP M0-1；可起 dev、lint/type/build 通过 |
 | M0-M1 | mock 网关 + 研究模拟器 + fixtures | §8.5 | 前后端并行前提；M1 demo 复用 |
 | M1 | 登录页、AppShell/路由壳、项目任务列表（骨架）、发起向导最简、指挥舱最简、报告最简（markdown 流） | §4、§11.2-11.4、§12.2 | SDP M1-5；PRD A1（最小闭环） |
-| M2 | 首页单入口 + 意图路由 + 独立助手面板、指挥舱实时看板（StageTimeline/证据流/冲突提示）、报告结构化 v1（blocks+角标+局限）、澄清/追问/剔除介入、成本最简 | §11.1-11.4、§13 | PRD A2/A3/A8/A11/A14 |
-| M3 | MVP 全量：向导完整（含预读确认）、报告四区块 + 分歧筛选 + VerdictPanel（报告内）、成本分档可视化 + 降级/扩容提示、模板库、命令面板骨架、深色模式全量 QA | §10、§11、§12.4-12.5 | PRD A4/A5/A6/A7；SDP M3 内测 |
-| M4 | 体验打磨：实时成本强化（≤3s）、报告批注/@/标存疑（契约草案联调）、证据时间线/可信分级 SVG、导出/分享入口、分歧工作台（v1.1）、项目内成员/设置页、介入动作补全（打回/标存疑） | §11.4-11.5、§12.3、§13、§18.1 | PRD A9/A10；SDP M4-1/3/4/5/6 |
-| M5 | 知识库页（检索/沉淀/联动）、数据血缘呈现（内部 vs 外部 + 私域水印）、数据源级权限可见性、连接器配置 UI（规格级） | §11.6、§12 | PRD A12；SDP M5-1/2/3 |
-| M6 | 账户/团队/订阅、审计查看页、运营指标页、埋点看板就绪、SLA 状态提示 | §12.7、§16 | SDP M6-2/3；PRD A13 + PRR |
+| M2 | 首页单入口 + 意图路由 + 独立助手面板、指挥舱实时看板（StageTimeline/证据流/冲突提示）、报告结构化 v1（blocks+角标+局限）、澄清/追问/剔除介入、成本最简 | §11.1-11.4、§13 | PRD A2/A3/A5/A8/A11/A13/A14 由前端交互与埋点承担；A12 召回率由后端离线评估举证（M2 首次通过集以 SDP §5.2 为准：A2、A3、A5、A8、A11、A12、A13、A14） |
+| M3 | MVP 全量：向导完整（含预读确认）、报告四区块 + 分歧筛选 + VerdictPanel（报告内）、成本分档可视化 + 降级/扩容提示、模板库、命令面板骨架、深色模式全量 QA | §10、§11、§12.4-12.5 | PRD A4/A6/A7/A9/A10；SDP M3 内测 |
+| M4 | 体验打磨：实时成本强化（≤3s）、报告批注/@/标存疑（契约草案联调）、证据时间线/可信分级 SVG、导出/分享入口、分歧工作台（v1.1）、项目内成员/设置页、介入动作补全（打回/标存疑） | §11.4-11.5、§12.3、§13、§18.1 | 无新增 PRD A 项（A1-A14 为 MVP 清单，不含导出/体验增强）；以 SDP §3 M4 自有验收准则考核 |
+| M5 | 知识库页（检索/沉淀/联动）、数据血缘呈现（内部 vs 外部 + 私域水印）、数据源级权限可见性、连接器配置 UI（规格级） | §11.6、§12 | 无新增 PRD A 项（私域属 PRD V2 范围）；以 SDP §3 M5 自有验收准则考核 |
+| M6 | 账户/团队/订阅、审计查看页、运营指标页、埋点看板就绪、SLA 状态提示 | §12.7、§16 | SDP M6-2/3；PRD A1-A14 全量回归 + PRR |
 
 **落地顺序依赖提示**：M2 的意图路由/助手面板依赖 `POST /intent/classify`（后端 M2-1）；M3 报告分歧筛选依赖结构化终稿字段（后端 M2-7/M3）；M4 批注/导出依赖 §18.1 契约草案评审通过（后端无现成 API）。
 
@@ -1173,7 +1173,7 @@ export type ReportAnchor =
 | 3 | SSE `report/stream` data | 草案 §4.3：data 为完整 envelope JSON | §8 报告流解析按统一 envelope 处理 |
 | 4 | `/auth/refresh`、`/runs/{id}/pause`、`cancel` | 草案 §5.1/§6.1 | §13 会话模块按 refresh+logout 接入；§11 暂停/取消 UI 按 reason/note 接入 |
 | 5 | verdict `additional_note` | 草案 §6.3：choice/reason 必填，additional_note 仅展示 | §5 裁决表单字段与语义锁定 |
-| 6 | WS 鉴权通道 | 草案 §5.3：Sec-WebSocket-Protocol `bearer.jwt.v1` 子协议 | §14.2 WS 客户端按子协议注入 token，URL 不带 token |
+| 6 | WS 鉴权通道 | 草案 §5.3：Sec-WebSocket-Protocol `bearer, <jwt>`（协议名固定 `bearer`，服务端回显 `bearer`） | §14.2 WS 客户端按子协议注入 token，URL 不带 token |
 | 7 | 批注/@/导出/knowledge-search/audit schema | 草案 §7/§9/§11/§13/§18.1 | §6 批注/导出/§10 知识库/§15 审计页按 schema 接入 |
 | 8 | 通知服务端点 | 草案 §12 | §12 通知中心按 kind/link 接入 |
 | 9 | stage 失败重试/回溯通道 | 草案 §6.4：intervene.action 增补 `retry_stage`（待产品确认） | §11.3 失败入口不预造按钮；后端提供 `retry_stage` 时再开放 UI |
@@ -1210,6 +1210,7 @@ export type ReportAnchor =
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| v0.93 | 2026-09-13 | 跟随 SDP v1.1 勘误同步修正 §17 里程碑落地地图：M2 首次通过集改为 A2/A3/A5/A8/A11/A12/A13/A14（补 A5/A12，A12 为后端评估口径），M3 改为 A4/A6/A7/A9/A10，M4/M5 不再挂 A 项，M6 改为 A1-A14 全量回归 + PRR；A 编号定义以 PRD §11 为唯一事实源，映射以 SDP §5.2 为准 |
 | v0.92 | 2026-09-09 | 与[后端契约草案](./AI研究者助手-后端契约草案.md) v0.1 对齐：§18.1 标注已并入、§18.2 九项差异标记为"已对齐"并指向草案定版位置、§18.3 七项产品待确认项按草案 §6.5/§6.6/§16/§17.1 落地；前端 snake_case 契约映射 camelCase TS 不再保留差异兜底 |
 | v0.91 | 2026-09-09 | 评审修订：修复 P1/P2（组件示例、openapi 依赖、Assistant 形态冲突、stage 重试假设、路由参数与默认落地、成本预读数据源、RightDrawer 互斥、契约草案字段 snake_case），补 §18.2 #9 与 §18.3 #7 |
 | v0.9 | 2026-09-09 | 起草稿：全范围单文档初稿，待里程碑评审与后端契约核对后升 v1.0 |

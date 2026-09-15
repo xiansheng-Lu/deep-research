@@ -10,13 +10,18 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from app.core.context import current_run_id, current_stage
 from app.core.exceptions import ProviderUnavailableError
+from app.core.logging import get_logger
+from app.observability.metrics import record_llm_usage
 from app.provider.base import ChatMessage, ChatRequest, ChatResponse, LLMProvider
 from app.provider.circuit_breaker import CircuitBreaker
 from app.provider.registry import default_registry
 from app.provider.usage import UsageTracker
 
 T = TypeVar("T", bound=BaseModel)
+
+log = get_logger("provider.client")
 
 
 @dataclass(slots=True)
@@ -90,11 +95,27 @@ class LLMClient:
     async def chat(self, request: ChatRequest) -> ChatResponse:
         """同步调用：先主后备；熔断开启时直接走备用。"""
         provider = self._select_provider()
+        used_provider = provider
         try:
             response = await provider.chat(request)
         except ProviderUnavailableError:
-            response = await self._fallback(request)
-        self._usage.record(provider.name, response.usage)
+            response, used_provider = await self._fallback_with_provider(request)
+        self._usage.record(used_provider.name, response.usage)
+        total = int(response.usage.get("total_tokens", 0))
+        if total <= 0:
+            # 调用成功但网关未回 usage：本次消耗不会计入 token_used/成本闸门/A8，
+            # 属成本失聚信号（区别于节点显式降级路径），打 warning 供排查定位。
+            log.warning(
+                "LLM 调用成功但 usage.total_tokens 为 0，本次消耗未计入成本",
+                extra={
+                    "provider": used_provider.name,
+                    "model": response.model,
+                    "run_id": current_run_id.get(),
+                    "stage": current_stage.get(),
+                    "latency_ms": (response.raw or {}).get("latency_ms"),
+                    "finish_reason": (response.raw or {}).get("finish_reason"),
+                },
+            )
         return response
 
     async def stream(self, request: ChatRequest) -> AsyncIterator[str]:
@@ -145,10 +166,14 @@ class LLMClient:
             payload = json.loads(content) if content else {}
             parsed = schema.model_validate(payload)
         except Exception as exc:  # noqa: BLE001 - 解析/校验统一收敛
-            raise ProviderUnavailableError(
-                f"结构化输出解析失败：{exc!r}（raw={content[:200]!r}）"
-            ) from exc
+            raise ProviderUnavailableError(f"结构化输出解析失败：{exc!r}（raw={content[:200]!r}）") from exc
 
+        # Prometheus：结构化调用实际 token 用量（model/stage/run_id 标签由
+        # 打点函数从 ContextVar 读取，非图上下文缺失标 unknown）
+        record_llm_usage(
+            model=chat_response.model,
+            total_tokens=int(chat_response.usage.get("total_tokens", 0)),
+        )
         return StructuredCompletion(
             parsed=parsed,
             usage=chat_response.usage,
@@ -168,14 +193,16 @@ class LLMClient:
             return self._backup
         return self._primary
 
-    async def _fallback(self, request: ChatRequest) -> ChatResponse:
-        """主 Provider 失败时的备用调用。"""
+    async def _fallback_with_provider(self, request: ChatRequest) -> tuple[ChatResponse, LLMProvider]:
+        """主 Provider 失败时的备用调用；返回响应与实际提供者。
+
+        usage 记录统一由调用方 ``chat`` 做一次，避免备用路径重复累加。
+        """
         if self._backup is None:
             raise
         self._breaker.trip(self._primary.name if self._primary else "primary")
         response = await self._backup.chat(request)
-        self._usage.record(self._backup.name, response.usage)
-        return response
+        return response, self._backup
 
     @classmethod
     def from_registry(cls, *, name: str = "default") -> "LLMClient":

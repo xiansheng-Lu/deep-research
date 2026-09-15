@@ -5,7 +5,7 @@
 - 语言/运行时：Python 3.11 - 3.12（要求 >=3.11,<3.13）
 - 包管理：[uv](https://docs.astral.sh/uv/)（锁定文件见 `uv.lock`）
 - Web 框架：FastAPI + Uvicorn（异步）
-- 当前里程碑：**M1 已完成**（最小链路端到端 demo；五条验收准则经双方共同回归全部闭合，2026-09-12 关闭，详见「里程碑与当前状态」）
+- 当前里程碑：**M2 全工作包后端已完成：M2-8b Celery 接管长任务已冻结（待前端三进程真链回归）**（M1 2026-09-12 关闭；M2-1~M2-7 全闭环，M2-8a telemetry 批量端点/A8 指标出数、M2-8b worker/Redis 跨进程/租约控制/孤儿清扫均已完成，alembic head=0007，研究执行须同时常驻 uvicorn 与 worker，详见「里程碑与当前状态」）
 
 ---
 
@@ -50,7 +50,7 @@
 
 1. **Python 3.11 或 3.12**（建议由 uv 自动管理，无需系统预装）
 2. **uv**（依赖与虚拟环境管理）
-3. **Docker Desktop**（用于本地一键启动 PostgreSQL、Redis、MinIO）
+3. **Docker 运行时**（本机实际为 WSL2 Ubuntu 内 Docker Engine，不装 Docker Desktop；详见环境手册 §3/§4）
 4. Windows / macOS / Linux 均可，本仓库开发环境以 Windows 为主
 
 安装 uv（Windows PowerShell）：
@@ -67,28 +67,17 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 ### 1. 启动基础设施
 
-本地依赖栈（PostgreSQL 16 + pgvector、Redis 7、MinIO）通过 Docker Compose 一键启动：
+本地依赖栈（PostgreSQL + pgvector / Redis / MinIO）通过 Docker Compose 启动；本项目实际环境为 **WSL2 Ubuntu 内 Docker（不装 Docker Desktop）**，完整拓扑、端口、凭据、WSL 资源配额、镜像加速与保活机制以《本地开发环境手册》（`docs/ops/本地开发环境手册.md`，以下简称「环境手册」）为唯一事实源，此处不复制。
 
 ```powershell
+# 在 WSL（Ubuntu）内执行；完整栈（环境手册 §5）
 docker compose -f docker-compose.dev.yml up -d
+# 低内存精简栈：PostgreSQL + Redis + worker 容器（M2-8b 起研究执行经 Celery，
+# Redis 为硬依赖；API/uvicorn 仍在主机前台运行），见环境手册 §1/§5/§7
+docker compose -f docker-compose.min.yml up -d --build
 ```
 
-启动后的服务与端口：
-
-| 服务 | 地址 | 凭据 |
-| --- | --- | --- |
-| PostgreSQL（含 pgvector） | `localhost:5432` | 库/用户/密码均为 `deep_research` |
-| Redis | `localhost:6379` | 无 |
-| MinIO API | `http://localhost:9000` | `minioadmin / minioadmin` |
-| MinIO Console | `http://localhost:9001` | `minioadmin / minioadmin` |
-
-低内存机器（如 16GB 且常驻 IDE/浏览器）可改用精简栈，只起 M1 联调唯一硬依赖 PostgreSQL（容器限额 384MB），并参考 `.wslconfig.example` 将 WSL2 虚拟机限制在 2GB：
-
-```powershell
-docker compose -f docker-compose.min.yml up -d
-```
-
-说明：MinIO 桶不会自动创建，请在 Console 中手动创建名为 `deep-research` 的桶（或使用 `mc mb` 命令）。
+注意：MinIO 桶 `deep-research` 不自动创建（建桶命令见环境手册 §7）；联调期间建议用 `wsl -d Ubuntu -e sleep infinity` 后台保活，避免 WSL 空闲回收导致接口间歇故障（环境手册 §8 方法 3）。
 
 ### 2. 配置环境变量
 
@@ -146,15 +135,18 @@ uv run deep-research-api
 - Swagger 文档：<http://localhost:8000/docs>
 - ReDoc 文档：<http://localhost:8000/redoc>
 
-### 8.（可选）启动 Celery Worker
+### 8. 启动 Celery Worker（M2-8b 起为研究执行的必选进程）
 
-M1 阶段研究流程在 API 进程内通过 `asyncio.create_task` 调度执行；Celery Worker 用于异步任务（报告导出、知识库摄入等），M2 起逐步接管：
+M2-8b 起研究首跑/恢复由独立 worker 经 Redis 队列驱动（API 进程不再内嵌执行），实时事件经 Redis Pub/Sub 扇回 API 的 WS 端点。**联调研究链路必须同时常驻 uvicorn 与 worker**（另开一个终端，WSL 保活见环境手册 §8）：
 
 ```powershell
 uv run deep-research-worker
+# 等价于：celery -A app.workers.celery_app:celery_app worker -l info -Q research,report,ingestion
 ```
 
-该命令等价于 `celery worker -l info -Q research,report,ingestion`。
+- worker 启动时强校验 Redis（`WORKER_ENABLE_REDIS=true` 且 ping 可达），失败快速退出，不静默回退；就绪标志为日志 `celery@<host> ready` 且注册 `research.execute_run`/`research.resume_run`。
+- worker 不在线时新 run 停在 `pending`（消息在 research 队列等待消费）；worker 重启后首个任务前会先收敛历史孤儿 run（paused/failed/重投，见 `app/workers/reaper.py`）。
+- 仅离线单测/纯 API 调试可设 `WORKER_ENABLE_REDIS=false` 退回进程内 `asyncio.create_task` 内存态；生产不得使用。
 
 ### 9.（可选）安装 Playwright 浏览器
 
@@ -196,12 +188,17 @@ backend/
 │   ├── knowledge/               # 知识库切片、Embedding、向量存储
 │   ├── connectors/              # 外部系统连接器（HTTP / OAuth）
 │   ├── workers/                 # Celery 应用与任务（research/report/ingestion）
-│   ├── realtime/                # WebSocket / SSE 与进程内事件 Hub
+│   │   ├── celery_app.py        # Celery 工厂（acks_late/队列路由/prefetch=1）
+│   │   ├── bootstrap.py         # worker 任务级依赖装配（强校验 Redis）
+│   │   └── reaper.py            # worker 首任务前孤儿 run 清扫（M2-8b）
+│   ├── orchestrator/
+│   │   ├── lease.py             # Redis 在途租约/控制键（M2-8b）
+│   ├── realtime/                # WebSocket / SSE 与双态事件 Hub（内存 / Redis Pub-Sub）
 │   ├── quota/                   # 成本档位与预算治理
 │   ├── audit/                   # 审计日志
 │   ├── notifications/           # 通知分发
 │   ├── templates/               # 项目 / 报告模板
-│   └── export_openapi.py        # M1 OpenAPI 契约导出脚本
+│   └── export_openapi.py        # OpenAPI 冻结契约导出（M1 / M2-2 / M2-4 / M2-5 快照）
 ├── tests/                       # pytest 测试（无外部服务依赖）
 ├── pyproject.toml               # 依赖与工具配置（唯一清单）
 ├── uv.lock                      # uv 锁定文件
@@ -225,15 +222,17 @@ backend/
 4. **基础设施层**：数据库（`db`）、异步任务（`workers`）、实时通道（`realtime`）、配额（`quota`）、审计（`audit`）、通知（`notifications`）。
 5. **核心层**（`app/core`）：配置、日志、安全、异常、请求上下文，横切所有模块。
 
-研究运行的执行链路：
+研究运行的执行链路（M2-8b 起 API/worker 分进程）：
 
 ```text
-POST /api/v1/runs
+POST /api/v1/runs（API 进程）
   → 落库 ResearchRun(pending)
-  → asyncio.create_task(executor.run_research_async)
-  → 编译并执行 LangGraph（节点闭包注入 NodeDeps）
-  → 阶段事件经 RealtimeHub 推送到 WS 频道 runs:{run_id}
-  → 成功：写回 succeeded 并新建 Report(draft)；失败：写回 failed
+  → execute_run.delay 投递 Redis 队列 research（WORKER_ENABLE_REDIS=false 时退回进程内 create_task）
+  → Celery worker 取任务：抢 Redis 在途租约（NX，task_id 为 owner）+ 独立心跳续期
+  → asyncio.run 驱动既有 executor 编译并执行 LangGraph（节点闭包注入 NodeDeps）
+  → 阶段事件经 RealtimeHub 发布：worker PUBLISH 到 Redis → API 桥接协程投递 WS 频道 runs:{run_id}
+  → pause/cancel：API 写 DB + control:run:{id} 控制键，worker 在超步边界协作收尾
+  → 成功：写回 succeeded 并新建 Report(final)；失败：写回 failed；worker 崩溃：重启首任务前清扫孤儿
 ```
 
 ### 研究编排状态图
@@ -263,7 +262,7 @@ flowchart TD
 
 - `await_human` 是统一挂起点，`interrupt_reason` 区分回流路径（`clarify` / `critique`）。
 - `cost_checkpoint` 超支时挂起到 `user_intervention`，由用户决定继续或收敛。
-- M1 阶段 checkpointer 使用 `InMemorySaver`（端到端冒烟）；M2 将切换为 `AsyncPostgresSaver` 以支持跨进程持久化恢复。
+- checkpointer：默认应用级 `AsyncPostgresSaver`（`CHECKPOINTER_BACKEND=postgres`，thread_id=run_id，启动自建 checkpoint 表，支持澄清/裁决跨请求、跨进程恢复）；Postgres 不可用或显式配置 `CHECKPOINTER_BACKEND=memory` 时回退进程级 `InMemorySaver`，仅同实例内可恢复。
 
 ### 智能体
 
@@ -303,8 +302,9 @@ Web 检索（WEB_SEARCH_PROVIDER 选择博查 / Tavily）→ 指纹去重 → �
 
 ### 实时通信
 
-- 进程内 `RealtimeHub`（`app/realtime/hub.py`）维护频道订阅，执行器与 WebSocket 端点通过它解耦。
+- `RealtimeHub`（`app/realtime/hub.py`）M2-8b 起为双态：无 Redis 时进程内队列直连（旧行为，离线/单进程）；有 Redis 时后台桥接协程 `PSUBSCRIBE runs:*`，发布方本地直投 + Redis PUBLISH 扇出，按 origin node_id 去回环，跨 API 副本/worker 不丢不重。
 - 频道 `runs:{run_id}` 推送逐阶段 `stage.started` 事件与终态事件（`run.finished` / `run.failed`），事件采用统一 envelope；执行器同时把 `current_stage` 实时落库，保证 WS、DB 轮询与重连初帧三处状态一致。
+- 在途互斥与停止信号：`lease:run:{id}`（SET NX + 心跳 TTL，Redis 键权威）与 `control:run:{id}`（pause/cancel 只升不降）；PG `research_runs.execution_owner/lease_until` 仅为心跳观测镜像与孤儿清扫扫描输入。worker 崩溃后租约过期，重启首任务前由 `app/workers/reaper.py` 收敛（挂起→paused、有报告→按报告收敛、无报告→failed/RUN_WORKER_LOST、未启动 pending→重投一次）。
 - 另有 SSE 通道实现（`app/realtime/sse.py`）备用。
 
 ### 成本治理
@@ -337,6 +337,15 @@ Web 检索（WEB_SEARCH_PROVIDER 选择博查 / Tavily）→ 指纹去重 → �
 
 access token 默认有效期 30 分钟，refresh token 默认 7 天（见 `JWT_*` 配置）。
 
+### 意图路由与闲聊（M2-1 已实现）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/v1/intent/classify` | 判别意图（chat / research / uncertain）+ 推荐模板/档位与预算；支持 `force` 手动强制；LLM 不可用/超时时保守降级为 research（`degraded=true`） |
+| POST | `/api/v1/assistant/chat` | 闲聊直答，SSE 流式（`data: {"delta":...}` 增量帧 + `data: [DONE]` 结束帧）；不检索、不落项目数据；历史由客户端随请求携带（最近 10 轮），服务端不存会话 |
+
+意图判别温度固定 0；研究路径召回离线评估证据见 `tests/eval/`（评估集与结果，脚本 `scripts/eval_intent.py`，不进 CI）。
+
 ### 项目与研究执行（M1 已实现）
 
 | 方法 | 路径 | 说明 |
@@ -350,6 +359,16 @@ access token 默认有效期 30 分钟，refresh token 默认 7 天（见 `JWT_*
 
 研究运行状态机：`pending → running → succeeded / failed / paused`（`paused` 表示挂起在 HITL 节点等待用户输入）。
 
+### 批判收敛与人机裁决（M2-2 已实现）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/runs/{run_id}/conflicts` | 列出 run 下全部分歧（按创建时间升序）；非创建者 404 |
+| GET | `/api/v1/conflicts/{conflict_id}` | 分歧详情，内嵌 evidence_a/evidence_b 八项摘要（id/title/url/domain/snippet/credibility/source_type/published_at） |
+| POST | `/api/v1/conflicts/{conflict_id}/verdict` | 提交裁决（evidence_a/evidence_b/both/reject + reason 必填非空，additional_note 可空），冲突置 resolved；409 重复裁决、422 枚举/空 reason |
+
+high 冲突挂起 `paused@critique`；末条 awaiting_human 冲突裁决后经 AsyncPostgresSaver 自动恢复续跑至 succeeded，无需单独「继续」接口。实时帧：`conflict.detected`（每检出一条 high 冲突，载荷嵌套 payload）、`conflict.verdicts`（裁决恢复时）。报告「冲突与不确定性」段区分「待人工裁决」与「分歧与局限」（both/reject 保留项）。离线评估见 `tests/eval/conflict_cases.jsonl` + `scripts/eval_conflicts.py`（不进 CI），冒烟脚本 `scripts/smoke_m22.py`。
+
 ### WebSocket（M1 已实现）
 
 | 协议 | 路径 | 说明 |
@@ -360,22 +379,22 @@ access token 默认有效期 30 分钟，refresh token 默认 7 天（见 `JWT_*
 - 心跳：服务端每 30 秒发送 `ping`，客户端须在 60 秒内回 `pong`，否则断开。
 - 终态：推送完 `run.finished` / `run.failed` 后服务端关闭连接。
 
-### 占位接口（脚手架，不属于 M1 联调范围）
+### 占位接口（脚手架，不属于当前联调范围）
 
 以下资源当前仅提供 `GET` 占位响应，将在后续里程碑替换为业务实现：
 
-`/users`、`/teams`、`/conflicts`、`/knowledge`、`/connectors`、`/templates`、`/audit`
+`/users`、`/teams`、`/knowledge`、`/connectors`、`/templates`、`/audit`
 
 ### OpenAPI 契约
 
 - 在线文档：启动服务后访问 `/docs`（Swagger UI）。
-- M1 冻结契约导出：
+- 冻结契约导出：
 
 ```powershell
 uv run python -m app.export_openapi
 ```
 
-脚本会把 M1 联调接口子集导出到仓库根目录的 `docs/contract/openapi-m1.json`，前端可用 openapi-generator（typescript-fetch）生成客户端与类型。
+脚本导出当前里程碑快照到仓库根目录 `docs/contract/`：M2-8 快照 `openapi-m2-8.json` 为累积超集（27 端点 = M2-7 二十五端点 + `POST /telemetry/batch` 埋点批量接收 + `GET /telemetry/metrics` A8 指标聚合）。**M2-8b 执行位置迁移到 Celery worker 对前端协议透明，零 REST/WS 增删，沿用同一快照不产新文件**（仅 pause 孤儿场景新增 409 details.code `RUN_ORPHAN_RECOVERING`，见 M2-8b 交接单）。M1/M2-2/M2-4/M2-5/M2-7 历史快照默认冻结不覆盖，如需重写分别加 `--refresh-m1` / `--refresh-m22` / `--refresh-m24` / `--refresh-m25` / `--refresh-m27`。前端可用 openapi-generator（typescript-fetch）生成客户端与类型。
 
 ---
 
@@ -417,6 +436,7 @@ uv run alembic current
 | 安全 | `SECRET_KEY`、`ENCRYPTION_KEY`、`JWT_ALGORITHM`、`JWT_ACCESS_TTL_MINUTES`、`JWT_REFRESH_TTL_DAYS`、`COOKIE_SECURE` | 生产环境密钥必须由密钥管理服务注入，禁止入库 |
 | 数据库 | `DB_ASYNC_URL`、`DB_SYNC_URL`、`DB_POOL_SIZE`、`DB_MAX_OVERFLOW` | 异步/同步双连接串 |
 | Redis / Celery | `REDIS_URL`、`CELERY_BROKER_URL`、`CELERY_RESULT_BACKEND` | 建议 broker / backend 使用不同 db 编号 |
+| worker 长任务接管（M2-8b） | `WORKER_ENABLE_REDIS`、`WORKER_ID`、`RUN_LEASE_TTL_SECONDS`、`RUN_LEASE_HEARTBEAT_SECONDS`、`RUN_ORPHAN_GRACE_SECONDS`、`RUN_ORPHAN_SWEEP_ENABLED`、`CELERY_TASK_MAX_RETRIES` | 双态开关/worker 标识/租约 TTL 与心跳/孤儿宽限/启动清扫开关/瞬时故障重试上限，默认值见 `.env.example` |
 | 对象存储 | `OBJECT_STORAGE_ENDPOINT`、`OBJECT_STORAGE_ACCESS_KEY`、`OBJECT_STORAGE_SECRET_KEY`、`OBJECT_STORAGE_BUCKET`、`OBJECT_STORAGE_SECURE` | MinIO 或任意 S3 兼容服务 |
 | LLM | `LLM_PRIMARY_BASE_URL/API_KEY/MODEL`、`LLM_BACKUP_*`、`LLM_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES`、`LLM_CIRCUIT_*` | 主备两路 OpenAI 兼容配置；默认指向 DeepSeek（`deepseek-v4-flash`），留空密钥走降级路径 |
 | 检索 | `WEB_SEARCH_PROVIDER`、`BOCHA_API_KEY`、`BOCHA_BASE_URL`、`BOCHA_TIMEOUT_SECONDS`、`TAVILY_API_KEY` | `bocha`（默认）/ `tavily` 二选一，仅需配置所选供应商密钥 |
@@ -457,7 +477,8 @@ uv run mypy app                        # 静态类型检查（strict 模式）
 ### 测试约定
 
 - 框架：pytest + pytest-asyncio（`asyncio_mode = "auto"`）。
-- **测试不依赖真实 PostgreSQL / Redis / MinIO**：公共 fixture（`tests/conftest.py`）注入最小环境变量，数据层通过 `dependency_overrides` 与假 Session 替身隔离，可直接离线运行。
+- **离线测试不依赖真实 PostgreSQL / Redis / MinIO**：公共 fixture（`tests/conftest.py`）注入最小环境变量（M2-8b 起默认 `WORKER_ENABLE_REDIS=false` 走内存态），数据层通过 `dependency_overrides` 与假 Session 替身隔离；Redis 双态用 fakeredis（共享 FakeServer 模拟跨进程），可直接离线运行。
+- 真库集成（`test_integration_m24/m25/m28/m28b.py` 等）带 `@pytest.mark.integration`，需 PG 在 5432 可达，不可达自动 skip；使用独立 schema（m28b_orm/m28b_migration 等），跑后 DROP CASCADE。
 - 警告默认升级为错误（`filterwarnings = ["error"]`），新增依赖产生告警时需先处理。
 
 ### 典型开发任务指引
@@ -493,7 +514,7 @@ docker run --rm -p 8000:8000 --env-file .env deep-research-backend:dev
 | --- | --- | --- | --- |
 | M0 | 项目基础设施 + 底座 | 项目脚手架与配置体系、多租户基线（租户/用户/项目三层数据模型与鉴权中间件）、模型调用层抽象（主备配对、熔断、token 计量点）、LangGraph 编排引擎骨架、任务追踪与审计雏形 | 已完成 |
 | M1 | 最小链路端到端 demo | 六阶段最简链路（clarify → decompose → retrieve → standardize → critique → report）、Researcher×N 拓扑分层并行与单实例失败隔离、公域检索（博查/Tavily）接入与指纹去重、四段 Markdown 报告、节点级日志与逐阶段 WS 事件、成本闸门自动挂起；支撑工程：ORM 与迁移、鉴权、项目/运行/报告 API、编排执行器、WebSocket、OpenAPI M1 契约冻结 | 已完成（2026-09-12） |
-| M2 | 能力补齐与工程化 | 意图路由 classify 接口、批判收敛与分歧 API、透明看板数据接口、Orchestrator 补齐（依赖检测、回溯、降级、暂停接口）、实时成本计量与审计决策留档完整版、信源元数据抽取、数据点级溯源落库、Postgres checkpointer 与 HITL 恢复闭环、Celery 接管长任务 | 未开始 |
+| M2 | 能力补齐与工程化 | 意图路由 classify 接口、批判收敛与分歧 API、透明看板数据接口、Orchestrator 补齐（依赖检测、回溯、降级、暂停接口）、实时成本计量与审计决策留档完整版、信源元数据抽取、数据点级溯源落库、Postgres checkpointer 与 HITL 恢复闭环、Celery 接管长任务 | 进行中（M2-1 意图路由 + 闲聊 SSE、M2-2 LLM 语义冲突检测/过程数据落库/分歧三端点/PostgresSaver 跨请求恢复、M2-3 实时成本 WS 帧与阈值预警、M2-4 Stage 落库与看板六类只读 GET/Prometheus `/metrics`、M2-5 pause/resume/cancel/intervene 四控制点 + WS intervene/cancel 指令 + 0004 介入队列表 + 五动作审计留档 + interrupt.requested 澄清帧/openapi-m2-5 累积契约、M2-6 信源元数据真实抽取（域名规则五值分类/相关性打分/credibility 解耦/页面发布时间补采/metadata 留痕，零契约变化零迁移）、M2-7 数据点级溯源（reporter LLM blocks 计划 + 确定性绑定引擎：marker 仅被引占号/snippet 原文回退/缺源降级 inferred/数字断言一次自修复否则剔除/dispute 确定性注入；0005 report_citations block 粒度 + claim_id 可空；GET /reports/{run_id}/citations 信源索引，两报告端点增 outline/blocks 超集，终稿 status=final；P1 兜底概述块绕过数字审计已修）、M2-8a 埋点接收与指标出数（POST /telemetry/batch 批量接收：200 条/64KB、条级清洗丢条整批 204、滑动窗口限流、user_id 哈希稳定采样、props 扁平标量白名单；GET /telemetry/metrics A8 三指标：成功率 s/(s+f) 排除 cancelled、看板介入率业务表去重 + clarify 事件口径、溯源率机器均值+citation.open 交互双口径；0006 telemetry_events 追加表；openapi-m2-8 累积 27 路径）、M2-8b Celery 接管长任务（研究/恢复改投 research 队列由独立 worker 驱动；Redis Pub/Sub 双态 RealtimeHub；lease:run/control:run 租约与只升不降控制键；worker 首任务前孤儿 run 三类清扫 + pending 重投；0007 租约观测列；pause 孤儿 409 码 RUN_ORPHAN_RECOVERING；零 REST/WS 契约增量）均已完成，695 测试通过（含全部真库集成），alembic head=0007，M2-8b 待前端三进程真链回归；M2-6~M2-8 编号口径以 SDP §3 为准） |
 | M3 | 核心 MVP | 档位参数化、领域模板、运营账号与反馈通道等后端接口，整合 M1+M2 能力支撑首批内部试用 | 未开始 |
 | M4 | 体验打磨 | 实时成本推送、暂停/追问/剔除证据等用户介入接口、报告精修与点击回溯、Word/PDF 导出、项目级角色权限 | 未开始 |
 | M5 | 私域能力 | 文档上传连接器（PDF/Word/Markdown/Excel 入库检索）、私域/公域信源区分标注、数据源级权限 | 未开始 |
@@ -511,7 +532,7 @@ M3-M6 的完整交付物、依赖与验收准则以 SDP 原文为准，本表不
 4. **达到 token 预算上限时自动停止、不超支——达成**：正向测试构造超预算 90% 的真实图执行，断言在用户介入前挂起（`paused`）、不产出报告、真实用量回写；联调中另修复了 paused 态 token 用量不落库的缺陷。
 5. **报告渲染至少能在 Web 端查看基本结论——达成**：浏览器实测报告四段、编号发现与真实引用链接完整渲染，无 undefined / NaN / Console 报错；置信度枚举中文化，LLM 返回的结构化研究范围（include/exclude 字典）归一为中文短句。
 
-共同回归期间另修复两项影响验收的后端问题：澄清节点判定口径过严导致主题明确的开放研究问题一律挂起（已改为默认放行、判定温度固定 0）、报告研究范围泄漏 Python 字典原文。前端侧修复与故障注入结论见 `docs/feedback/M1前后端联调前端缺陷反馈.md`；已登记但不阻断 M1 的体验项（硬刷新时网络故障被误判为登出、REST 错误文案技术化、核心发现为来源标题堆砌）列入 M2 处理。
+共同回归期间另修复两项影响验收的后端问题：澄清节点判定口径过严导致主题明确的开放研究问题一律挂起（已改为默认放行、判定温度固定 0）、报告研究范围泄漏 Python 字典原文。前端侧修复与故障注入结论见 `docs/feedback/archive/M1前后端联调前端缺陷反馈.md`；已登记但不阻断 M1 的体验项（硬刷新时网络故障被误判为登出、REST 错误文案技术化、核心发现为来源标题堆砌）列入 M2 处理。
 
 **M1 已于 2026-09-12 关闭**，下一里程碑按 SDP 从 M2-1 意图路由启动。
 
@@ -520,7 +541,7 @@ M3-M6 的完整交付物、依赖与验收准则以 SDP 原文为准，本表不
 - LangGraph checkpointer 为 `InMemorySaver`，运行状态随进程丢失；M2 切换为 `AsyncPostgresSaver`。
 - 检索/子问题等过程数据仅存内存 state（生产路径未接 DB 会话），进程退出不保留；M2 看板与溯源需要先接通过程数据持久化。
 - WS 不回放订阅前事件（首帧可能错过 clarify）；M2-4 看板快照接口提供服务端初帧。
-- Celery 任务为占位实现，研究运行在 API 进程内异步执行；M2 起逐步接管。
+- ~~Celery 任务为占位实现，研究运行在 API 进程内异步执行~~：**M2-8b 已接管**——研究/恢复由独立 worker 经 Celery 队列驱动，Redis 承载跨进程事件/租约/控制信号与孤儿清扫；`WORKER_ENABLE_REDIS=false` 的进程内 create_task 仅保留为离线/单进程回退态。
 - refresh token 黑名单、WS 子协议鉴权、Playwright 浏览器内核需在后续阶段补齐。
 
 ---

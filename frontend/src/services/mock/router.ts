@@ -9,13 +9,19 @@ import {
   issueTokenPair,
   TIER_TOKEN_BUDGET,
   type MockRun,
-  type MockReport
+  type MockReport,
+  type MockStructuredReport
 } from './store'
-import { broadcastWsEvent, closeWsConnections } from './realtime'
-import { buildHappyPathScript, buildReportMarkdown } from './fixtures/happy_path'
-import { executeNode } from './script/runner'
-import { TERMINAL_EVENT_TYPES } from '../realtime/types'
-import type { RealtimeEnvelope } from '../realtime/types'
+import { buildHappyPathScript } from './fixtures/happy_path'
+import {
+  controlCancel,
+  controlIntervene,
+  controlPause,
+  controlResume,
+  startDemoClarify,
+  startScript,
+  type ControlResult
+} from './engine'
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, params: Record<string, string>) => void | Promise<void>
 
@@ -383,20 +389,12 @@ route('POST', '/api/v1/runs', async (req, res) => {
   }
   store.runs.set(runId, run)
 
-  // 后台执行剧本：事件同时更新内存态并广播到 WS
-  void executeNode(buildHappyPathScript(run), {
-    runId,
-    sendEvent: (event) => {
-      applyEventToRun(runId, event)
-      broadcastWsEvent(runId, event)
-      // 与后端一致：终态事件推送后关闭连接
-      if (TERMINAL_EVENT_TYPES.has(event.type)) {
-        closeWsConnections(runId)
-      }
-    }
-  }).catch((err: unknown) => {
-    console.error('[mock-gateway] 剧本执行失败:', err)
-  })
+  // 剧本选择：template_id=demo_full 走 M2 全分支演示（澄清挂起先停），其余走 M1 happy_path
+  if (run.template_id === 'demo_full') {
+    startDemoClarify(run)
+  } else {
+    startScript(run, buildHappyPathScript(run), 'happy_path', 'running')
+  }
 
   sendJson(res, 201, run)
 })
@@ -414,7 +412,11 @@ route('GET', '/api/v1/runs/{run_id}', (req, res, params) => {
 
 // ─── reports ───
 
-function loadOwnedReport(req: IncomingMessage, res: ServerResponse, runId: string): MockReport | null {
+// WP-16：demo_full 终稿另存结构化产物，报告路由返回 markdown+blocks 超集
+// （M2-7 契约冻结前的 mock 形态；无结构化产物的剧本仍只返回 markdown）
+type ReportResponseLike = MockReport & Partial<MockStructuredReport>
+
+function loadOwnedReport(req: IncomingMessage, res: ServerResponse, runId: string): ReportResponseLike | null {
   const user = authenticate(req, res)
   if (!user) return null
   const run = store.runs.get(runId)
@@ -428,7 +430,8 @@ function loadOwnedReport(req: IncomingMessage, res: ServerResponse, runId: strin
     sendAppError(res, 422, 'validation_error', '报告尚未生成')
     return null
   }
-  return report
+  const structured = store.structuredReportsByRunId.get(runId)
+  return structured ? { ...report, ...structured } : report
 }
 
 route('GET', '/api/v1/runs/{run_id}/report', (req, res, params) => {
@@ -443,47 +446,304 @@ route('GET', '/api/v1/reports/{run_id}', (req, res, params) => {
   sendJson(res, 200, report)
 })
 
-// ─── 事件归约：把 WS 事件更新到 run 内存态，终态时落报告 ───
+// ─── M2 看板数据（WP-10：REST 与 WS 同源，集合由 engine 按事件归约维护）───
 
-function applyEventToRun(runId: string, env: RealtimeEnvelope): void {
+// 鉴权 + run 归属校验，通过后返回 run（失败时已写错误响应）
+function loadOwnedRun(req: IncomingMessage, res: ServerResponse, runId: string): MockRun | null {
+  const user = authenticate(req, res)
+  if (!user) return null
   const run = store.runs.get(runId)
-  if (!run) return
-  const payload = (env.payload ?? {}) as Record<string, unknown>
-  const ts = nowIso()
+  if (!run || run.creator_id !== user.id) {
+    sendAppError(res, 404, 'not_found', '研究运行不存在')
+    return null
+  }
+  return run
+}
 
-  if (env.type === 'stage.started') {
-    run.status = 'running'
-    if (!run.started_at) run.started_at = ts
-    run.current_stage = typeof payload.stage === 'string' ? payload.stage : null
-    run.updated_at = ts
+// 统一回写控制动作结果（RunControlResponse 形态对齐契约 §6.1）
+function replyControlResult(res: ServerResponse, result: ControlResult): void {
+  if (result.ok) {
+    sendJson(res, 200, { run_id: result.runId, status: result.status })
+    return
+  }
+  sendAppError(res, result.httpStatus, result.code, result.message)
+}
+
+route('GET', '/api/v1/runs/{run_id}/stages', (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  sendJson(res, 200, store.stagesByRunId.get(params.run_id) ?? [])
+})
+
+route('GET', '/api/v1/runs/{run_id}/sub-questions', (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  sendJson(res, 200, store.subQuestionsByRunId.get(params.run_id) ?? [])
+})
+
+route('GET', '/api/v1/runs/{run_id}/evidence', (req, res, params) => {
+  const run = loadOwnedRun(req, res, params.run_id)
+  if (!run) return
+  const url = new URL(req.url ?? '/', 'http://localhost')
+  const pageSize = Math.min(Math.max(Number(url.searchParams.get('page_size') ?? '20') || 20, 1), 100)
+  const page = Math.max(Number(url.searchParams.get('page') ?? '1') || 1, 1)
+  const subQuestionId = url.searchParams.get('sub_question_id')
+  const includeExcluded = url.searchParams.get('include_excluded') === 'true'
+
+  let items = store.evidenceByRunId.get(run.id) ?? []
+  if (subQuestionId) items = items.filter((e) => e.sub_question_id === subQuestionId)
+  if (!includeExcluded) items = items.filter((e) => !e.excluded_by_user)
+
+  const total = items.length
+  const start = (page - 1) * pageSize
+  const pageItems = items.slice(start, start + pageSize)
+  sendJson(res, 200, {
+    items: pageItems,
+    total,
+    page,
+    page_size: pageSize,
+    has_more: start + pageSize < total
+  })
+})
+
+route('GET', '/api/v1/runs/{run_id}/conflicts', (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  sendJson(res, 200, store.conflictsByRunId.get(params.run_id) ?? [])
+})
+
+// 单条证据详情（含全文；M2-4 契约冻结前的 mock 先行路径，前端按 §9.4 懒加载）
+route('GET', '/api/v1/runs/{run_id}/evidence/{evidence_id}', (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  const list = store.evidenceByRunId.get(params.run_id) ?? []
+  const found = list.find((e) => e.id === params.evidence_id)
+  if (!found) {
+    sendAppError(res, 404, 'not_found', '证据不存在或不属于该研究运行')
+    return
+  }
+  // fixture 仅为重点条目手写了全文；其余条目在 mock 层确定性地生成演示全文，
+  // 保证卡片展开交互可演示（真实全文由后端 M2-6 信源元数据抽取产出）
+  const content =
+    found.content ??
+    `《${found.title}》（${found.domain}）正文摘要：${found.snippet} ` +
+      `mock 演示全文：该来源发布于 ${found.published_at ?? '日期不详'}，` +
+      `来源类型 ${found.source_type}、可信分级 ${found.credibility}，` +
+      `与子问题的相关度评分为 ${found.relevance_score}。完整原文将在后端 M2-6 信源元数据抽取落地后提供。`
+  sendJson(res, 200, { ...found, content })
+})
+
+route('GET', '/api/v1/conflicts/{conflict_id}', (req, res, params) => {
+  const user = authenticate(req, res)
+  if (!user) return
+  for (const list of store.conflictsByRunId.values()) {
+    const found = list.find((c) => c.id === params.conflict_id)
+    if (found) {
+      const ownerRun = store.runs.get(found.run_id)
+      if (ownerRun?.creator_id === user.id) {
+        sendJson(res, 200, found)
+        return
+      }
+    }
+  }
+  sendAppError(res, 404, 'not_found', '分歧不存在')
+})
+
+route('GET', '/api/v1/runs/{run_id}/cost/snapshot', (req, res, params) => {
+  const run = loadOwnedRun(req, res, params.run_id)
+  if (!run) return
+  const ratio = run.token_budget ? Math.min(1, run.token_used / run.token_budget) : 0
+  // M2-4 对齐冻结契约：level 与 WS cost.warning 同源（<0.7 null / ≥0.7 warning / >0.9 danger）
+  const level = ratio > 0.9 ? 'danger' : ratio >= 0.7 ? 'warning' : null
+  sendJson(res, 200, { used: run.token_used, budget: run.token_budget, ratio, level })
+})
+
+// ─── M2 运行控制与用户介入（契约草案 §6.1/§6.2）───
+
+route('POST', '/api/v1/runs/{run_id}/pause', async (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  replyControlResult(res, controlPause(params.run_id))
+})
+
+route('POST', '/api/v1/runs/{run_id}/resume', async (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  const body = await parseBody(req)
+  const humanInput = (body.human_input ?? {}) as Record<string, unknown>
+  // answers=澄清答案；kind=proceed/空对象=纯继续；action=介入动作（与 /intervene 等价）
+  if (humanInput.action && typeof humanInput.action === 'object') {
+    replyControlResult(
+      res,
+      controlIntervene(params.run_id, humanInput.action as { type?: unknown; payload?: unknown })
+    )
+    return
+  }
+  const answers =
+    humanInput.answers && typeof humanInput.answers === 'object'
+      ? (humanInput.answers as Record<string, unknown>)
+      : undefined
+  replyControlResult(res, controlResume(params.run_id, answers))
+})
+
+route('POST', '/api/v1/runs/{run_id}/cancel', async (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  replyControlResult(res, controlCancel(params.run_id))
+})
+
+route('POST', '/api/v1/runs/{run_id}/intervene', async (req, res, params) => {
+  if (!loadOwnedRun(req, res, params.run_id)) return
+  const body = await parseBody(req)
+  if (typeof body.type !== 'string') {
+    sendValidationError(res, [{ loc: ['body', 'type'], msg: 'Field required', type: 'missing' }])
+    return
+  }
+  replyControlResult(
+    res,
+    controlIntervene(params.run_id, { type: body.type, payload: body.payload })
+  )
+})
+
+// ─── M2-7 数据点级溯源（WP-10：demo_full 终稿后可拉取，happy_path 无引用返回空列表）───
+
+route('GET', '/api/v1/reports/{run_id}/citations', (req, res, params) => {
+  const run = loadOwnedRun(req, res, params.run_id)
+  if (!run) return
+  if (!store.reportsByRunId.has(run.id)) {
+    sendAppError(res, 422, 'validation_error', '报告尚未生成')
+    return
+  }
+  sendJson(res, 200, store.citationsByRunId.get(run.id) ?? [])
+})
+
+// ─── 意图路由（M2-1：POST /intent/classify，启发式三分类，供 mock 模式联调）───
+
+const TIER_BUDGET: Record<string, number> = {
+  quick: 50_000,
+  standard: 150_000,
+  deep: 400_000,
+  extreme: 1_000_000
+}
+
+// 闲聊启发式关键词（与后端离线评估分桶口径近似，mock 仅用于 UI 分流演示）
+const CHAT_HINTS = ['你好', '您好', '谢谢', '再见', '你是谁', '讲个笑话', 'hello', 'hi', '在吗']
+const RESEARCH_HINTS = ['对比', '分析', '趋势', '调研', '研究', '市场', '技术', '方案', '报告', '为什么', '如何']
+
+route('POST', '/api/v1/intent/classify', async (req, res) => {
+  const user = authenticate(req, res)
+  if (!user) return
+  const body = await parseBody(req)
+  const text = typeof body.text === 'string' ? body.text.trim() : ''
+  if (!text || text.length > 2000) {
+    sendValidationError(res, [
+      { loc: ['body', 'text'], msg: text ? 'String should have at most 2000 characters' : 'Field required', type: text ? 'string_too_long' : 'missing' }
+    ])
+    return
+  }
+  const force = body.force
+  if (force !== undefined && force !== null && force !== 'chat' && force !== 'research') {
+    sendValidationError(res, [{ loc: ['body', 'force'], msg: "Input should be 'chat' or 'research'", type: 'literal_error' }])
     return
   }
 
-  if (env.type === 'run.finished' || env.type === 'run.failed') {
-    const failed = env.type === 'run.failed'
-    run.status = failed
-      ? 'failed'
-      : (typeof payload.status === 'string' ? payload.status as MockRun['status'] : 'succeeded')
-    run.current_stage = typeof payload.current_stage === 'string' ? payload.current_stage : null
-    run.token_used = typeof payload.token_used === 'number' ? payload.token_used : run.token_used
-    run.finished_at = ts
-    run.updated_at = ts
-    if (failed) {
-      run.error_code = typeof payload.error_code === 'string' ? payload.error_code : 'INTERNAL_ERROR'
-      run.error_message = typeof payload.error_message === 'string' ? payload.error_message : null
-      return
-    }
-    if (run.status === 'succeeded') {
-      store.reportsByRunId.set(runId, {
-        id: generateId(),
-        run_id: runId,
-        template_id: run.template_id,
-        status: 'final',
-        content_md: buildReportMarkdown(run),
-        token_used: run.token_used,
-        created_at: ts,
-        updated_at: ts
-      })
-    }
+  // 强制路径：完全绕过判别（source=forced，confidence=1.0）
+  if (force === 'chat' || force === 'research') {
+    sendJson(res, 200, force === 'chat'
+      ? { intent: 'chat', confidence: 1, recommended_template: null, recommended_tier: null, estimated_token_budget: null, estimated_cost_grade: null, source: 'forced', degraded: false, reason: '用户强制闲聊' }
+      : { intent: 'research', confidence: 1, recommended_template: 'generic', recommended_tier: 'quick', estimated_token_budget: TIER_BUDGET.quick, estimated_cost_grade: 'quick', source: 'forced', degraded: false, reason: '用户强制深度研究' })
+    return
   }
+
+  const isChat = CHAT_HINTS.some((hint) => text.includes(hint)) || (text.length < 8 && !RESEARCH_HINTS.some((hint) => text.includes(hint)))
+  if (isChat) {
+    sendJson(res, 200, {
+      intent: 'chat',
+      confidence: 0.96,
+      recommended_template: null,
+      recommended_tier: null,
+      estimated_token_budget: null,
+      estimated_cost_grade: null,
+      source: 'llm',
+      degraded: false,
+      reason: '日常寒暄/常识类输入，无需多源研究'
+    })
+    return
+  }
+
+  const hasResearchHint = RESEARCH_HINTS.some((hint) => text.includes(hint))
+  sendJson(res, 200, {
+    intent: hasResearchHint ? 'research' : 'uncertain',
+    confidence: hasResearchHint ? 0.9 : 0.55,
+    recommended_template: 'generic',
+    recommended_tier: hasResearchHint ? 'standard' : 'quick',
+    estimated_token_budget: hasResearchHint ? TIER_BUDGET.standard : TIER_BUDGET.quick,
+    estimated_cost_grade: hasResearchHint ? 'standard' : 'quick',
+    source: 'llm',
+    degraded: false,
+    reason: hasResearchHint ? '含可检索实体与研究意图，建议多源核验' : '意图不够明确，保守按深度研究准备'
+  })
+})
+
+// ─── 全局助手闲聊（M2-1：POST /assistant/chat，SSE 流式，无服务端会话）───
+
+function sendSse(res: ServerResponse, event: string | null, data: string): void {
+  res.write(event ? `event: ${event}\ndata: ${data}\n\n` : `data: ${data}\n\n`)
 }
+
+route('POST', '/api/v1/assistant/chat', async (req, res) => {
+  const user = authenticate(req, res)
+  if (!user) return
+  const body = await parseBody(req)
+  const message = typeof body.message === 'string' ? body.message.trim() : ''
+  if (!message || message.length > 2000) {
+    sendValidationError(res, [{ loc: ['body', 'message'], msg: message ? 'String should have at most 2000 characters' : 'Field required', type: message ? 'string_too_long' : 'missing' }])
+    return
+  }
+  const history = Array.isArray(body.history) ? body.history : []
+  if (history.length > 20) {
+    sendValidationError(res, [{ loc: ['body', 'history'], msg: 'List should have at most 20 items', type: 'too_long' }])
+    return
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': '*'
+  })
+
+  // mock 固定回答：按片段流式吐出，模拟真实增量粒度
+  const answer = `这是 mock 闲聊通道的回答。你刚才说的是：「${message}」。mock 模式不联网检索；需要多源核验的问题，请回首页发起深度研究。`
+  const chunks = answer.match(/.{1,12}/g) ?? [answer]
+  for (const chunk of chunks) {
+    sendSse(res, null, JSON.stringify({ delta: chunk }))
+    await new Promise((resolve) => setTimeout(resolve, 60))
+  }
+  sendSse(res, null, '[DONE]')
+  res.end()
+  void user
+})
+
+// ─── 埋点（WP-10/WP-18：POST /telemetry/batch，mock 累计计数供验收观测）───
+
+// mock 专用只读观测口：返回各事件累计计数，供 WP-18 验收；真实后端无此端点
+route('GET', '/api/v1/telemetry/counts', (req, res) => {
+  const user = authenticate(req, res)
+  if (!user) return
+  const counts: Record<string, number> = {}
+  for (const [event, count] of store.telemetryCounts) counts[event] = count
+  sendJson(res, 200, { counts })
+})
+
+route('POST', '/api/v1/telemetry/batch', async (req, res) => {
+  const user = authenticate(req, res)
+  if (!user) return
+  const body = await parseBody(req)
+  if (!Array.isArray(body.events)) {
+    sendValidationError(res, [{ loc: ['body', 'events'], msg: 'Field required', type: 'missing' }])
+    return
+  }
+  let accepted = 0
+  for (const item of body.events) {
+    if (!item || typeof item !== 'object') continue
+    const event = (item as Record<string, unknown>).event
+    if (typeof event !== 'string' || !event) continue
+    store.telemetryCounts.set(event, (store.telemetryCounts.get(event) ?? 0) + 1)
+    accepted += 1
+  }
+  sendJson(res, 200, { accepted, total: store.telemetryCounts.size })
+})

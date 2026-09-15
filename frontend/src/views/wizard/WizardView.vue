@@ -36,11 +36,15 @@ const projectsError = ref<ApiError | null>(null)
 const hasProjectStep = ref(false)
 const selectedProjectId = ref<string | null>(null)
 const selectedTier = ref<RunTier | null>(null)
+// 首页意图路由带 query 预选（template_id/tier）：步骤中显示"已预选，可修改"
+const preselectedTier = ref<RunTier | null>(null)
 const question = ref('')
 const questionError = ref('')
 const step = ref(0)
 const submitting = ref(false)
 const submitError = ref('')
+
+const VALID_TIERS: RunTier[] = ['quick', 'standard', 'deep', 'extreme']
 
 // 同一次向导内复用同一幂等键，保证失败重试不会创建多个 run
 const idempotencyKey = crypto.randomUUID()
@@ -85,6 +89,22 @@ async function ensureProjects(): Promise<void> {
     } else {
       selectedProjectId.value = null
       hasProjectStep.value = true
+    }
+
+    // M2 意图路由预选档位（校验合法性，非法值忽略仍走项目默认）
+    const queryTier = typeof route.query.tier === 'string' ? route.query.tier : null
+    if (queryTier && VALID_TIERS.includes(queryTier as RunTier)) {
+      selectedTier.value = queryTier as RunTier
+      preselectedTier.value = queryTier as RunTier
+    }
+
+    // 首页意图确认层携带的问题原文：校验长度后预填，用户仍可在问题步修改
+    const queryQuestion = typeof route.query.q === 'string' ? route.query.q.trim() : ''
+    if (
+      queryQuestion.length >= QUESTION_MIN &&
+      queryQuestion.length <= QUESTION_MAX
+    ) {
+      question.value = queryQuestion
     }
   } catch (err) {
     projectsError.value = err as ApiError
@@ -315,6 +335,12 @@ async function launch(): Promise<void> {
           class="step-body"
         >
           <h2>选择研究档位</h2>
+          <p
+            v-if="preselectedTier"
+            class="step-body__hint step-body__hint--preselect"
+          >
+            已按意图判别预选「{{ tierLabel(preselectedTier) }}」，可在此修改
+          </p>
           <p class="step-body__hint">
             档位决定子问题拆解规模与 token 预算
           </p>
@@ -541,6 +567,10 @@ async function launch(): Promise<void> {
   font-size: var(--font-sm);
   color: var(--color-text-muted);
   margin-bottom: var(--space-5);
+}
+
+.step-body__hint--preselect {
+  color: var(--brand-700);
 }
 
 .select-grid {

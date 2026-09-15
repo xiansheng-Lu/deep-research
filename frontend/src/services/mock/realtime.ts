@@ -5,6 +5,8 @@
 import type { WebSocket as WsWebSocket } from 'ws'
 import {
   REALTIME_PROTOCOL_VERSION,
+  type InterveneAckEnvelope,
+  type InterveneErrorEnvelope,
   type RealtimeEnvelope,
   type RealtimePing,
   type RealtimePong
@@ -19,6 +21,24 @@ const heartbeatTimers = new Map<WsWebSocket, NodeJS.Timeout>()
 
 // 心跳间隔与后端一致（30 秒）
 const HEARTBEAT_INTERVAL_MS = 30_000
+
+// 客户端指令处理器：由 engine.ts 在模块加载时注入（intervene/cancel 与 REST 通道等价）
+export interface WsCommandInput {
+  type?: unknown
+  request_id?: unknown
+  payload?: unknown
+}
+// 可辨识联合：ACK 携带状态，错误携带 code/message，分别对齐两种帧的 payload 契约
+export type WsCommandReply =
+  | { type: 'intervene.ack'; requestId: string; payload: { status?: string } }
+  | { type: 'intervene.error'; requestId: string; payload: { code: string; message: string } }
+let commandHandler: ((runId: string, command: WsCommandInput) => WsCommandReply | null) | null = null
+
+export function setCommandHandler(
+  handler: (runId: string, command: WsCommandInput) => WsCommandReply | null
+): void {
+  commandHandler = handler
+}
 
 // 校验 query token：必须是登录后签发且仍有效的 mock access token
 // 网关在 WS 握手前调用，无效时直接拒绝升级（对齐后端 accept 前 close 的语义）
@@ -38,7 +58,7 @@ export function handleWsUpgrade(ws: WsWebSocket, runId: string): void {
   ws.on('message', (data) => {
     try {
       const msg: unknown = JSON.parse(data.toString())
-      handleWsMessage(ws, msg)
+      handleWsMessage(ws, runId, msg)
     } catch {
       // 忽略无法解析的客户端消息
     }
@@ -59,15 +79,38 @@ export function handleWsUpgrade(ws: WsWebSocket, runId: string): void {
   })
 }
 
-// 处理客户端消息：M1 仅应答心跳
-function handleWsMessage(ws: WsWebSocket, msg: unknown): void {
+// 处理客户端消息：心跳应答 + intervene/cancel 指令（ACK/错误帧带 request_id 关联）
+function handleWsMessage(ws: WsWebSocket, runId: string, msg: unknown): void {
   if (typeof msg !== 'object' || msg === null) return
   const type = (msg as { type?: unknown }).type
-  if (type !== 'ping' && type !== 'pong') return
+  if (type === 'pong') return
 
   if (type === 'ping') {
     const pong: RealtimePong = { v: REALTIME_PROTOCOL_VERSION, type: 'pong', ts: Date.now() }
     sendWsMessage(ws, pong)
+    return
+  }
+
+  if (type === 'intervene' || type === 'cancel') {
+    const reply = commandHandler?.(runId, msg as WsCommandInput)
+    if (!reply || !reply.requestId) return
+    const frame: InterveneAckEnvelope | InterveneErrorEnvelope =
+      reply.type === 'intervene.ack'
+        ? {
+            v: REALTIME_PROTOCOL_VERSION,
+            ts: Date.now(),
+            type: 'intervene.ack',
+            request_id: reply.requestId,
+            payload: reply.payload
+          }
+        : {
+            v: REALTIME_PROTOCOL_VERSION,
+            ts: Date.now(),
+            type: 'intervene.error',
+            request_id: reply.requestId,
+            payload: reply.payload
+          }
+    sendWsMessage(ws, frame)
   }
 }
 
@@ -98,7 +141,10 @@ export function broadcastWsEvent(runId: string, event: RealtimeEnvelope): void {
   }
 }
 
-function sendWsMessage(ws: WsWebSocket, msg: RealtimePing | RealtimePong | RealtimeEnvelope): void {
+function sendWsMessage(
+  ws: WsWebSocket,
+  msg: RealtimePing | RealtimePong | RealtimeEnvelope | InterveneAckEnvelope | InterveneErrorEnvelope
+): void {
   // readyState 1 = WebSocket.OPEN
   if (ws.readyState !== 1) return
   try {

@@ -5,7 +5,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, Text
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, IdMixin, TimestampMixin
@@ -20,35 +28,28 @@ class ResearchRun(Base, IdMixin, TimestampMixin):
 
     __tablename__ = "research_runs"
 
-    project_id: Mapped[str] = mapped_column(
-        String(26), ForeignKey("projects.id"), nullable=False, index=True
-    )
-    creator_id: Mapped[str] = mapped_column(
-        String(26), ForeignKey("users.id"), nullable=False
-    )
+    project_id: Mapped[str] = mapped_column(String(26), ForeignKey("projects.id"), nullable=False, index=True)
+    creator_id: Mapped[str] = mapped_column(String(26), ForeignKey("users.id"), nullable=False)
     template_id: Mapped[str] = mapped_column(String(26), nullable=False)
-    tier: Mapped[Literal["quick", "standard", "deep", "extreme"]] = mapped_column(
-        String(16), nullable=False
-    )
+    tier: Mapped[Literal["quick", "standard", "deep", "extreme"]] = mapped_column(String(16), nullable=False)
     question: Mapped[str] = mapped_column(Text, nullable=False)
     clarification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    status: Mapped[Literal[
-        "pending", "running", "paused", "succeeded", "failed", "cancelled"
-    ]] = mapped_column(String(16), nullable=False, default="pending")
+    status: Mapped[Literal["pending", "running", "paused", "succeeded", "failed", "cancelled"]] = (
+        mapped_column(String(16), nullable=False, default="pending")
+    )
     current_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
     orchestrator_state: Mapped[dict | None] = mapped_column(
         JSON, nullable=True, comment="LangGraph checkpoint 引用"
     )
     token_used: Mapped[int] = mapped_column(nullable=False, default=0)
     token_budget: Mapped[int] = mapped_column(nullable=False)
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # M2-8b 租约观测镜像（权威在 Redis；仅作清扫扫描输入，历史 run 留空）
+    execution_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     project: Mapped[Project] = relationship(back_populates="runs")
     stages: Mapped[list[Stage]] = relationship(back_populates="run")
@@ -58,6 +59,8 @@ class ResearchRun(Base, IdMixin, TimestampMixin):
     __table_args__ = (
         Index("ix_runs_project_status", "project_id", "status"),
         Index("ix_runs_creator", "creator_id"),
+        # M2-8b 孤儿清扫：按 status 过滤后顺序扫描 lease_until
+        Index("ix_runs_status_lease", "status", "lease_until"),
     )
 
 
@@ -69,24 +72,30 @@ class Stage(Base, IdMixin, TimestampMixin):
     run_id: Mapped[str] = mapped_column(
         String(26), ForeignKey("research_runs.id"), nullable=False, index=True
     )
-    name: Mapped[Literal[
-        "clarify", "decompose", "retrieve", "standardize", "critique", "report"
-    ]] = mapped_column(String(16), nullable=False)
-    status: Mapped[Literal["pending", "running", "succeeded", "failed", "skipped"]] = (
-        mapped_column(String(16), nullable=False, default="pending")
+    name: Mapped[Literal["clarify", "decompose", "retrieve", "standardize", "critique", "report"]] = (
+        mapped_column(String(16), nullable=False)
+    )
+    status: Mapped[Literal["pending", "running", "succeeded", "failed", "skipped"]] = mapped_column(
+        String(16), nullable=False, default="pending"
     )
     attempt: Mapped[int] = mapped_column(nullable=False, default=1)
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 口径：「截至本阶段完成时」的 run 级 token 累计快照（与 ResearchRun.token_used
+    # 同源写入），不是本阶段自身消耗；无 LLM 调用的阶段（retrieve/standardize）
+    # 与上一阶段恒等。阶段自身消耗需按 STAGE_ORDER 对相邻已完成行取差值。
+    # StageResponse 不输出本字段（成本走 run/cost 专属通道）；M3 看板若要展示
+    # 阶段消耗，应新增 delta 字段而非直接读本行（2026-09-15 token 记账排查结论）。
     token_used: Mapped[int] = mapped_column(nullable=False, default=0)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     output: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     run: Mapped[ResearchRun] = relationship(back_populates="stages")
+
+    __table_args__ = (
+        # M2-4：同一 run 下阶段名唯一，作为阶段行 upsert 幂等与恢复重放的前置
+        UniqueConstraint("run_id", "name", name="uq_stages_run_name"),
+    )
 
 
 class SubQuestion(Base, IdMixin, TimestampMixin):
@@ -99,9 +108,9 @@ class SubQuestion(Base, IdMixin, TimestampMixin):
     )
     question: Mapped[str] = mapped_column(Text, nullable=False)
     depends_on: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    status: Mapped[Literal[
-        "pending", "queued", "running", "succeeded", "failed", "evidence_short"
-    ]] = mapped_column(String(16), nullable=False, default="pending")
+    status: Mapped[Literal["pending", "queued", "running", "succeeded", "failed", "evidence_short"]] = (
+        mapped_column(String(16), nullable=False, default="pending")
+    )
     evidence_count: Mapped[int] = mapped_column(nullable=False, default=0)
 
     run: Mapped[ResearchRun] = relationship(back_populates="sub_questions")

@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from sqlalchemy import DateTime, ForeignKey, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, IdMixin, TimestampMixin
-
-if TYPE_CHECKING:
-    from app.db.models.run import ResearchRun
 
 
 class Conflict(Base, IdMixin, TimestampMixin):
@@ -58,3 +55,5 @@ class Verdict(Base, IdMixin):
         mapped_column(String(16), nullable=False)
     )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 团队协作备注：仅用于报告局限区块引用与展示，不参与 Critic 推理（契约草案 §6.3）
+    additional_note: Mapped[str | None] = mapped_column(Text, nullable=True)

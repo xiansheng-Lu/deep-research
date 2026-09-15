@@ -17,9 +17,17 @@ class AuditAction(StrEnum):
     RUN_START = "run.start"
     RUN_INTERRUPT = "run.interrupt"
     RUN_COMPLETE = "run.complete"
+    # M2-5：软暂停/恢复/硬取消与两类主动介入
+    RUN_PAUSE = "run.pause"
+    RUN_RESUME = "run.resume"
+    RUN_CANCEL = "run.cancel"
+    INTERVENE_ASK_FOLLOWUP = "intervene.ask_followup"
+    INTERVENE_EXCLUDE_EVIDENCE = "intervene.exclude_evidence"
     REPORT_EXPORT = "report.export"
     CONNECTOR_BIND = "connector.bind"
     CONNECTOR_SYNC = "connector.sync"
+    # M2-8b：worker 启动孤儿清扫收敛（paused/succeeded/failed 三类）
+    RUN_ORPHAN_RECOVERED = "run.orphan_recovered"
 
 
 @dataclass(slots=True)

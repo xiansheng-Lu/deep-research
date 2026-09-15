@@ -6,7 +6,7 @@ LLD §6.5.2 / §6.5.3 / §6.5.5 / §6.5.6 等章节引用的 Schema 全部在此
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,7 +57,7 @@ class SubQuestionItem(BaseModel):
     """单条子问题（§6.5.3）。
 
     Attributes:
-        question: 子问题完整文本。
+        question: 子问题完整问题。
         depends_on: 依赖的上游子问题 ID（拓扑顺序执行用）。
         rationale: 拆解理由（仅用于审计，前端不展示）。
     """
@@ -77,9 +77,67 @@ class SubQuestionListSchema(BaseModel):
     sub_questions: list[SubQuestionItem] = Field(default_factory=list)
 
 
+class IntentClassification(BaseModel):
+    """意图路由 LLM 结构化输出（PRD 模块 G / 智能体协作规格 §3.1）。
+
+    Attributes:
+        intent: 意图类别——chat 闲聊直答 / research 深度研究 / uncertain 无法确定。
+        confidence: 模型置信度，0-1。
+        reason: 简短判定依据（仅排查用，前端不作为主文案）。
+    """
+
+    model_config = _LLM_OUTPUT_CONFIG
+
+    intent: Literal["chat", "research", "uncertain"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason: str = Field(default="", max_length=300)
+
+
+# 冲突四类型（与 Conflict ORM / 前端枚举严格一致，§4.2.6）
+ConflictTypeLiteral = Literal["factual", "methodological", "temporal", "perspective"]
+# 严重度三值：low/medium 自动收敛，high 挂起等裁决
+ConflictSeverityLiteral = Literal["low", "medium", "high"]
+
+
+class ConflictPairResult(BaseModel):
+    """单对候选证据的语义冲突判定结果（§6.5.6）。
+
+    Attributes:
+        pair_index: 候选对在请求批次中的下标（由请求方编号，结果按此回联）。
+        is_conflict: 是否构成实质冲突。
+        claim: 议题（冲突针对的具体论断）；非冲突时可为空串。
+        type: 冲突类型——factual 事实对立 / methodological 口径方法 /
+            temporal 时间错配 / perspective 观点分歧。
+        severity: 严重度——high 结论性矛盾需裁决 / medium 可按权威消解 / low 轻微出入。
+        reason: 一句中文判定依据。
+    """
+
+    model_config = _LLM_OUTPUT_CONFIG
+
+    pair_index: int = Field(ge=0)
+    is_conflict: bool = False
+    claim: str = Field(default="", max_length=300)
+    type: ConflictTypeLiteral = "factual"
+    severity: ConflictSeverityLiteral = "medium"
+    reason: str = Field(default="", max_length=300)
+
+
+class ConflictDetectionSchema(BaseModel):
+    """critic 单批次语义冲突检测输出（§6.5.6）。"""
+
+    model_config = _LLM_OUTPUT_CONFIG
+
+    results: list[ConflictPairResult] = Field(default_factory=list)
+
+
 __all__ = [
     "ClarificationQuestion",
     "ClarificationSchema",
+    "ConflictDetectionSchema",
+    "ConflictPairResult",
+    "ConflictSeverityLiteral",
+    "ConflictTypeLiteral",
+    "IntentClassification",
     "SubQuestionItem",
     "SubQuestionListSchema",
 ]

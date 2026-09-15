@@ -216,7 +216,7 @@ def clarification_to_state_payload(payload: dict[str, Any] | None) -> dict[str, 
     if not payload:
         return {}
     answers = payload.get("answers") if isinstance(payload, dict) else None
-    if not isinstance(answers, dict):
+    if not isinstance(answers, dict) or not answers:
         return {}
     return {"clarification": {"_human_answers": dict(answers)}}
 

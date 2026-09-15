@@ -1,0 +1,684 @@
+{
+  "metrics": {
+    "total": 58,
+    "research_path_recall": 1.0,
+    "strict_research_recall": 1.0,
+    "chat_path_precision": 1.0,
+    "uncertain_conservative_rate": 0.8,
+    "latency_avg_ms": 1087,
+    "latency_p90_ms": 1497,
+    "latency_max_ms": 1835,
+    "over_2s_cases": 0,
+    "fallback_cases": 0,
+    "buckets": {
+      "chat_factual": {
+        "chat": 10
+      },
+      "chat_greeting": {
+        "chat": 5
+      },
+      "chat_writing": {
+        "chat": 8
+      },
+      "research_compare": {
+        "research": 6
+      },
+      "research_domain": {
+        "research": 8
+      },
+      "research_subtle": {
+        "research": 4
+      },
+      "research_survey": {
+        "research": 6
+      },
+      "research_trend": {
+        "research": 6
+      },
+      "uncertain": {
+        "uncertain": 4,
+        "chat": 1
+      }
+    }
+  },
+  "results": [
+    {
+      "text": "你好，在吗",
+      "expected": "chat",
+      "bucket": "chat_greeting",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.97,
+      "latency_ms": 1049,
+      "reason": "纯问候寒暄，无研究主题与外部核验需求"
+    },
+    {
+      "text": "早上好呀，今天过得怎么样",
+      "expected": "chat",
+      "bucket": "chat_greeting",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.97,
+      "latency_ms": 750,
+      "reason": "纯问候寒暄，无实体与检索需求，单模型可直接应答"
+    },
+    {
+      "text": "谢谢你的帮助",
+      "expected": "chat",
+      "bucket": "chat_greeting",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.97,
+      "latency_ms": 1001,
+      "reason": "礼貌致谢，无研究对象或事实核验需求，属闲聊直答。"
+    },
+    {
+      "text": "哈哈这个挺有意思的",
+      "expected": "chat",
+      "bucket": "chat_greeting",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 625,
+      "reason": "纯口语化感叹，无实体与主题，无需外部信息核验"
+    },
+    {
+      "text": "周末愉快，再见",
+      "expected": "chat",
+      "bucket": "chat_greeting",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.98,
+      "latency_ms": 742,
+      "reason": "周末问候与告别寒暄，无检索或研究需求"
+    },
+    {
+      "text": "帮我写一封请假两天的邮件，语气诚恳一点",
+      "expected": "chat",
+      "bucket": "chat_writing",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.97,
+      "latency_ms": 645,
+      "reason": "写作类任务，请假邮件可直接生成，无需外部多源核验。"
+    },
+    {
+      "text": "把这段话改得更正式：我们觉得这个方案还行",
+      "expected": "chat",
+      "bucket": "chat_writing",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.97,
+      "latency_ms": 1363,
+      "reason": "改写文案任务，单模型可直接完成，无需外部信息核验。"
+    },
+    {
+      "text": "帮我翻译一下：Knowledge retrieval augmented generation",
+      "expected": "chat",
+      "bucket": "chat_writing",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.97,
+      "latency_ms": 751,
+      "reason": "纯翻译任务，单模型可直接完成，无需外部信息核验。"
+    },
+    {
+      "text": "给我起三个有科技感的产品名字，和向量数据库相关",
+      "expected": "chat",
+      "bucket": "chat_writing",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 928,
+      "reason": "起名属创意文案生成，单模型可直接完成，无需多源检索核验。"
+    },
+    {
+      "text": "帮我润色这段产品介绍文案，突出性价比",
+      "expected": "chat",
+      "bucket": "chat_writing",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 757,
+      "reason": "文案润色属于文本加工，单模型可直接完成，无需外部多源检索。"
+    },
+    {
+      "text": "写一首关于秋天的七言绝句",
+      "expected": "chat",
+      "bucket": "chat_writing",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.97,
+      "latency_ms": 1113,
+      "reason": "创作七言绝句属文案写作，单模型可直接生成，无需外部检索。"
+    },
+    {
+      "text": "帮我把这段文字总结成三句话：人工智能是计算机科学的一个分支",
+      "expected": "chat",
+      "bucket": "chat_writing",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 516,
+      "reason": "纯文本摘要改写，单模型可直接完成，无需外部信息核验"
+    },
+    {
+      "text": "帮我写一个 Python 快排函数，加注释",
+      "expected": "chat",
+      "bucket": "chat_writing",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.97,
+      "latency_ms": 744,
+      "reason": "编程实现类请求，单模型可直接编写快排代码并加注释，无需外部信息核验。"
+    },
+    {
+      "text": "Python 列表怎么去重，给个最简单的写法",
+      "expected": "chat",
+      "bucket": "chat_factual",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.96,
+      "latency_ms": 972,
+      "reason": "编程基础语法问题，单模型可直接给出最简写法，无需外部多源核验。"
+    },
+    {
+      "text": "SQL 里 inner join 和 left join 有什么区别",
+      "expected": "chat",
+      "bucket": "chat_factual",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 721,
+      "reason": "SQL 连接方式的通用概念解释，属编程常识，单模型可直接作答，无需外部多源核验。"
+    },
+    {
+      "text": "解释一下什么是闭包，用 JavaScript 举例",
+      "expected": "chat",
+      "bucket": "chat_factual",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 760,
+      "reason": "编程概念解释，单模型可直接作答，无需外部多源核验"
+    },
+    {
+      "text": "3 的平方根等于多少",
+      "expected": "chat",
+      "bucket": "chat_factual",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.97,
+      "latency_ms": 890,
+      "reason": "纯数学计算题，单模型可直接作答，无需外部多源核验。"
+    },
+    {
+      "text": "水在标准大气压下的沸点是多少度",
+      "expected": "chat",
+      "bucket": "chat_factual",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.97,
+      "latency_ms": 863,
+      "reason": "常识性单点事实问题，单模型可直接作答，无需多源核验。"
+    },
+    {
+      "text": "勾股定理的公式是什么",
+      "expected": "chat",
+      "bucket": "chat_factual",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.97,
+      "latency_ms": 577,
+      "reason": "勾股定理公式属固定常识，单模型可直接回答，无需外部核验。"
+    },
+    {
+      "text": "HTTP 状态码 404 和 500 分别代表什么",
+      "expected": "chat",
+      "bucket": "chat_factual",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 817,
+      "reason": "HTTP 状态码含义属通用编程常识，单模型可直接作答，无需外部多源核验。"
+    },
+    {
+      "text": "什么是递归？用计算阶乘举例说明",
+      "expected": "chat",
+      "bucket": "chat_factual",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 745,
+      "reason": "递归概念与阶乘示例属编程常识，单模型可直接讲解，无需外部核验。"
+    },
+    {
+      "text": "git rebase 和 merge 的区别，简单说一下",
+      "expected": "chat",
+      "bucket": "chat_factual",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 870,
+      "reason": "Git 基础概念对比，属编程常识，单模型可直接解释，无需多源核验"
+    },
+    {
+      "text": "帮我解释下相对论里时间膨胀是什么意思",
+      "expected": "chat",
+      "bucket": "chat_factual",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.92,
+      "latency_ms": 1023,
+      "reason": "相对论时间膨胀属物理概念解释，单模型可直接作答，无需多源检索核验。"
+    },
+    {
+      "text": "对比 PostgreSQL 与 MongoDB 在 JSON 文档查询场景下的索引机制差异",
+      "expected": "research",
+      "bucket": "research_compare",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.87,
+      "latency_ms": 1173,
+      "reason": "含对比意图与两个可检索实体，需技术资料交叉核验索引机制差异"
+    },
+    {
+      "text": "比亚迪和特斯拉的自动驾驶技术路线有什么不同，各自优劣如何",
+      "expected": "research",
+      "bucket": "research_compare",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 844,
+      "reason": "对比比亚迪与特斯拉自动驾驶技术路线及优劣，含明确实体与对比分析意图，需多来源信息核验。"
+    },
+    {
+      "text": "对比 Redis 和 Memcached 在缓存架构中的适用场景与选型建议",
+      "expected": "research",
+      "bucket": "research_compare",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 909,
+      "reason": "含可检索实体（Redis、Memcached）与对比、选型研究意图，需多来源系统性展开。"
+    },
+    {
+      "text": "对比国产大模型 DeepSeek、通义千问和文心一言在代码生成上的表现",
+      "expected": "research",
+      "bucket": "research_compare",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 1215,
+      "reason": "对比三款国产大模型代码生成表现，含可检索实体与对比意图，需多来源评测交叉核验。"
+    },
+    {
+      "text": "Snowflake 和 ClickHouse 在实时分析场景下的架构差异是什么",
+      "expected": "research",
+      "bucket": "research_compare",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 1501,
+      "reason": "涉及 Snowflake 与 ClickHouse 两个可检索实体的架构对比，需多来源系统性展开"
+    },
+    {
+      "text": "对比 RAG 与微调两种方案在企业知识库建设中的成本和效果",
+      "expected": "research",
+      "bucket": "research_compare",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 920,
+      "reason": "含明确对比意图（RAG vs 微调）与成本效果分析，需多来源交叉核验"
+    },
+    {
+      "text": "2024 至 2026 年 AI 编程助手领域的主要技术趋势和代表产品",
+      "expected": "research",
+      "bucket": "research_trend",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 1194,
+      "reason": "含时间跨度、趋势与技术代表产品盘点，需多来源交叉核验，属深度研究。"
+    },
+    {
+      "text": "最近向量数据库领域有哪些值得关注的进展和新发布",
+      "expected": "research",
+      "bucket": "research_trend",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 913,
+      "reason": "含明确领域实体与'最新进展/新发布'研究意图，需多来源时效性信息核验。"
+    },
+    {
+      "text": "2026 年新能源汽车行业的最新政策动向是什么",
+      "expected": "research",
+      "bucket": "research_trend",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 1734,
+      "reason": "涉及2026年新能源汽车政策动向，需最新外部信息与多来源核验，属深度研究。"
+    },
+    {
+      "text": "近一年大模型推理加速技术的演进趋势如何",
+      "expected": "research",
+      "bucket": "research_trend",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 873,
+      "reason": "含'演进趋势'研究关键词与明确主题（大模型推理加速技术），需多来源综述与时效信息。"
+    },
+    {
+      "text": "当前生成式 AI 在医疗影像领域的最新落地情况",
+      "expected": "research",
+      "bucket": "research_trend",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 1187,
+      "reason": "含明确领域与'最新落地情况'，需多来源交叉核验近期外部事实。"
+    },
+    {
+      "text": "2025 年以来欧洲 AI 监管法规的最新进展对企业有何影响",
+      "expected": "research",
+      "bucket": "research_trend",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 1465,
+      "reason": "涉及2025年以来欧洲AI监管法规最新进展及企业影响，需多来源时效信息与分析，属深度研究。"
+    },
+    {
+      "text": "盘点国内主流的 RAG 开发平台及其能力差异",
+      "expected": "research",
+      "bucket": "research_survey",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 1227,
+      "reason": "含可检索实体（国内RAG开发平台）与对比盘点意图，需多来源交叉核验。"
+    },
+    {
+      "text": "综述检索增强生成在金融行业的典型应用案例",
+      "expected": "research",
+      "bucket": "research_survey",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 1309,
+      "reason": "含明确实体（检索增强生成、金融行业）与综述类研究意图，需多来源案例梳理与交叉核验。"
+    },
+    {
+      "text": "企业做数据中台选型有哪些主流方案，各自适合什么规模",
+      "expected": "research",
+      "bucket": "research_survey",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 1213,
+      "reason": "含选型、主流方案、规模适配等研究意图，需多源对比与系统性展开"
+    },
+    {
+      "text": "调研一下目前开源的可观测性组件，给出一套技术选型建议",
+      "expected": "research",
+      "bucket": "research_survey",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 863,
+      "reason": "含可检索实体（开源可观测性组件）与选型建议需求，需多源对比与系统展开。"
+    },
+    {
+      "text": "梳理知识图谱在反诈风控中的落地方案与代表厂商",
+      "expected": "research",
+      "bucket": "research_survey",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.96,
+      "latency_ms": 897,
+      "reason": "含明确实体与产业主题，需多来源梳理落地方案与厂商，属研究意图。"
+    },
+    {
+      "text": "总结多智能体框架 LangGraph、AutoGen、CrewAI 的主要特性",
+      "expected": "research",
+      "bucket": "research_survey",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.85,
+      "latency_ms": 1216,
+      "reason": "涉及多个可检索框架的特性梳理与横向对比，需多来源核验与系统展开。"
+    },
+    {
+      "text": "2026 年中国光伏组件出口欧盟受 CBAM 影响的关税与合规成本分析",
+      "expected": "research",
+      "bucket": "research_domain",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.96,
+      "latency_ms": 1835,
+      "reason": "涉及CBAM政策、关税与合规成本，需多来源核验与行业分析，属深度研究。"
+    },
+    {
+      "text": "中国储能行业 2025 年新增装机量排名及市场格局",
+      "expected": "research",
+      "bucket": "research_domain",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 1424,
+      "reason": "含明确行业实体与年份，涉及装机量排名、市场格局，需多来源数据核验与系统分析。"
+    },
+    {
+      "text": "调研 AI 编程助手在国内中型软件团队的实际采纳率与提效数据",
+      "expected": "research",
+      "bucket": "research_domain",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 1199,
+      "reason": "含明确研究对象与调研意图，需多来源数据交叉核验采纳率与提效指标"
+    },
+    {
+      "text": "分析跨境电商独立站在东南亚市场的获客渠道与转化表现",
+      "expected": "research",
+      "bucket": "research_domain",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.95,
+      "latency_ms": 1110,
+      "reason": "涉及东南亚市场获客渠道与转化表现的系统性行业分析，需多来源数据支撑。"
+    },
+    {
+      "text": "低空经济产业链上有哪些关键环节和代表性上市公司",
+      "expected": "research",
+      "bucket": "research_domain",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 1412,
+      "reason": "涉及低空经济产业链环节梳理与代表性上市公司盘点，需多来源核验，属研究意图"
+    },
+    {
+      "text": "创新药出海授权交易在 2025 年的金额分布与热门靶点",
+      "expected": "research",
+      "bucket": "research_domain",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 1267,
+      "reason": "含明确实体与年份，需多来源数据统计与靶点梳理，属深度研究。"
+    },
+    {
+      "text": "国内商业银行落地大模型风控的真实案例与效果评估",
+      "expected": "research",
+      "bucket": "research_domain",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 1497,
+      "reason": "含明确实体（国内商业银行）、主题（大模型风控落地案例）与效果评估需求，需多来源案例与数据核验。"
+    },
+    {
+      "text": "固态电池量产时间表及主要玩家的技术路线对比",
+      "expected": "research",
+      "bucket": "research_domain",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 1757,
+      "reason": "含可检索实体（固态电池、量产时间表、企业技术路线），需多来源对比与最新进展核验。"
+    },
+    {
+      "text": "我想了解一下现在做企业私域知识库一般用什么架构比较好",
+      "expected": "research",
+      "bucket": "research_subtle",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.85,
+      "latency_ms": 1349,
+      "reason": "企业私域知识库架构选型，需多来源方案对比与系统性展开，属研究类"
+    },
+    {
+      "text": "最近想评估下要不要上数据湖仓，想看看大家的实践情况",
+      "expected": "research",
+      "bucket": "research_subtle",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.92,
+      "latency_ms": 1422,
+      "reason": "含数据湖仓选型评估意图，需行业实践案例与多源信息支撑"
+    },
+    {
+      "text": "帮我查查现在多模态大模型在质检场景用得多吗",
+      "expected": "research",
+      "bucket": "research_subtle",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.88,
+      "latency_ms": 1468,
+      "reason": "涉及多模态大模型在工业质检场景的应用现状与普及度，需多来源行业信息支撑，属研究类。"
+    },
+    {
+      "text": "想知道 Agent 这个方向现在创业还有没有机会",
+      "expected": "research",
+      "bucket": "research_subtle",
+      "actual": "research",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.86,
+      "latency_ms": 1347,
+      "reason": "涉及 Agent 赛道创业机会与市场趋势判断，需多来源行业分析与现状核验"
+    },
+    {
+      "text": "新能源",
+      "expected": "uncertain",
+      "bucket": "uncertain",
+      "actual": "uncertain",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.85,
+      "latency_ms": 830,
+      "reason": "仅一个名词'新能源'，无研究方向或问题指向，聊天与研究解读均可能。"
+    },
+    {
+      "text": "人工智能",
+      "expected": "uncertain",
+      "bucket": "uncertain",
+      "actual": "uncertain",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.85,
+      "latency_ms": 1411,
+      "reason": "仅一个名词，无具体方向或研究意图，无法判断是闲聊还是研究需求"
+    },
+    {
+      "text": "数据库",
+      "expected": "uncertain",
+      "bucket": "uncertain",
+      "actual": "uncertain",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.9,
+      "latency_ms": 1725,
+      "reason": "仅一个名词“数据库”，无具体方向或研究意图，闲聊与研究均可能，无法判定"
+    },
+    {
+      "text": "聊聊？",
+      "expected": "uncertain",
+      "bucket": "uncertain",
+      "actual": "chat",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.93,
+      "latency_ms": 1090,
+      "reason": "「聊聊？」为口语化寒暄邀请，无具体研究对象与事实核验需求，属闲聊直答。"
+    },
+    {
+      "text": "帮我看看",
+      "expected": "uncertain",
+      "bucket": "uncertain",
+      "actual": "uncertain",
+      "source": "llm",
+      "degraded": false,
+      "confidence": 0.9,
+      "latency_ms": 1001,
+      "reason": "输入仅“帮我看看”，无语义对象与方向，无法判断是闲聊还是研究需求。"
+    }
+  ]
+}

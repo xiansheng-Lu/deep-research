@@ -7,7 +7,7 @@
 """
 
 from enum import StrEnum
-from typing import Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 
 class ResearchStage(StrEnum):
@@ -50,6 +50,10 @@ class EvidenceDict(TypedDict):
     fingerprint: str
     published_at: str | None
     fetched_at: str
+    # M2-6：按子问题的相关性打分（fan-out 写入，standardizer 参与分级/排序）
+    relevance_score: NotRequired[float]
+    # M2-6：元数据留痕（分类依据/分数构成/日期来源/缺失字段），落 metadata_ 列
+    metadata_: NotRequired[dict[str, Any]]
 
 
 class ConflictDict(TypedDict):
@@ -71,6 +75,9 @@ class VerdictDict(TypedDict):
     user_id: str
     choice: str
     reason: str | None
+    # 团队协作备注：仅用于报告局限区块引用与展示（契约草案 §6.3），回流时由
+    # await_human 从 human_input.answers.verdicts 解析
+    additional_note: NotRequired[str | None]
 
 
 class ReportClaim(TypedDict):
@@ -80,6 +87,9 @@ class ReportClaim(TypedDict):
     text: str
     confidence: Literal["single_source", "cross_verified", "inferred"]
     citations: list[dict]
+    # M2-2：choice=both 裁决保留双方 claim 时的「观点并存」标记，值为关联冲突
+    # ID 列表（一条 claim 可能卷入多起冲突）；Reporter 据此在报告中显式呈现分歧
+    divergence_flags: NotRequired[list[str]]
 
 
 class ResearchState(TypedDict, total=False):
@@ -108,22 +118,27 @@ class ResearchState(TypedDict, total=False):
     report_outline: list[dict]
     report_claims: list[ReportClaim]
     report_draft: str
+    # M2-7：结构化终稿 blocks（conclusion/evidence/dispute/limitation）与降级标记；
+    # 增删字段须同步《后端详细设计》§6.2
+    report_blocks: NotRequired[list[dict[str, Any]]]
+    reporter_degraded: NotRequired[bool]
 
     # ===== 编排 =====
     current_stage: StageName
     stage_attempts: dict[str, int]
-    needs_clarification: NotRequired[bool]      # 阶段1 澄清 HITL 标记（§6.3 / §6.5.2）
-    interrupt_reason: NotRequired[str]          # clarify | critique —— 区分 await_human 回流路径
-    interrupt_payload: NotRequired[dict]        # await_human 挂起时向用户展示的上下文
+    needs_clarification: NotRequired[bool]  # 阶段1 澄清 HITL 标记（§6.3 / §6.5.2）
+    interrupt_reason: NotRequired[str]  # clarify | critique —— 区分 await_human 回流路径
+    interrupt_payload: NotRequired[dict]  # await_human 挂起时向用户展示的上下文
     human_input: dict | None
 
     # ===== 治理 =====
     token_used: int
     token_budget: int
+    critic_degraded: bool  # M2-2：critic LLM 不可用降级为启发式时为 True（FR-2）
 
     # ===== 时间与追踪 =====
     started_at: str
     finished_at: str | None
-    trace_id: str                       # 链路追踪 ID（§12.1.2），由 API 层写入
-    failure_reason: str | None          # 节点异常兜底记录（§6.5.1 / nodes._base.instrument）
-    updated_at: str                     # 最近一次状态更新时间（UTC ISO 8601）
+    trace_id: str  # 链路追踪 ID（§12.1.2），由 API 层写入
+    failure_reason: str | None  # 节点异常兜底记录（§6.5.1 / nodes._base.instrument）
+    updated_at: str  # 最近一次状态更新时间（UTC ISO 8601）

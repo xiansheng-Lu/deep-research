@@ -7,15 +7,18 @@ WebSocket 路由从 realtime 模块引入，与 REST 路由共用 /api/v1 前缀
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    assistant,
     audit,
     auth,
     conflicts,
     connectors,
+    intent,
     knowledge,
     projects,
     reports,
     runs,
     teams,
+    telemetry,
     templates,
     users,
 )
@@ -27,12 +30,15 @@ api_v1_router.include_router(users.router)
 api_v1_router.include_router(teams.router)
 api_v1_router.include_router(projects.router)
 api_v1_router.include_router(runs.router)
+api_v1_router.include_router(intent.router)
+api_v1_router.include_router(assistant.router)
 api_v1_router.include_router(conflicts.router)
 api_v1_router.include_router(reports.router)
 api_v1_router.include_router(knowledge.router)
 api_v1_router.include_router(connectors.router)
 api_v1_router.include_router(templates.router)
 api_v1_router.include_router(audit.router)
+api_v1_router.include_router(telemetry.router)
 api_v1_router.include_router(ws_router)
 
 __all__ = ["api_v1_router"]

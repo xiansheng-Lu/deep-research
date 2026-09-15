@@ -265,13 +265,17 @@ class TestRunSuccessful:
         assert ev["domain"] == "example.com"
         assert ev["title"] == "A"
         assert ev["snippet"] == "snippet A"
-        assert ev["source_type"] == "news"
-        # source_level / credibility 留给 standardizer
+        # M2-6：retrieve 占位为中性 search，不再无依据标 news
+        assert ev["source_type"] == "search"
+        # source_level / credibility 占位留给 standardizer 按域名规则落定
         assert ev["source_level"] == "tertiary"
         assert ev["credibility"] == "C"
         assert isinstance(ev["fingerprint"], str) and len(ev["fingerprint"]) == 64
-        assert ev["published_at"] is None  # hit 未设置
+        assert ev["published_at"] is None  # hit 未设置（测试环境关闭页面补采）
         assert isinstance(ev["fetched_at"], str)
+        # M2-6：相关性打分与元数据留痕已写入
+        assert "relevance_score" in ev and isinstance(ev["relevance_score"], float)
+        assert ev["metadata_"]["published_at_source"] == "null"
 
         # 检索调用记录
         assert len(client.search_calls) == 1
@@ -397,9 +401,7 @@ class TestRunSuccessful:
 class TestEvidenceFieldContract:
     @pytest.mark.asyncio
     async def test_strips_www_from_domain(self) -> None:
-        client = _FakeRetrievalClient(
-            search_hits={"Q": [_make_hit(url="https://www.example.com/x")]}
-        )
+        client = _FakeRetrievalClient(search_hits={"Q": [_make_hit(url="https://www.example.com/x")]})
         subqs = [_make_subq("a", question="Q")]
         patch = await run(_state_with(subqs), deps=_deps_with(client))
         assert patch["evidence"][0]["domain"] == "example.com"
@@ -407,9 +409,7 @@ class TestEvidenceFieldContract:
     @pytest.mark.asyncio
     async def test_title_truncated_to_512(self) -> None:
         long_title = "x" * 800
-        client = _FakeRetrievalClient(
-            search_hits={"Q": [_make_hit(url="https://e.com/1", title=long_title)]}
-        )
+        client = _FakeRetrievalClient(search_hits={"Q": [_make_hit(url="https://e.com/1", title=long_title)]})
         subqs = [_make_subq("a", question="Q")]
         patch = await run(_state_with(subqs), deps=_deps_with(client))
         assert len(patch["evidence"][0]["title"]) == 512
@@ -427,9 +427,7 @@ class TestEvidenceFieldContract:
     @pytest.mark.asyncio
     async def test_published_at_propagated(self) -> None:
         ts = datetime(2026, 1, 1, tzinfo=UTC)
-        client = _FakeRetrievalClient(
-            search_hits={"Q": [_make_hit(url="https://e.com/1", published_at=ts)]}
-        )
+        client = _FakeRetrievalClient(search_hits={"Q": [_make_hit(url="https://e.com/1", published_at=ts)]})
         subqs = [_make_subq("a", question="Q")]
         patch = await run(_state_with(subqs), deps=_deps_with(client))
         assert patch["evidence"][0]["published_at"] == "2026-01-01T00:00:00+00:00"
@@ -451,9 +449,7 @@ class TestEvidenceFieldContract:
 
     @pytest.mark.asyncio
     async def test_evidence_id_is_ulid(self) -> None:
-        client = _FakeRetrievalClient(
-            search_hits={"Q": [_make_hit(url="https://e.com/1")]}
-        )
+        client = _FakeRetrievalClient(search_hits={"Q": [_make_hit(url="https://e.com/1")]})
         subqs = [_make_subq("a", question="Q")]
         patch = await run(_state_with(subqs), deps=_deps_with(client))
         ev_id = patch["evidence"][0]["id"]

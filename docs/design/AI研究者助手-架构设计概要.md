@@ -40,7 +40,7 @@
 | 后端语言 | Python 3.11 | AI/LLM 生态最成熟 |
 | 后端框架 | FastAPI | 异步原生、OpenAPI 自动生成、类型提示完备 |
 | Agent 编排 | LangGraph | 状态图语义、Human-in-the-loop 原生、与 6 阶段流水线高度匹配 |
-| LLM 抽象 | 自研 Provider Adapter | 可插拔 OpenAI / Anthropic / 国产模型 |
+| LLM 抽象 | LangChain v1 薄封装 + 自研边界层 | 可插拔 OpenAI / Anthropic / 国产模型；2026-09-09 选型决策由"纯自研"调整为复用 LangChain、自研层仅保留主备编排/熔断/用量归集（详见后端详细设计 §16.3） |
 | 主数据库 | PostgreSQL 16 | 关系型 + JSONB + 事务 |
 | 向量检索 | pgvector | 知识库语义检索、单数据源、运维简单 |
 | 任务队列 | Celery + Redis | 阶段任务、异步检索、可观测 |
@@ -354,8 +354,8 @@ LangGraph 提供原生 `interrupt()` API：
 
 - 在 `await_human` 节点调用 `interrupt({"conflicts": [...], "context": ...})`
 - 状态被持久化（checkpoint），任务暂停
-- 前端通过 WebSocket 收到 `interrupt` 事件
-- 用户裁决后，前端调用 `POST /runs/{run_id}/resume` API
+- 前端通过 WebSocket 收到 `interrupt.requested`（澄清）或 `conflict.detected`（高严重度分歧）事件
+- 用户输入回流：澄清答案走 `POST /runs/{run_id}/resume`；冲突裁决走 `POST /api/v1/conflicts/{conflict_id}/verdict`（M2-2 实现口径，末条待裁决冲突裁决后由服务端自动恢复，无独立「继续」接口，见《M2-2 批判收敛与人机裁决技术方案》§3.2）
 - Orchestrator 从 checkpoint 恢复，`human_input` 注入 state
 
 ### 7.3 实时事件推送
@@ -370,6 +370,8 @@ Orchestrator 各节点通过 `EventBus` 发布事件：
 | `token.usage.update` | WebSocket (节流 1s) | 指挥舱成本展示 |
 | `report.chunk` | SSE | 报告阅读页 |
 | `report.finished` | WebSocket | 全局通知 |
+
+> 上表最后两行为 M4 预留：M1~M2-8b（2026-09-15 核对）后端无 `report.chunk`/`report.finished` 发射点，报告 SSE 流未实现，终稿可读由 `run.finished` + REST 报告端点（M2-7 起含 outline/blocks/citations）收敛；M2 实时事件实际集以《后端详细设计》§4 实现状态注为准。
 
 ---
 

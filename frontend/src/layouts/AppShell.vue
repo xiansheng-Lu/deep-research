@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 布局壳：顶栏 + 内容区（[前端详细设计 §4.1]）
 // 仅包裹受保护路由；登录/错误页等公共路由不走此壳
-// M1 导航收敛为项目/账户，助手等 M2 入口暂不呈现
+// M2 起呈现首页（意图单入口）与助手（闲聊）导航
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
@@ -36,7 +36,7 @@ async function onUserMenu(key: string): Promise<void> {
   <div class="app-shell">
     <header class="app-shell__topbar">
       <RouterLink
-        to="/projects"
+        to="/home"
         class="app-shell__logo"
       >
         AI 研究者助手
@@ -45,6 +45,18 @@ async function onUserMenu(key: string): Promise<void> {
         class="app-shell__nav"
         aria-label="主导航"
       >
+        <RouterLink
+          to="/home"
+          class="app-shell__nav-link"
+        >
+          首页
+        </RouterLink>
+        <RouterLink
+          to="/assistant"
+          class="app-shell__nav-link"
+        >
+          助手
+        </RouterLink>
         <RouterLink
           to="/projects"
           class="app-shell__nav-link"

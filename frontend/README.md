@@ -2,9 +2,9 @@
 
 基于 Vue 3 + TypeScript + Vite 的单页应用，为 AI 研究者助手提供登录、研究发起、任务指挥舱、报告与分歧工作台等界面。
 
-一次"研究运行（run）"在前端对应六个阶段的实时推进：意图分析 → 证据收集 → 证据评估 → 综合 → 报告起草 → 报告复核。运行过程中的状态通过 WebSocket 实时推送到指挥舱；证据冲突的分歧工作台为 M4 预留，当前仅占位。
+一次"研究运行（run）"在前端对应六个阶段的实时推进：澄清界定 → 问题分解 → 证据检索 → 证据标准化 → 交叉审校 → 报告撰写（契约枚举 clarify/decompose/retrieve/standardize/critique/report，中文映射以 [src/services/i18n/zh-CN.ts](src/services/i18n/zh-CN.ts) 为唯一事实源）。运行过程中的状态通过 WebSocket 实时推送到指挥舱；证据冲突的裁决工作台为 M3/M4 能力，M2 仅只读呈现。
 
-当前处于 M1 联调阶段：M0 基础组件库、应用骨架与实时通道客户端已就绪，M1 的认证、项目、发起向导、指挥舱、报告页面已实装；内置 Mock 网关严格对齐 M1 冻结契约，可在后端缺失时独立完成页面联调，通过环境变量即可切换为真实后端。
+当前处于 **M2 联调阶段**（2026-09-13）：M1 的认证、项目、发起向导、指挥舱、报告页面已实装并关闭；M2-1 首页意图分流与闲聊面板已对接真实后端，WP-13/14/15 看板编排/实时看板/HITL 介入已合入（WP-16 结构化报告、WP-17 韧性、WP-18 埋点待续）；内置 Mock 网关经 WP-10 扩展至 M2 剧本与全量事件，可在后端缺失时独立开发，通过环境变量切换真实后端。
 
 ## 技术栈
 
@@ -60,22 +60,23 @@ VITE_MOCK=gateway
 
 ### 覆盖的通道与端点
 
-- **REST**：由 [src/services/mock/router.ts](src/services/mock/router.ts) 分发，共 11 个端点，严格对齐 [openapi-m1.json](../docs/contract/openapi-m1.json) 冻结契约：`GET /healthz`、鉴权四端点（login/refresh/logout/me）、项目列表与创建、run 创建与详情、报告获取（`/runs/{run_id}/report` 与 `/reports/{run_id}` 两个等价路径）。
+- **REST**：由 [src/services/mock/router.ts](src/services/mock/router.ts) 分发，WP-10 扩展后共 24 条路由：其中 11 个 M1 端点严格对齐 [openapi-m1.json](../docs/contract/openapi-m1.json) 冻结契约（`GET /healthz`、鉴权四端点 login/refresh/logout/me、项目列表与创建、run 创建与详情、报告获取的 `/runs/{run_id}/report` 与 `/reports/{run_id}` 两个等价路径）；其余为 M2 mock 扩展（意图/闲聊、stages/sub-questions/evidence/conflicts/cost 看板、pause/resume/cancel/intervene、citations、telemetry），字段以后端各工作包冻结契约为准，M2 累积机读契约见 [openapi-m2-2.json](../docs/contract/openapi-m2-2.json)。
 - **WebSocket**：`/api/v1/ws/runs/{run_id}/stream` 升级请求由 [src/services/mock/realtime.ts](src/services/mock/realtime.ts) 处理，握手前按 query 参数 `token` 鉴权（与后端一致，缺失或无效直接返回 403），run 产生的事件实时广播到对应频道，终态事件推送后关闭连接。
 
 REST 与实时事件在 run 执行期间联动：每次脚本发出事件时，同步更新内存中的 run 状态并向 WS 通道广播；run 成功结束时在内存中落一份报告，供报告接口读取。
 
 ### 剧本（fixture）机制
 
-run 的事件流不是随机生成的，而是由可编排的"剧本"驱动。M1 仅提供一个剧本 [fixtures/happy_path.ts](src/services/mock/fixtures/happy_path.ts)：六个阶段依次推进，无人工干预直至完成；`POST /api/v1/runs` 成功创建后自动执行该剧本，请求体不含 fixture 选择字段（冻结契约字段为 `project_id`、`question`、`tier`、`template_id`）。
+run 的事件流不是随机生成的，而是由可编排的"剧本"驱动。现有两个剧本：[fixtures/happy_path.ts](src/services/mock/fixtures/happy_path.ts)（六阶段依次推进，无人工干预直至完成，M1 基线）与 [fixtures/demo_full.ts](src/services/mock/fixtures/demo_full.ts)（WP-10 新增：澄清挂起与 resume、子问题并行、证据流、冲突检出、成本预警等 M2 全分支）；`POST /api/v1/runs` 成功创建后自动执行剧本，请求体不含 fixture 选择字段（冻结契约字段为 `project_id`、`question`、`tier`、`template_id`）。
 
-剧本是一棵 `ScriptNode` 树，由 [src/services/mock/script/runner.ts](src/services/mock/script/runner.ts) 解释执行，M1 节点类型仅三种（见 [script/types.ts](src/services/mock/script/types.ts)）：
+剧本是一棵 `ScriptNode` 树，由 [src/services/mock/script/runner.ts](src/services/mock/script/runner.ts) 解释执行，节点类型见 [script/types.ts](src/services/mock/script/types.ts)：
 
 - `sequence`：顺序执行子节点；
 - `emit`：延迟可选毫秒后发出一个实时事件；
-- `wait`：等待固定时长。
+- `wait`：等待固定时长；
+- `gate`：按外部注入信号推进（M2 用于澄清挂起/resume 等人工干预分支）。
 
-需要新增联调场景时，按 happy_path 的写法构建新剧本，并在 run 创建路由中替换或登记即可，不要修改执行器；并行、人工中断、失败注入等节点类型随 M2+ 剧本扩展再加入 DSL。
+需要新增联调场景时，按既有 fixture 的写法构建新剧本，并在 run 创建路由中替换或登记即可，不要修改执行器；失败注入等更多节点类型随后续工作包扩展再加入 DSL。
 
 Mock 模式的登录账号由 [src/services/mock/seed.ts](src/services/mock/seed.ts) 写入：邮箱 `demo@example.com`，接受任意非空密码。
 
@@ -132,7 +133,19 @@ pnpm dlx @openapitools/openapi-generator-cli generate `
 
 生成产物建议放在 `src/services/generated/` 并在 `.gitignore` 中忽略，作为再生成资源维护；后端契约变更后重新执行该命令即可。当前 M1 手写的 REST 接口类型集中在 [src/services/api/types.ts](src/services/api/types.ts)，实时事件类型在 [src/services/realtime/types.ts](src/services/realtime/types.ts)，接入生成客户端时逐页面替换。
 
-所有 HTTP 调用统一经 [src/services/http/http.ts](src/services/http/http.ts) 发起：它是 fetch 的薄封装，负责 `Accept` 与幂等键（`Idempotency-Key`）注入，并把两类后端错误响应归一为 `ApiError`（含 `status` / `code` / `title` / `detail` / `traceId`）：业务异常体 `{code, message, details}` 与 FastAPI 请求体校验错误体 `{detail: [...]}`，错误处理分支统一按 `code` 判断；401 时还会以 single-flight 方式刷新 access token 并重放原请求一次。
+所有 HTTP 调用统一经 [src/services/http/http.ts](src/services/http/http.ts) 发起：它是 fetch 的薄封装，负责 `Accept` 与幂等键（`Idempotency-Key`）注入，并把两类后端错误响应归一为 `ApiError`（含 `status` / `code` / `title` / `detail` / `traceId`）：业务异常体 `{code, message, details}` 与 FastAPI 请求体校验错误体 `{detail: [...]}`，错误处理分支统一按 `code` 判断；401 时还会以 single-flight 方式刷新 access token 并重放原请求一次。SSE 流式接口（M2 闲聊 `/assistant/chat`）使用同模块导出的 `httpStream()` 获取原始 `Response`，鉴权与 401 重放口径一致，调用方自行按 `text/event-stream` 解析。
+
+### M2 契约层与 M2-9 生成客户端切换清单
+
+M2 在 OpenAPI 冻结前继续手写类型，枚举统一收敛在 [src/types/domain.ts](src/types/domain.ts)（单一事实源），由 [src/services/api/types.ts](src/services/api/types.ts) 再导出兼容 M1 引用路径；实体字段在文件头注释标注了后端出处（LLD §4.2 / 契约草案 §6 / 已落地的 M2-1 schema）。M2-1 意图与闲聊接口以后端 `feature/backend-m2-intent-router` 真实 schema 为准；看板（stages/sub-questions/evidence/cost）、HITL（pause/resume/intervene）、结构化报告（blocks/citations）字段在对应后端工作包（M2-4/5/6/7）冻结后逐批核对。
+
+后端 M2 累积冻结契约已导出为 `openapi-m2-2.json`（15 端点 = M1 + M2-1 意图/闲聊 + M2-2 分歧三端点；后续 M2 批次继续在该文件累积超集），M2-9 收口时按以下清单切换到 typescript-fetch 生成客户端（预计 0.5-1 人日，独立工作包）：
+
+1. 生成产物落 `src/services/generated/`（gitignore），以最新累积快照 openapi-m2-2.json 为输入。
+2. 替换顺序：枚举（`types/domain.ts` 改为从 generated 类型收窄/别名）→ 实体接口（`services/api/types.ts`）→ 各 `services/api/*.ts` 请求函数改为 generated fetch 适配，保留现有函数签名，页面与 composables 零改动。
+3. `http.ts` 的错误归一/401 单飞逻辑保留为适配层，不直接使用生成客户端自带错误处理。
+4. SSE（assistant）与 WS（realtime）不在生成客户端覆盖范围，维持自研。
+5. 切换完成后删除手写类型中已被生成产物覆盖的部分，并更新本小节。
 
 ## 目录结构
 

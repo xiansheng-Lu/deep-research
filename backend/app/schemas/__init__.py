@@ -5,7 +5,13 @@
     reports / knowledge / connectors / templates / audit / common
 """
 
-from app.schemas.common import ErrorResponse, HealthResponse, PageMeta, PaginatedResponse
+from app.schemas.common import (
+    MAX_PAGE_SIZE,
+    ErrorResponse,
+    HealthResponse,
+    PaginatedResponse,
+    build_page,
+)
 from app.schemas.projects import (
     CreateProjectRequest,
     ProjectResponse,
@@ -19,8 +25,9 @@ __all__ = [
     # common
     "ErrorResponse",
     "HealthResponse",
-    "PageMeta",
+    "MAX_PAGE_SIZE",
     "PaginatedResponse",
+    "build_page",
     # projects
     "CreateProjectRequest",
     "ProjectResponse",

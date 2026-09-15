@@ -1,0 +1,120 @@
+<script setup lang="ts">
+// 信源角标（[前端详细设计 §10.1 / §10.5 M2]）
+// 紧凑呈现信源三要素：可信分级（A/B/C/D 色编码字母）、信源类型、域名；
+// 信源层级（一手/二手/三手）以小字附在类型后。供证据卡、冲突块、报告溯源共用。
+import { computed } from 'vue'
+import {
+  credibilityLabel,
+  sourceLevelLabel,
+  sourceTypeLabel
+} from '@/services/i18n/zh-CN'
+import type { Credibility, SourceLevel, SourceType } from '@/types/domain'
+
+const props = withDefaults(
+  defineProps<{
+    domain: string
+    sourceType: SourceType
+    // M2-2 分歧详情内嵌摘要（FR-7 八项）不含 source_level，缺省时不渲染层级；
+    // 真链低可信信源 source_level 可能为 null，title 一并跳过，避免出现 "undefined"
+    sourceLevel?: SourceLevel | null
+    credibility: Credibility
+    // 是否展示域名（冲突块等窄空间可关）
+    showDomain?: boolean
+  }>(),
+  { showDomain: true, sourceLevel: undefined }
+)
+
+// 悬停 title 与可视层同口径：无 source_level 时不拼层级段
+const badgeTitle = computed(() =>
+  [
+    sourceTypeLabel(props.sourceType),
+    props.sourceLevel ? sourceLevelLabel(props.sourceLevel) : null,
+    credibilityLabel(props.credibility)
+  ]
+    .filter(Boolean)
+    .join(' · ')
+)
+</script>
+
+<template>
+  <span
+    class="source-badge"
+    :title="badgeTitle"
+  >
+    <span
+      class="source-badge__grade"
+      :class="`is-${credibility}`"
+      aria-hidden="true"
+    >{{ credibility }}</span>
+    <span class="source-badge__type">{{ sourceTypeLabel(sourceType) }}</span>
+    <span
+      v-if="sourceLevel"
+      class="source-badge__level"
+    >· {{ sourceLevelLabel(sourceLevel) }}</span>
+    <span
+      v-if="showDomain"
+      class="source-badge__domain"
+    >{{ domain }}</span>
+  </span>
+</template>
+
+<style scoped>
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+  font-size: var(--font-xs);
+  color: var(--color-text-muted);
+}
+
+.source-badge__grade {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* 可信度四档四色：A 高可信绿、B 蓝、C 一般灰、D 低可信橙（设计决定 2026-09-14，四档必须异色） */
+.source-badge__grade.is-A {
+  background: var(--success-50);
+  color: var(--success-500);
+}
+
+.source-badge__grade.is-B {
+  background: var(--info-50);
+  color: var(--info-500);
+}
+
+.source-badge__grade.is-C {
+  background: var(--neutral-100);
+  color: var(--neutral-600);
+}
+
+.source-badge__grade.is-D {
+  background: var(--warning-50);
+  color: var(--warning-500);
+}
+
+.source-badge__type {
+  color: var(--color-text);
+}
+
+.source-badge__level {
+  color: var(--color-text-muted);
+}
+
+.source-badge__domain {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>

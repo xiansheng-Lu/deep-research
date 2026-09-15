@@ -19,7 +19,6 @@ from app.provider.client import LLMClient
 from app.provider.openai import OpenAIProvider, _extract_usage, _to_langchain_message
 from app.provider.usage import UsageTracker
 
-
 # ====== 辅助函数 ======
 
 
@@ -36,11 +35,13 @@ def _make_ai_message(
         tool_calls=tool_calls or [],
         response_metadata={"finish_reason": "stop"},
         # LangChain v1 的 usage_metadata 作为额外属性
-        **{"usage_metadata": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-        }},
+        **{
+            "usage_metadata": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            }
+        },
     )
 
 
@@ -262,6 +263,59 @@ class TestLLMClient:
         await client.chat(_make_request())
         snap = tracker.snapshot()
         assert snap["primary"].total_tokens == 100
+
+    async def test_zero_usage_success_emits_warning(self) -> None:
+        """成功返回但网关缺 usage（total=0）→ warning，成本失聚可观测。"""
+        from structlog.testing import capture_logs
+
+        primary = self._mock_provider("primary")
+        primary.chat = AsyncMock(
+            return_value=ChatResponse(
+                content="ok", model="m", usage={"total_tokens": 0}, raw={"finish_reason": "stop"}
+            )
+        )
+        client = LLMClient(primary=primary)
+
+        with capture_logs() as logs:
+            await client.chat(_make_request())
+        warnings = [
+            entry
+            for entry in logs
+            if entry.get("log_level") == "warning" and "usage" in entry.get("event", "")
+        ]
+        assert len(warnings) == 1
+        assert warnings[0]["extra"]["provider"] == "primary"
+        assert warnings[0]["extra"]["model"] == "m"
+        assert warnings[0]["extra"]["finish_reason"] == "stop"
+
+    async def test_nonzero_usage_emits_no_warning(self) -> None:
+        from structlog.testing import capture_logs
+
+        primary = self._mock_provider("primary")
+        primary.chat = AsyncMock(
+            return_value=ChatResponse(content="ok", model="m", usage={"total_tokens": 88})
+        )
+        client = LLMClient(primary=primary)
+
+        with capture_logs() as logs:
+            await client.chat(_make_request())
+        assert not [entry for entry in logs if entry.get("log_level") == "warning"]
+
+    async def test_fallback_usage_recorded_once_on_backup(self) -> None:
+        """主路失败走备用：usage 只按 backup 累计一次（不双重 record）。"""
+        primary = self._mock_provider("primary")
+        primary.chat = AsyncMock(side_effect=ProviderUnavailableError("down"))
+        backup = self._mock_provider("backup")
+        backup.chat = AsyncMock(
+            return_value=ChatResponse(content="fallback", model="m", usage={"total_tokens": 50})
+        )
+        tracker = UsageTracker()
+        client = LLMClient(primary=primary, backup=backup, usage=tracker)
+
+        await client.chat(_make_request())
+        snap = tracker.snapshot()
+        assert "primary" not in snap or snap["primary"].total_tokens == 0
+        assert snap["backup"].total_tokens == 50
 
 
 # ====== Provider Protocol 检查 ======

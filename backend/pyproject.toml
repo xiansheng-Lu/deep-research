@@ -1,6 +1,7 @@
 [project]
 name = "deep-research-backend"
-version = "0.1.0"
+# 后端版本唯一载体（《Git协作与代码版本管理规范》§7.2）：M0=0.0.x，M1=0.1.x，M2=0.2.x，进入正式版后启用 MAJOR.MINOR.PATCH
+version = "0.2.0"
 description = "AI 研究者助手 - 后端服务（多智能体深度研究平台）"
 requires-python = ">=3.11,<3.13"
 license = { text = "Proprietary" }
@@ -47,6 +48,8 @@ dependencies = [
     "opentelemetry-api>=1.27,<2.0",
     "opentelemetry-sdk>=1.27,<2.0",
     "opentelemetry-instrumentation-fastapi>=0.48b0",
+    # 运维指标（M2-3）
+    "prometheus-client>=0.21,<1.0",
     # 文档处理
     "python-docx>=1.1,<2.0",
     "openpyxl>=3.1,<4.0",
@@ -57,6 +60,8 @@ dependencies = [
     "python-dateutil>=2.9,<3.0",
     "pyyaml>=6.0,<7.0",
     "python-ulid>=3.0,<5.0",
+    "langgraph-checkpoint-postgres>=3.1.2",
+    "psycopg[binary]>=3.3.5",
 ]
 
 [dependency-groups]
@@ -67,6 +72,7 @@ dev = [
     "pre-commit>=4.0,<5.0",
     "pytest>=8.3,<9.0",
     "pytest-asyncio>=0.24,<1.0",
+    "fakeredis>=2.38.0",
 ]
 
 [project.scripts]
@@ -128,3 +134,6 @@ filterwarnings = [
     "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
 ]
 addopts = "-ra --strict-markers"
+markers = [
+    "integration: 需要真实 Postgres 的集成测试，数据库不可达时自动跳过",
+]

@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from sqlalchemy import inspect
-
 from app.db import models
 from app.db.base import Base, new_ulid
 from app.db.models.identity import Team, User
@@ -14,7 +12,7 @@ from app.db.models.project import Project
 
 
 def test_all_models_registered() -> None:
-    """13 个核心模型应全部注册到 ``Base.metadata``。"""
+    """全部核心模型应注册到 ``Base.metadata``。"""
     expected = {
         "teams",
         "users",
@@ -30,6 +28,8 @@ def test_all_models_registered() -> None:
         "knowledge_items",
         "knowledge_embeddings",
         "audit_entries",
+        "run_interventions",
+        "telemetry_events",
     }
     actual = set(Base.metadata.tables.keys())
     assert expected <= actual, f"缺失表：{expected - actual}"
@@ -41,7 +41,6 @@ def test_user_carries_team_id() -> None:
     cols = {c.name for c in table.columns}
     assert "team_id" in cols
     assert "email" in cols
-    indexes = {i.name for i in table.indexes}
     assert any({"team_id"} <= {c.name for c in i.columns} for i in table.indexes)
 
 
