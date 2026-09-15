@@ -334,6 +334,10 @@ async def _astream_and_publish(
     final_state: ResearchState | None = None
     last_stage: str | None = None
     latest_used = 0
+    # resume 首帧待打开的新阶段：手动暂停后续跑时，首个 task 帧没有前置 values
+    # 快照（latest_used 尚为 0），前序残留阶段行的收口必须等配对的 values 到达、
+    # 拿到含暂停前消耗的真实累计后再做，故把「收口前序+打开新阶段」整体延迟一帧。
+    pending_stage: str | None = None
     # 混合流：debug 的 task 事件先于节点执行（用于在节点真正开始时打开阶段，
     # 修复「阶段在节点完成后才戳记」导致的阶段耗时/受理窗口错位）；values
     # 提供每超步完整 state 快照（成本写穿、中间提交、取消快照、终态判定）。
@@ -357,28 +361,34 @@ async def _astream_and_publish(
             if stage == last_stage:
                 # resume 回流重跑同阶段（如 clarify）：不重开、不重发 started
                 continue
+            prior_running_rows = [
+                prior
+                for prior in STAGE_ORDER[: STAGE_ORDER.index(stage)]
+                if (row := stage_rows.get(prior)) is not None and row.status == "running"
+            ]
+            has_stale_running = bool(prior_running_rows)
+            if last_stage is None and has_stale_running:
+                # resume 后首个业务帧且存在未收口的前序 running 行：挂起阶段超步
+                # 已在检查点完成、节点不重放，首个 task 直接是更后阶段（如 clarify
+                # 暂停后从 decompose 续跑）。此时尚无 values 快照、latest_used=0，
+                # 不能在本帧收口残留行（会把 token 写成 0）；延迟到配对 values
+                # 到达后统一处理。首跑首帧（前序行均 pending）不在此列，保持
+                # task 帧立即打开阶段的 M2-4 受理窗口语义。
+                pending_stage = stage
+                continue
+            # 流内正常推进：收口上一阶段单行（M2-4 语义），latest_used 为上一
+            # 节点完成后的累计值（走到此分支 last_stage 必非空：None 且无残留
+            # 行的首帧会落入下方同一打开路径，此时没有可收口的旧行）
+            old_row = stage_rows.get(last_stage) if last_stage is not None else None
+            if old_row is not None and old_row.status != "succeeded":
+                apply_stage_transition(
+                    old_row,
+                    status="succeeded",
+                    token_used=latest_used,
+                    finished=True,
+                )
+                await _publish_stage_finished(hub, run_id, row=old_row, token_used=latest_used)
             attempts = (final_state or {}).get("stage_attempts") or {}
-            # 本帧之前应已完成、需要收口为 succeeded 的阶段：
-            # - 流内已打开过阶段（last_stage 非空）：仅收口该单行（M2-4 语义）；
-            # - resume 后首个业务帧（last_stage 为空）：手动暂停后 Command(resume)
-            #   续跑时，挂起阶段超步可能已在检查点完成、节点不重放，首个 task
-            #   直接是更后阶段（如 clarify 暂停后从 decompose 续跑）。图既已推进
-            #   到新阶段，排在它之前仍 running 的残留行按图语义必然已完成，统一
-            #   补发收口，避免 stages 表残留 running（M2-8b 交接 §7.4 P2）。
-            if last_stage is not None:
-                prior_stages = [last_stage]
-            else:
-                prior_stages = list(STAGE_ORDER[: STAGE_ORDER.index(stage)])
-            for prior_stage in prior_stages:
-                old_row = stage_rows.get(prior_stage)
-                if old_row is not None and old_row.status == "running":
-                    apply_stage_transition(
-                        old_row,
-                        status="succeeded",
-                        token_used=latest_used,
-                        finished=True,
-                    )
-                    await _publish_stage_finished(hub, run_id, row=old_row, token_used=latest_used)
             attempt = int(attempts.get(stage) or 1)
             new_row = stage_rows.get(stage)
             if new_row is not None and new_row.status != "succeeded":
@@ -409,6 +419,43 @@ async def _astream_and_publish(
         # mode == "values"：完整 state 快照（节点完成后产出）
         snapshot = cast(ResearchState, event)
         final_state = snapshot
+
+        # resume 首帧延迟处理：values 到达后，先用真实累计收口排在新阶段之前
+        # 仍 running 的残留行（M2-8b 交接 §7.4 P2），再打开新阶段——保证
+        # finished(旧) 先于 started(新)，且收口 token 含暂停前已消耗的量。
+        if pending_stage is not None:
+            stage = pending_stage
+            pending_stage = None
+            snapshot_used = int(snapshot.get("token_used") or 0)
+            for prior_stage in STAGE_ORDER[: STAGE_ORDER.index(stage)]:
+                stale_row = stage_rows.get(prior_stage)
+                if stale_row is not None and stale_row.status == "running":
+                    apply_stage_transition(
+                        stale_row,
+                        status="succeeded",
+                        token_used=snapshot_used,
+                        finished=True,
+                    )
+                    await _publish_stage_finished(hub, run_id, row=stale_row, token_used=snapshot_used)
+            attempts = snapshot.get("stage_attempts") or {}
+            attempt = int(attempts.get(stage) or 1)
+            opened_row = stage_rows.get(stage)
+            if opened_row is not None and opened_row.status != "succeeded":
+                apply_stage_transition(opened_row, status="running", attempt=attempt)
+            last_stage = stage
+            run.current_stage = stage
+            bind_run_context(stage=stage)
+            await _publish_event(
+                hub,
+                run_id,
+                {
+                    "type": "stage.started",
+                    "stage": stage,
+                    "current_stage": stage,
+                    "payload": {"stage": stage, "attempt": attempt, "token_used": snapshot_used},
+                },
+            )
+            await session.commit()
         # 记录最近完整快照：协作式取消落在本超步中途时，收尾据此取 token/草稿
         stop_holder.snapshot = snapshot
         used = int(snapshot.get("token_used") or 0)

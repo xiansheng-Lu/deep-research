@@ -1739,13 +1739,19 @@ async def test_resume_first_frame_closes_stale_running_stage_rows() -> None:
         row = stage_rows[name]
         assert row.status == "succeeded", f"{name} 未收口: {row.status}"
         assert row.finished_at is not None, f"{name} 缺少 finished_at"
+        assert row.token_used > 0, f"{name} 收口 token 不应为 0（取真实累计快照）"
     assert stage_rows["report"].status == "running"
+    # clarify 在首个 values 快照后收口，token 取该快照累计（100*1=100），
+    # 不是 resume 首帧 debug 时刻的 0
+    assert stage_rows["clarify"].token_used == 100
 
     finished_stages = [str(e.get("stage")) for e in events if e.get("type") == "stage.finished"]
     started_stages = [str(e.get("stage")) for e in events if e.get("type") == "stage.started"]
-    # clarify 被首个 decompose 帧补发收口；没有重放就没有 clarify started
     assert finished_stages == ["clarify", "decompose", "retrieve", "standardize", "critique"]
     assert started_stages == ["decompose", "retrieve", "standardize", "critique", "report"]
+    # clarify finished 必须先于 decompose started（在首个 values 帧内顺序补发）
+    seq = [(str(e.get("type")), str(e.get("stage"))) for e in events]
+    assert seq.index(("stage.finished", "clarify")) < seq.index(("stage.started", "decompose"))
 
 
 @pytest.mark.asyncio
