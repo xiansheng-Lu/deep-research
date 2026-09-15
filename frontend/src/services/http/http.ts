@@ -142,9 +142,22 @@ async function toApiError(response: Response): Promise<ApiError> {
           : response.status >= 500
             ? zhCN.errors.serverDetail
             : ''
+  // 业务细分码统一嵌在 details.code（后端 AppError 信封：顶层 code 是错误类别，
+  // 如 409 一律为 "conflict"；具体业务码 RUN_NOT_PAUSABLE / RUN_ORPHAN_RECOVERING
+  // 等在 details.code）。介入文案按业务码匹配；裁决类冲突无 details.code 时
+  // 回退顶层类别码（i18n 仍按 "conflict" 命中裁决文案）。
+  const detailsCode =
+    typeof body.details === 'object' && body.details !== null
+      ? (body.details as Record<string, unknown>).code
+      : undefined
   return {
     status: response.status,
-    code: typeof body.code === 'string' ? body.code : `HTTP_${response.status}`,
+    code:
+      typeof detailsCode === 'string'
+        ? detailsCode
+        : typeof body.code === 'string'
+          ? body.code
+          : `HTTP_${response.status}`,
     title: typeof body.title === 'string' ? body.title : fallbackTitle(response.status),
     detail,
     traceId:

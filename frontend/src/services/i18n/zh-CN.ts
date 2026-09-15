@@ -17,6 +17,8 @@ export const zhCN = {
   interventionErrors: {
     RUN_NOT_PAUSABLE: '当前阶段无法暂停',
     RUN_ALREADY_PAUSED: '研究已处于暂停状态',
+    // M2-8b：执行进程失联、等待/正在自动清扫的 run 被暂停时返回（409 details.code）
+    RUN_ORPHAN_RECOVERING: '任务执行状态异常，系统正在自动恢复，请刷新后重试',
     RUN_NOT_RESUMABLE: '当前状态无法继续研究',
     INTERVENE_NOT_ALLOWED: '当前研究状态不允许该操作',
     INVALID_ACTION_PAYLOAD: '介入请求内容不完整',
