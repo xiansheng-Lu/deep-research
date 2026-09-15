@@ -1,0 +1,16 @@
+backend/app/orchestrator/executor.py
+  h_cca0f9f09404ed 337-340,364-390,422-458
+backend/tests/test_executor.py
+  h_cca0f9f09404ed 1742,1744-1746,1752-1754
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "179d93967589d04f486de84250781b3454981a19",
+  "prompts": {},
+  "humans": {
+    "h_cca0f9f09404ed": {
+      "author": "Lu Wen Long <19988433671@163.com>"
+    }
+  }
+}
