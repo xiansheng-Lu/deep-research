@@ -1,0 +1,20 @@
+backend/app/provider/client.py
+  h_cca0f9f09404ed 13,15,24-25,98,102-118,196-200,205
+backend/tests/test_provider.py
+  h_cca0f9f09404ed 38-44,267-319
+backend/tests/test_ws_commands.py
+  h_cca0f9f09404ed 14-15,57,65-71,83-84,111-115,121,145-148,167,178-183,195,206
+backend/tests/test_ws_stream.py
+  h_cca0f9f09404ed 13,81-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "ff752ef962376b4913078f986db9476a62c50050",
+  "prompts": {},
+  "humans": {
+    "h_cca0f9f09404ed": {
+      "author": "Lu Wen Long <19988433671@163.com>"
+    }
+  }
+}
